@@ -1,0 +1,29 @@
+{
+"type": "FeatureCollection",
+"name": "Dummy_Mango_Data",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "fid": 1, "Tree_ID": 4, "Status": "Unbagged", "Crown_Width": 10.18, "Elev_1": 173.67997741699219 }, "geometry": { "type": "Point", "coordinates": [ 122.402483983620257, 10.791281781737341 ] } },
+{ "type": "Feature", "properties": { "fid": 2, "Tree_ID": 1, "Status": "Unbagged", "Crown_Width": 8.126, "Elev_1": 168.15605163574219 }, "geometry": { "type": "Point", "coordinates": [ 122.402328861327149, 10.791188530644442 ] } },
+{ "type": "Feature", "properties": { "fid": 3, "Tree_ID": 2, "Status": "Unbagged", "Crown_Width": 8.884, "Elev_1": 169.427001953125 }, "geometry": { "type": "Point", "coordinates": [ 122.402357029075972, 10.791249631822149 ] } },
+{ "type": "Feature", "properties": { "fid": 4, "Tree_ID": 3, "Status": "Unbagged", "Crown_Width": 11.727, "Elev_1": 167.94630432128906 }, "geometry": { "type": "Point", "coordinates": [ 122.402393834062337, 10.791328283431319 ] } },
+{ "type": "Feature", "properties": { "fid": 5, "Tree_ID": 5, "Status": "Unbagged", "Crown_Width": 10.751, "Elev_1": 163.6944580078125 }, "geometry": { "type": "Point", "coordinates": [ 122.402416715079355, 10.791395803044745 ] } },
+{ "type": "Feature", "properties": { "fid": 6, "Tree_ID": 6, "Status": "Unbagged", "Crown_Width": 5.37, "Elev_1": 163.94049072265625 }, "geometry": { "type": "Point", "coordinates": [ 122.402456049220461, 10.791434411755727 ] } },
+{ "type": "Feature", "properties": { "fid": 7, "Tree_ID": 7, "Status": "Unbagged", "Crown_Width": 6.677, "Elev_1": 164.74114990234375 }, "geometry": { "type": "Point", "coordinates": [ 122.402481862955526, 10.791485639571256 ] } },
+{ "type": "Feature", "properties": { "fid": 8, "Tree_ID": 8, "Status": "Unbagged", "Crown_Width": 9.221, "Elev_1": 164.90512084960938 }, "geometry": { "type": "Point", "coordinates": [ 122.402509404816612, 10.791560821328577 ] } },
+{ "type": "Feature", "properties": { "fid": 9, "Tree_ID": 9, "Status": "Unbagged", "Crown_Width": 7.461, "Elev_1": 170.13153076171875 }, "geometry": { "type": "Point", "coordinates": [ 122.402551434985412, 10.791259270415734 ] } },
+{ "type": "Feature", "properties": { "fid": 10, "Tree_ID": 10, "Status": "Unbagged", "Crown_Width": 10.572, "Elev_1": 181.50933837890625 }, "geometry": { "type": "Point", "coordinates": [ 122.402684314645114, 10.791521631530987 ] } },
+{ "type": "Feature", "properties": { "fid": 11, "Tree_ID": 11, "Status": "Unbagged", "Crown_Width": 8.441, "Elev_1": 180.42626953125 }, "geometry": { "type": "Point", "coordinates": [ 122.402679921083489, 10.791349886270918 ] } },
+{ "type": "Feature", "properties": { "fid": 12, "Tree_ID": 12, "Status": "Unbagged", "Crown_Width": 10.376, "Elev_1": 179.27928161621094 }, "geometry": { "type": "Point", "coordinates": [ 122.402755128310488, 10.791315425780768 ] } },
+{ "type": "Feature", "properties": { "fid": 13, "Tree_ID": 13, "Status": "Unbagged", "Crown_Width": 7.732, "Elev_1": 180.93635559082031 }, "geometry": { "type": "Point", "coordinates": [ 122.402833991274193, 10.791354557356492 ] } },
+{ "type": "Feature", "properties": { "fid": 14, "Tree_ID": 14, "Status": "Unbagged", "Crown_Width": 8.204, "Elev_1": 182.50228881835938 }, "geometry": { "type": "Point", "coordinates": [ 122.402863585799636, 10.791415233020198 ] } },
+{ "type": "Feature", "properties": { "fid": 15, "Tree_ID": 15, "Status": "Unbagged", "Crown_Width": 8.52, "Elev_1": 183.10292053222656 }, "geometry": { "type": "Point", "coordinates": [ 122.40282895778455, 10.791443467674782 ] } },
+{ "type": "Feature", "properties": { "fid": 16, "Tree_ID": 16, "Status": "Unbagged", "Crown_Width": 9.35, "Elev_1": 182.63482666015625 }, "geometry": { "type": "Point", "coordinates": [ 122.402723453726622, 10.791417768243504 ] } },
+{ "type": "Feature", "properties": { "fid": 17, "Tree_ID": 17, "Status": "Unbagged", "Crown_Width": 11.132, "Elev_1": 183.16304016113281 }, "geometry": { "type": "Point", "coordinates": [ 122.402762949348059, 10.791488923619623 ] } },
+{ "type": "Feature", "properties": { "fid": 18, "Tree_ID": 18, "Status": "Unbagged", "Crown_Width": 9.481, "Elev_1": 181.79600524902344 }, "geometry": { "type": "Point", "coordinates": [ 122.402708615852674, 10.791596765830448 ] } },
+{ "type": "Feature", "properties": { "fid": 19, "Tree_ID": 19, "Status": "Unbagged", "Crown_Width": 11.567, "Elev_1": 182.68458557128906 }, "geometry": { "type": "Point", "coordinates": [ 122.402783593570078, 10.791584972416487 ] } },
+{ "type": "Feature", "properties": { "fid": 20, "Tree_ID": 20, "Status": "Unbagged", "Crown_Width": 6.594, "Elev_1": 167.71914672851562 }, "geometry": { "type": "Point", "coordinates": [ 122.402671514759049, 10.79173763953105 ] } },
+{ "type": "Feature", "properties": { "fid": 21, "Tree_ID": 21, "Status": "Unbagged", "Crown_Width": 9.484, "Elev_1": 165.46797180175781 }, "geometry": { "type": "Point", "coordinates": [ 122.402544489534492, 10.791748503712496 ] } },
+{ "type": "Feature", "properties": { "fid": 22, "Tree_ID": 22, "Status": "Unbagged", "Crown_Width": 12.372, "Elev_1": 165.78729248046875 }, "geometry": { "type": "Point", "coordinates": [ 122.402601181615751, 10.791849895566576 ] } }
+]
+}

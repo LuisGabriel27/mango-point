@@ -1,0 +1,110 @@
+"""
+MangoPoint API — Configuration
+================================
+Environment-based configuration using Pydantic settings.
+"""
+
+from functools import lru_cache
+import json
+from typing import Any, Optional
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+    
+    # Application
+    APP_NAME: str = "MangoPoint API"
+    APP_VERSION: str = "1.0.0"
+    DEBUG: bool = False
+    
+    # Database (PostgreSQL + PostGIS)
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5433/mangopoint"
+    DATABASE_POOL_SIZE: int = 5
+    DATABASE_MAX_OVERFLOW: int = 10
+    
+    # Weather API (Open-Meteo — free, no API key required)
+    WEATHER_CACHE_TTL_SECONDS: int = 600  # 10 minutes
+    
+    # Default location (derived from the orchard orthophoto centroid)
+    DEFAULT_LAT: float = ORCHARD_LAT
+    DEFAULT_LON: float = ORCHARD_LON
+    
+    # SMTP Email Settings
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: str = "alerts@mangopoint.local"
+    
+    # Twilio SMS Settings (stub)
+    TWILIO_ACCOUNT_SID: Optional[str] = None
+    TWILIO_AUTH_TOKEN: Optional[str] = None
+    TWILIO_PHONE_NUMBER: Optional[str] = None
+    
+    # Alert thresholds
+    ALERT_RISK_THRESHOLD: float = 0.75
+    
+    # CORS
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8050",
+        "http://127.0.0.1:8050",
+    ]
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value: Any) -> Any:
+        """Accept both boolean-like and environment-style debug values."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+                return False
+        return value
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: Any) -> Any:
+        """Support JSON arrays and comma-separated origin lists."""
+        if value is None or value == "":
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Get cached settings instance."""
+    return Settings()
+
+
+settings = get_settings()

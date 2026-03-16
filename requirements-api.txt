@@ -1,0 +1,41 @@
+# MangoPoint API Requirements
+# ============================
+# Core dependencies for the FastAPI backend
+
+# FastAPI framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+geoalchemy2>=0.14.0
+psycopg2-binary>=2.9.0
+
+# HTTP client for external APIs
+httpx>=0.25.0
+
+# Email notifications
+# (standard library smtplib is used)
+
+# SMS (Twilio - optional)
+# twilio>=8.10.0
+
+# ============================
+# Simulation engine dependencies
+# (also in original requirements.txt)
+# ============================
+numpy>=1.24
+pandas>=2.0
+geopandas>=0.14
+matplotlib>=3.7
+shapely>=2.0
+pyproj>=3.5
+tqdm>=4.60
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0

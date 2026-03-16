@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\luisg\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "python.analysis.exclude": [
+    "**/__pycache__",
+    "outputs/validation"
+  ],
+  "files.exclude": {
+    "**/__pycache__": true
+  },
+  "search.exclude": {
+    "**/__pycache__": true
+  }
+}

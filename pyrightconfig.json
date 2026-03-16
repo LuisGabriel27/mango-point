@@ -1,0 +1,14 @@
+{
+  "include": ["api"],
+  "exclude": ["**/node_modules", "**/__pycache__", "dashboard"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.11",
+  "reportGeneralTypeIssues": false,
+  "reportOptionalMemberAccess": false,
+  "reportAttributeAccessIssue": false,
+  "reportArgumentType": false,
+  "reportAssignmentType": false,
+  "reportReturnType": false,
+  "reportInvalidTypeForm": false,
+  "reportOperatorIssue": false
+}

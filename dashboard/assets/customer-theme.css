@@ -1,0 +1,351 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --mp-bg: #92bda3;
+  --mp-bg-soft: #f4fbff;
+  --mp-card: #ffffff;
+  --mp-border: transparent;
+  --mp-border-strong: transparent;
+  --mp-text: #2f2a1a;
+  --mp-muted: #776642;
+  --mp-primary: #f5b301;
+  --mp-primary-deep: #df9300;
+  --mp-accent: #6bab90;
+  --mp-festival-pink: #e7497e;
+  --mp-shadow: 0 10px 28px rgba(99, 71, 14, 0.11);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Outfit", "Segoe UI", sans-serif;
+  color: var(--mp-text);
+  background:
+    radial-gradient(circle at 8% -10%, rgba(255, 255, 255, 0.28), transparent 42%),
+    radial-gradient(circle at 92% -8%, rgba(74, 132, 108, 0.2), transparent 44%),
+    linear-gradient(180deg, #d7e9df 0%, #b7d4c3 46%, var(--mp-bg) 100%);
+  min-height: 100vh;
+}
+
+.text-muted {
+  color: var(--mp-muted) !important;
+}
+
+.app-shell {
+  max-width: 1760px;
+  position: relative;
+  z-index: 1;
+  padding-top: 0 !important;
+}
+
+.main-navbar {
+  background: linear-gradient(120deg, #2f8f3b 0%, #4aa748 38%, #88bf45 62%, #f5b301 100%) !important;
+  backdrop-filter: none;
+  border: none;
+  border-radius: 16px;
+  box-shadow: 0 12px 24px rgba(58, 94, 34, 0.26) !important;
+  margin-top: 0.4rem;
+  margin-left: 0;
+  margin-right: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.main-navbar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.35) 100%);
+  pointer-events: none;
+}
+
+.main-navbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0));
+  pointer-events: none;
+}
+
+.main-navbar .navbar-brand {
+  font-family: "Manrope", "Outfit", "Segoe UI", sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  font-size: 1.3rem !important;
+  color: #ffffff !important;
+  text-shadow: 0 1px 4px rgba(34, 60, 23, 0.3);
+}
+
+.main-navbar #navbar-alert-badge {
+  border: none;
+  background: linear-gradient(130deg, #f05a8e 0%, #db3f73 100%) !important;
+  box-shadow: 0 6px 14px rgba(169, 42, 91, 0.2);
+}
+
+.main-navbar #navbar-time {
+  color: #f6ffe9 !important;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(34, 60, 23, 0.25);
+}
+
+.dashboard-grid {
+  --bs-gutter-y: 1rem;
+}
+
+.sidebar-col .card,
+.content-col .card,
+.panel-card,
+.map-card {
+  border: none !important;
+  border-radius: 14px !important;
+  background: #ffffff;
+  box-shadow: var(--mp-shadow);
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.sidebar-col .card:hover,
+.content-col .card:hover,
+.panel-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(33, 46, 39, 0.14);
+}
+
+.sidebar-col .card-header,
+.content-col .card-header,
+.panel-card .card-header {
+  background: #ffffff !important;
+  border-bottom: none !important;
+  color: #4e3610;
+}
+
+.sidebar-col .card-header .fw-semibold,
+.content-col .card-header .fw-semibold {
+  font-weight: 700 !important;
+}
+
+.map-stage .map-card {
+  border-radius: 16px !important;
+  box-shadow: 0 20px 42px rgba(24, 38, 30, 0.18);
+}
+
+.map-stage .map-card .dash-graph {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.map-compass {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 96px;
+  height: 96px;
+  z-index: 1000;
+  pointer-events: none;
+  border-radius: 50%;
+  backdrop-filter: blur(2px);
+  box-shadow: 0 8px 18px rgba(23, 33, 28, 0.2);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: #1e3427;
+}
+
+.form-control,
+.form-select,
+textarea.form-control {
+  border: 1px solid transparent !important;
+  border-radius: 10px !important;
+  color: var(--mp-text) !important;
+  box-shadow: none !important;
+}
+
+.Select-control {
+  border: 1px solid transparent !important;
+  border-radius: 10px !important;
+}
+
+.form-control:focus,
+.form-select:focus,
+textarea.form-control:focus {
+  border-color: transparent !important;
+  box-shadow: 0 0 0 0.2rem rgba(245, 179, 1, 0.18) !important;
+}
+
+.btn {
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.btn-success {
+  background: linear-gradient(140deg, #3ba84a 0%, #2f8f3b 70%) !important;
+  border-color: transparent !important;
+  box-shadow: 0 10px 22px rgba(41, 115, 52, 0.25);
+}
+
+.btn-success:hover,
+.btn-success:focus {
+  background: linear-gradient(140deg, #339742 0%, #287b33 70%) !important;
+  border-color: transparent !important;
+}
+
+.btn-primary {
+  background: linear-gradient(145deg, #f7c53e 0%, #eda800 72%) !important;
+  border-color: transparent !important;
+}
+
+.btn-outline-primary,
+.btn-outline-info,
+.btn-outline-secondary {
+  border-width: 1px;
+  border-color: transparent !important;
+  color: #121212 !important;
+  background: #ffffff !important;
+}
+
+.btn-outline-primary:hover,
+.btn-outline-info:hover,
+.btn-outline-secondary:hover {
+  border-color: transparent !important;
+  color: #121212 !important;
+  background: #f6f6f6 !important;
+}
+
+.btn-group .btn {
+  border-color: transparent !important;
+}
+
+.badge {
+  font-weight: 600;
+}
+
+.modal-content {
+  border-radius: 14px;
+  border: none;
+  background: #ffffff;
+  box-shadow: 0 22px 44px rgba(23, 35, 30, 0.26);
+}
+
+#playback-info {
+  background: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 0.38rem 0.55rem;
+}
+
+.js-plotly-plot .plotly .modebar {
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  border-radius: 10px;
+}
+
+.table {
+  --bs-table-bg: transparent;
+  --bs-table-border-color: transparent;
+}
+
+.table > :not(caption) > * > * {
+  padding: 0.5rem 0.65rem;
+}
+
+hr {
+  border-top: 1px solid transparent;
+  opacity: 1;
+}
+
+#sim-status .alert,
+#obs-result .alert,
+#eval-results .alert,
+#ds-summary-message .alert {
+  border-radius: 10px;
+  border: none;
+  box-shadow: 0 6px 14px rgba(32, 45, 38, 0.1);
+}
+
+.rc-slider-rail {
+  background-color: #ead8b3 !important;
+  height: 6px !important;
+}
+
+.rc-slider-track {
+  background-color: var(--mp-primary) !important;
+  height: 6px !important;
+}
+
+.rc-slider-handle {
+  width: 18px !important;
+  height: 18px !important;
+  margin-top: -6px !important;
+  background: #ffffff !important;
+  border-width: 2px !important;
+  border-color: transparent !important;
+  box-shadow: 0 2px 8px rgba(28, 43, 62, 0.22);
+}
+
+.sidebar-col .card,
+.content-col .card {
+  animation: mp-fade-up 0.45s ease both;
+}
+
+.sidebar-col .card:nth-child(2) { animation-delay: 0.03s; }
+.sidebar-col .card:nth-child(3) { animation-delay: 0.06s; }
+.sidebar-col .card:nth-child(4) { animation-delay: 0.09s; }
+.sidebar-col .card:nth-child(5) { animation-delay: 0.12s; }
+.sidebar-col .card:nth-child(6) { animation-delay: 0.15s; }
+
+@keyframes mp-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 991.98px) {
+  .app-shell {
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important;
+  }
+
+  .main-navbar {
+    border-radius: 12px;
+    margin-top: 0.15rem;
+  }
+
+  .main-navbar .navbar-brand {
+    font-size: 1.1rem !important;
+  }
+
+  .sidebar-col .card,
+  .content-col .card,
+  .panel-card,
+  .map-card {
+    border-radius: 12px !important;
+  }
+
+  .map-compass {
+    width: 76px;
+    height: 76px;
+    bottom: 10px;
+    right: 10px;
+  }
+}

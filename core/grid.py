@@ -100,12 +100,12 @@ class OrchardGrid:
 
     @property
     def susceptible_mask(self) -> np.ndarray:
-        """Trees that can be infected (excludes DEAD, BAGGED, EMPTY, INFESTED).
-        
-        BAGGED trees are completely immune - the physical barrier prevents
-        any pest access regardless of environmental conditions.
+        """Trees that can be infected (excludes DEAD, EMPTY, INFESTED).
+
+        BAGGED trees are included here because bagging lowers infestation
+        probability but does not make infection impossible.
         """
-        return self.state == CellState.UNBAGGED
+        return (self.state == CellState.UNBAGGED) | (self.state == CellState.BAGGED)
 
     @property
     def unbagged_mask(self) -> np.ndarray:
@@ -187,7 +187,7 @@ class OrchardGrid:
     ) -> None:
         """
         Accumulate dispersal probability onto a target cell.
-        If the cell is BAGGED, the probability is reduced by BAG_RESISTANCE.
+        If the cell is BAGGED, reduce probability by BAG_RESISTANCE.
         Skips DEAD cells entirely (permanently removed from simulation).
         """
         cell_state = self.state[target_row, target_col]
@@ -198,10 +198,10 @@ class OrchardGrid:
         if cell_state == CellState.DEAD:
             return  # permanently removed from simulation logic
         if cell_state == CellState.BAGGED:
-            return  # physical barrier - completely immune to pest spread
-
-        # Only UNBAGGED trees accumulate risk
-        effective_prob = prob
+            # Bagging strongly reduces risk but does not guarantee immunity.
+            effective_prob = prob * (1.0 - BAG_RESISTANCE)
+        else:
+            effective_prob = prob
 
         # Union of independent probabilities: P = 1 - (1-P_old)(1-P_new)
         old = self.risk[target_row, target_col]

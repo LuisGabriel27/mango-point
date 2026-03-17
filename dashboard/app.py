@@ -15,6 +15,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 import numpy as np
@@ -154,7 +155,7 @@ GIS_STATUS_COLORS = {
 TREE_STATUS_OPTIONS = [
     {"label": "Healthy", "value": "healthy"},
     {"label": "Infected", "value": "infected"},
-    {"label": "Bagged (immune)", "value": "bagged"},
+    {"label": "Bagged (reduced risk)", "value": "bagged"},
     {"label": "Dead (removed)", "value": "dead"},
     {"label": "History Infected", "value": "history_infected"},
     {"label": "Suspect (monitoring)", "value": "suspect"},
@@ -178,6 +179,67 @@ def icon(name, extra_class=""):
     return html.I(className=f"bi bi-{name} {extra_class}".strip())
 
 
+def _build_compass_svg_data_uri():
+    """Build a polished, true-north compass SVG as a data URI."""
+    svg = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
+  <defs>
+    <radialGradient id="face" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#edf2f7"/>
+    </radialGradient>
+    <linearGradient id="needleN" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#d33131"/>
+      <stop offset="100%" stop-color="#ff7b7b"/>
+    </linearGradient>
+    <linearGradient id="needleS" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2f3b46"/>
+      <stop offset="100%" stop-color="#5b6a78"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <circle cx="70" cy="70" r="64" fill="url(#face)" stroke="#334155" stroke-width="1.8"/>
+  </g>
+  <circle cx="70" cy="70" r="55" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
+
+  <g stroke="#64748b" stroke-width="1.2" stroke-linecap="round">
+    <line x1="70" y1="18" x2="70" y2="28"/>
+    <line x1="70" y1="112" x2="70" y2="122"/>
+    <line x1="18" y1="70" x2="28" y2="70"/>
+    <line x1="112" y1="70" x2="122" y2="70"/>
+    <line x1="32" y1="32" x2="38" y2="38"/>
+    <line x1="102" y1="102" x2="108" y2="108"/>
+    <line x1="32" y1="108" x2="38" y2="102"/>
+    <line x1="102" y1="38" x2="108" y2="32"/>
+  </g>
+
+  <g font-family="Segoe UI, Tahoma, sans-serif" font-weight="700" text-anchor="middle">
+    <text x="70" y="14" font-size="11" fill="#b91c1c">N</text>
+    <text x="70" y="134" font-size="10" fill="#334155">S</text>
+    <text x="131" y="74" font-size="10" fill="#334155">E</text>
+    <text x="9" y="74" font-size="10" fill="#334155">W</text>
+  </g>
+
+  <g>
+    <polygon points="70,24 78,68 70,78 62,68" fill="url(#needleN)" stroke="#991b1b" stroke-width="1"/>
+    <polygon points="70,116 78,72 70,62 62,72" fill="url(#needleS)" stroke="#1f2937" stroke-width="1"/>
+    <circle cx="70" cy="70" r="7.5" fill="#ffffff" stroke="#334155" stroke-width="1.3"/>
+    <circle cx="70" cy="70" r="2.6" fill="#0f172a"/>
+  </g>
+
+  <text x="70" y="88" font-family="Segoe UI, Tahoma, sans-serif" font-size="7.5" fill="#475569" text-anchor="middle" letter-spacing="0.8">TRUE NORTH</text>
+</svg>
+"""
+    return "data:image/svg+xml;utf8," + quote(svg)
+
+
+COMPASS_SVG_DATA_URI = _build_compass_svg_data_uri()
+
+
 def get_cardinal_direction(degree):
     """Converts degrees to human-readable cardinal directions."""
     directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
@@ -192,6 +254,209 @@ def ensure_list(value):
     if isinstance(value, list):
         return [item for item in value if item not in (None, "")]
     return [value]
+
+
+LOSS_ESTIMATE_ASSUMPTIONS = {
+    "yield_per_tree_kg": 45.0,
+    "farmgate_price_php_per_kg": 60.0,
+    "damage_low": 0.15,
+    "damage_base": 0.30,
+    "damage_high": 0.45,
+}
+PHENO_STAGE_COLORS = {
+    "dormant": "#9e9e9e",
+    "flowering": "#e91e63",
+    "fruitlet": "#4caf50",
+    "mature": "#ff9800",
+}
+PHENO_STAGE_ORDER = ["dormant", "flowering", "fruitlet", "mature"]
+
+
+def _loss_assumptions_text():
+    return (
+        "Planning estimate only: "
+        f"{LOSS_ESTIMATE_ASSUMPTIONS['yield_per_tree_kg']:.0f} kg/tree, "
+        f"PHP {LOSS_ESTIMATE_ASSUMPTIONS['farmgate_price_php_per_kg']:.0f}/kg, "
+        "damage: 15% / 30% / 45%"
+    )
+
+
+def _loss_scenario_values(infested_trees):
+    """Compute low/base/high loss-at-risk scenarios in PHP."""
+    try:
+        infested = max(float(infested_trees), 0.0)
+    except (TypeError, ValueError):
+        infested = 0.0
+
+    unit_value = (
+        LOSS_ESTIMATE_ASSUMPTIONS["yield_per_tree_kg"]
+        * LOSS_ESTIMATE_ASSUMPTIONS["farmgate_price_php_per_kg"]
+    )
+    low = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_low"]
+    base = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_base"]
+    high = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_high"]
+    return low, base, high
+
+
+def _build_loss_at_risk_chart(rows, x_title):
+    """Build scenario-based estimated loss-at-risk chart."""
+    if not rows:
+        return go.Figure()
+
+    x_vals, infested_vals, low_vals, base_vals, high_vals = [], [], [], [], []
+    for row in rows:
+        x_value = row.get("x")
+        infested = row.get("infested_trees", 0)
+        low, base, high = _loss_scenario_values(infested)
+        x_vals.append(x_value)
+        infested_vals.append(int(max(float(infested or 0), 0)))
+        low_vals.append(low)
+        base_vals.append(base)
+        high_vals.append(high)
+
+    if not x_vals:
+        return go.Figure()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x_vals,
+        y=low_vals,
+        mode="lines",
+        name="Low Scenario (15%)",
+        line=dict(color="#16a34a", width=1.8),
+        customdata=infested_vals,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Loss at Risk: PHP %{y:,.0f}<br>"
+            "Infested Trees: %{customdata}"
+            "<extra></extra>"
+        ),
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_vals,
+        y=high_vals,
+        mode="lines",
+        name="High Scenario (45%)",
+        line=dict(color="#dc2626", width=1.8),
+        fill="tonexty",
+        fillcolor="rgba(220, 38, 38, 0.10)",
+        customdata=infested_vals,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Loss at Risk: PHP %{y:,.0f}<br>"
+            "Infested Trees: %{customdata}"
+            "<extra></extra>"
+        ),
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_vals,
+        y=base_vals,
+        mode="lines+markers",
+        name="Base Scenario (30%)",
+        line=dict(color="#f59e0b", width=2.4),
+        marker=dict(size=5),
+        customdata=infested_vals,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Loss at Risk: PHP %{y:,.0f}<br>"
+            "Infested Trees: %{customdata}"
+            "<extra></extra>"
+        ),
+    ))
+
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=34, b=42),
+        height=260,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(title=x_title, title_standoff=8, gridcolor="#eee"),
+        yaxis=dict(title="Estimated Loss at Risk (PHP)", gridcolor="#eee", tickprefix="PHP "),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="left", x=0),
+    )
+    return fig
+
+
+def _build_phenology_figure(pheno_rows):
+    """
+    Build phenology donut chart.
+    - Keeps all stages in legend for consistency.
+    - Avoids overlapping labels by hiding text on zero-count slices.
+    - Uses center annotation for single-stage 100% cases.
+    """
+    if not pheno_rows:
+        return go.Figure()
+
+    df_pheno = pd.DataFrame(pheno_rows)
+    if df_pheno.empty or "stage" not in df_pheno.columns or "count" not in df_pheno.columns:
+        return go.Figure()
+
+    df_pheno["stage"] = df_pheno["stage"].astype(str).str.lower()
+    df_pheno["count"] = pd.to_numeric(df_pheno["count"], errors="coerce").fillna(0.0)
+
+    # Keep all canonical stages even when count is zero (legend remains stable).
+    df_pheno = (
+        df_pheno.groupby("stage", as_index=False)["count"].sum()
+        .set_index("stage")
+        .reindex(PHENO_STAGE_ORDER, fill_value=0.0)
+        .reset_index()
+    )
+
+    total_count = float(df_pheno["count"].sum())
+    if total_count <= 0:
+        return go.Figure()
+
+    df_pheno["stage"] = pd.Categorical(
+        df_pheno["stage"],
+        categories=PHENO_STAGE_ORDER,
+        ordered=True,
+    )
+    df_pheno = df_pheno.sort_values("stage")
+
+    fig_pheno = px.pie(
+        df_pheno,
+        values="count",
+        names="stage",
+        color="stage",
+        color_discrete_map=PHENO_STAGE_COLORS,
+        hole=0.4,
+    )
+    fig_pheno.update_layout(
+        margin=dict(l=10, r=10, t=10, b=18),
+        height=240,
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=-0.12, xanchor="center", x=0.5),
+    )
+
+    positive = df_pheno[df_pheno["count"] > 0]
+    if len(positive) == 1:
+        only_stage = str(positive.iloc[0]["stage"]).strip()
+        fig_pheno.update_traces(textinfo="none", textposition="none")
+        fig_pheno.add_annotation(
+            text=f"{only_stage}<br>100%",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(size=16, color="#1f2937"),
+            align="center",
+        )
+    else:
+        labels = []
+        for _, row in df_pheno.iterrows():
+            count = float(row["count"])
+            if count <= 0:
+                labels.append("")
+            else:
+                pct = (count / total_count) * 100.0
+                labels.append(f"{row['stage']}<br>{pct:.0f}%")
+        fig_pheno.update_traces(
+            text=labels,
+            textinfo="text",
+            textposition="outside",
+        )
+
+    return fig_pheno
 
 
 _TREE_ID_DIGITS_RE = re.compile(r"^(?:tree[_\-\s]*)?t?0*(\d+)$", re.IGNORECASE)
@@ -1070,7 +1335,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                 text=texts,
                 hoverinfo="text",
                 customdata=customdata,  # For tree management modal
-                name="Grid Cells",
+                name="Trees",
             )
         )
         if ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
@@ -1197,7 +1462,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
 # Layout — component builders
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _card(header_icon, header_text, body, card_cls="mb-3 shadow-sm"):
+def _card(header_icon, header_text, body, card_cls="mb-3 shadow-sm panel-card"):
     """Standard card wrapper with Bootstrap Icon header."""
     return dbc.Card(
         [
@@ -1302,10 +1567,8 @@ def make_sim_controls():
                 {"label": "168 h (7 days)", "value": "168"},
             ],
             value="48",
-            className="mb-2",
+            className="mb-3",
         ),
-        dbc.Label([icon("bag-check", "me-1"), " Bagged tree IDs"], className="fw-medium mb-1"),
-        dbc.Input(id="bagged-ids", placeholder="e.g. 5, 12, 18 or T05, T12", type="text", className="mb-3", size="sm"),
         dbc.Button(
             [icon("play-circle", "me-2"), "Run Simulation"],
             id="run-sim-btn",
@@ -1580,23 +1843,16 @@ def make_operations_dashboard_tab():
                             type="circle",
                             color="#4caf50",
                         ),
-                        className="shadow-sm border-0",
+                        className="shadow-sm border-0 map-card",
                     ),
                     html.Img(
-                        src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCI+PGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDgiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC45MikiIHN0cm9rZT0iIzU1NSIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48ZyB0cmFuc2Zvcm09InJvdGF0ZSgzNSA1MCA1MCkiPjxwb2x5Z29uIHBvaW50cz0iNTAsNiA1NCwzNSA1MCw0MiA0NiwzNSIgZmlsbD0iI2QzMmYyZiIvPjxwb2x5Z29uIHBvaW50cz0iNTAsOTQgNTQsNjUgNTAsNTggNDYsNjUiIGZpbGw9IiM0MjQyNDIiLz48cG9seWdvbiBwb2ludHM9Ijk0LDUwIDY1LDQ2IDU4LDUwIDY1LDU0IiBmaWxsPSIjNjE2MTYxIi8+PHBvbHlnb24gcG9pbnRzPSI2LDUwIDM1LDQ2IDQyLDUwIDM1LDU0IiBmaWxsPSIjNjE2MTYxIi8+PHBvbHlnb24gcG9pbnRzPSI4NSwxNSA2MCwzOCA1NiwzNCA3OCwxOCIgZmlsbD0iIzllOWU5ZSIvPjxwb2x5Z29uIHBvaW50cz0iODUsODUgNjAsNjIgNTYsNjYgNzgsODIiIGZpbGw9IiM5ZTllOWUiLz48cG9seWdvbiBwb2ludHM9IjE1LDg1IDM4LDYwIDM0LDU2IDE4LDc4IiBmaWxsPSIjOWU5ZTllIi8+PHBvbHlnb24gcG9pbnRzPSIxNSwxNSAzOCwzOCAzNCw0MiAxOCwyMiIgZmlsbD0iIzllOWU5ZSIvPjx0ZXh0IHg9IjUwIiB5PSI1IiBmb250LXNpemU9IjkiIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iI2QzMmYyZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+TjwvdGV4dD48dGV4dCB4PSI1MCIgeT0iOTkiIGZvbnQtc2l6ZT0iOSIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjNDI0MjQyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TPC90ZXh0Pjx0ZXh0IHg9Ijk4IiB5PSI1MyIgZm9udC1zaXplPSI5IiBmb250LWZhbWlseT0iQXJpYWwsc2Fucy1zZXJpZiIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiM0MjQyNDIiIHRleHQtYW5jaG9yPSJtaWRkbGUiPkU8L3RleHQ+PHRleHQgeD0iMyIgeT0iNTMiIGZvbnQtc2l6ZT0iOSIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjNDI0MjQyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5XPC90ZXh0Pjx0ZXh0IHg9Ijg4IiB5PSIxNCIgZm9udC1zaXplPSI3IiBmb250LWZhbWlseT0iQXJpYWwsc2Fucy1zZXJpZiIgZmlsbD0iIzc1NzU3NSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+TkU8L3RleHQ+PHRleHQgeD0iODgiIHk9IjkwIiBmb250LXNpemU9IjciIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmaWxsPSIjNzU3NTc1IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TRTwvdGV4dD48dGV4dCB4PSIxMiIgeT0iOTAiIGZvbnQtc2l6ZT0iNyIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZpbGw9IiM3NTc1NzUiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlNXPC90ZXh0Pjx0ZXh0IHg9IjEyIiB5PSIxNCIgZm9udC1zaXplPSI3IiBmb250LWZhbWlseT0iQXJpYWwsc2Fucy1zZXJpZiIgZmlsbD0iIzc1NzU3NSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tlc8L3RleHQ+PC9nPjwvc3ZnPg==",
-                        style={
-                            "position": "absolute",
-                            "bottom": "15px",
-                            "right": "15px",
-                            "width": "80px",
-                            "height": "80px",
-                            "zIndex": "1000",
-                            "pointerEvents": "none",
-                        },
+                        src=COMPASS_SVG_DATA_URI,
+                        alt="Compass - True North",
+                        className="map-compass",
                     ),
                 ],
                 style={"position": "relative"},
-                className="mb-3",
+                className="mb-3 map-stage",
             ),
             html.Hr(className="my-3"),
             html.H6([
@@ -1631,8 +1887,11 @@ def make_operations_dashboard_tab():
             ], className="mb-3 g-2"),
             dbc.Row([
                 dbc.Col(dbc.Card([
-                    dbc.CardHeader(html.Div([icon("graph-up", "me-2"), html.Span("Pest Population Trend", className="fw-semibold")], className="d-flex align-items-center"), className="py-2"),
-                    dbc.CardBody(dcc.Graph(id="mon-pest-trend-chart", config={"displayModeBar": False}, style={"height": "260px"}), className="py-1"),
+                    dbc.CardHeader(html.Div([icon("cash-coin", "me-2"), html.Span("Estimated Loss at Risk (Scenario)", className="fw-semibold")], className="d-flex align-items-center"), className="py-2"),
+                    dbc.CardBody([
+                        html.Small(_loss_assumptions_text(), className="text-muted d-block px-2 pt-1"),
+                        dcc.Graph(id="mon-pest-trend-chart", config={"displayModeBar": False}, style={"height": "248px"}),
+                    ], className="py-1"),
                 ], className="shadow-sm border-0"), md=8),
                 dbc.Col(dbc.Card([
                     dbc.CardHeader(html.Div([icon("flower1", "me-2"), html.Span("Phenology Distribution", className="fw-semibold")], className="d-flex align-items-center"), className="py-2"),
@@ -1664,12 +1923,13 @@ def make_operations_dashboard_tab():
 
 def make_risk_legend():
     risk_items = [
-        ("< 15 %", "#ffffb2"), ("15–30 %", "#fecc5c"), ("30–50 %", "#fd8d3c"),
-        ("50–70 %", "#f03b20"), ("70–85 %", "#e31a1c"), ("85–90 %", "#bd0026"),
-        ("90–100 %", "#800026"),
-        ("< 15 %", "#ffffb2"), ("15–30 %", "#fecc5c"), ("30–50 %", "#fd8d3c"),
-        ("50–70 %", "#f03b20"), ("70–85 %", "#e31a1c"), ("85–90 %", "#bd0026"),
-        ("90–100 %", "#800026"),
+        ("< 15 %", "#ffffb2"),
+        ("15-30 %", "#fecc5c"),
+        ("30-50 %", "#fd8d3c"),
+        ("50-70 %", "#f03b20"),
+        ("70-85 %", "#e31a1c"),
+        ("85-90 %", "#bd0026"),
+        ("90-100 %", "#800026"),
     ]
     state_items = [
         ("Empty", STATE_COLORS["empty"]), ("Unbagged", STATE_COLORS["unbagged"]),
@@ -1690,7 +1950,6 @@ def make_risk_legend():
         )
 
     body = [
-        html.Small([icon("palette", "me-1"), html.Strong(" Risk Scale")], className="d-block mb-1"),
         html.Small([icon("palette", "me-1"), html.Strong(" Risk Scale")], className="d-block mb-1"),
         *[_swatch(c, l) for l, c in risk_items],
         html.Hr(className="my-2"),
@@ -1851,14 +2110,6 @@ app.index_string = '''
             .rc-slider-handle {
                 border-color: #2e7d32 !important;
             }
-            /* Card styling consistency */
-            .card {
-                border-color: #dee2e6 !important;
-            }
-            .card-header {
-                background-color: #f8f9fa !important;
-                border-color: #dee2e6 !important;
-            }
         </style>
     </head>
     <body>
@@ -1909,8 +2160,7 @@ app.layout = dbc.Container(
             ),
             color="#2e7d32",
             dark=True,
-            className="mb-3 shadow",
-            style={"borderBottom": "3px solid #ff9800"},
+            className="mb-3 shadow main-navbar",
         ),
 
         # ── Hidden stores ──
@@ -1969,8 +2219,8 @@ app.layout = dbc.Container(
                             html.Div([
                                 html.I(className="bi bi-shield-check me-2 text-success"),
                                 html.Span([
-                                    html.Strong("Bagged"), " and ", html.Strong("Dead"),
-                                    " trees are completely immune to pest spread."
+                                    html.Strong("Bagged"), " trees have reduced infection risk; ",
+                                    html.Strong("Dead"), " trees are immune to pest spread."
                                 ], className="small"),
                             ], className="d-flex align-items-center mt-2"),
                         ], className="py-2 px-3"),
@@ -2032,7 +2282,7 @@ app.layout = dbc.Container(
                                         ),
                                     ],
                                     md=4, lg=3,
-                                    className="pe-md-2",
+                                    className="pe-md-2 sidebar-col",
                                 ),
                                 # Right content
                                 dbc.Col(
@@ -2040,8 +2290,10 @@ app.layout = dbc.Container(
                                         make_operations_dashboard_tab(),
                                     ],
                                     md=8, lg=9,
+                                    className="content-col",
                                 ),
                             ],
+                            className="dashboard-grid g-3",
                         ),
 
         # Footer
@@ -2060,7 +2312,7 @@ app.layout = dbc.Container(
         ),
     ],
     fluid=True,
-    className="px-3",
+    className="px-3 app-shell",
 )
 
 
@@ -2180,7 +2432,7 @@ def update_alerts(_):
         sev = a.get("severity", "medium")
         status = a.get("status", "active")
         risk_val = a.get("risk_value", 0)
-        cells = a.get("affected_cells", [])
+        affected_trees = a.get("affected_cells", [])
         items.append(
             dbc.ListGroupItem(
                 [
@@ -2198,7 +2450,7 @@ def update_alerts(_):
                     ),
                     html.Small(a.get("message", ""), className="text-muted d-block mt-1"),
                     html.Small(
-                        [icon("grid-3x3", "me-1"), f"{len(cells)} cells affected"],
+                        [icon("tree-fill", "me-1"), f"{len(affected_trees)} trees affected"],
                         className="text-muted",
                     ),
                 ],
@@ -2318,7 +2570,6 @@ def auto_suggest_pest_type(stage, current_pest):
     [
         State("pest-type", "value"),
         State("sim-hours", "value"),
-        State("bagged-ids", "value"),
         State("orchard-stage", "value"),
         State("days-flowering", "value"),
         State("neighbor-threat", "value"),
@@ -2326,13 +2577,10 @@ def auto_suggest_pest_type(stage, current_pest):
     ],
     prevent_initial_call=True,
 )
-def run_simulation(n, pest_type, hours_str, bagged_ids_str, orchard_stage, days_flowering, neighbor_threat, sim_data):
+def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neighbor_threat, sim_data):
     hours = int(hours_str)
-    bagged = [
-        normalized_id
-        for raw_id in (bagged_ids_str or "").split(",")
-        if (normalized_id := normalize_tree_id_input(raw_id))
-    ]
+    # Bagging is now applied via Tree Management status overrides.
+    bagged_tree_ids = []
     
     # Get tree overrides from sim_data (set via Tree Management modal)
     tree_overrides = None
@@ -2344,7 +2592,7 @@ def run_simulation(n, pest_type, hours_str, bagged_ids_str, orchard_stage, days_
         "pest_type": pest_type,
         "orchard_geojson": DEFAULT_ORCHARD,
         "hours": hours,
-        "bagged_tree_ids": bagged,
+        "bagged_tree_ids": bagged_tree_ids,
         "risk_threshold": 0.7,
         "orchard_stage": orchard_stage,
         "days_since_flowering": int(days_flowering) if days_flowering else 60,
@@ -2367,7 +2615,7 @@ def run_simulation(n, pest_type, hours_str, bagged_ids_str, orchard_stage, days_
     # Extract response fields
     risk_geojson = resp.get("risk_geojson")
     peak = resp.get("peak_risk", 0)
-    cells = resp.get("cells_at_risk", 0)
+    trees_at_risk = resp.get("cells_at_risk", 0)
     infested = resp.get("n_infested_final", 0)
     ts = resp.get("time_series", [])
 
@@ -2630,10 +2878,10 @@ def update_decision_support_summary(sim_data):
         metrics = compute_decision_metrics(risk_geojson)
         formatted = format_metrics_summary(metrics)
         
-        # Zone percentages with cell counts
-        zone1_text = f"{formatted['safe_percentage']} ({formatted['safe_cells']} cells)"
-        zone2_text = f"{formatted['monitor_percentage']} ({formatted['monitor_cells']} cells)"
-        zone3_text = f"{formatted['spray_percentage']} ({formatted['spray_cells']} cells)"
+        # Zone percentages with tree counts
+        zone1_text = f"{formatted['safe_percentage']} ({formatted['safe_cells']} trees)"
+        zone2_text = f"{formatted['monitor_percentage']} ({formatted['monitor_cells']} trees)"
+        zone3_text = f"{formatted['spray_percentage']} ({formatted['spray_cells']} trees)"
         
         # Generate summary message based on risk levels
         if metrics.spray_percentage >= 0.5:
@@ -3332,8 +3580,8 @@ def update_monitoring_tab(_, sim_data):
 
         # Count trees & infested from final GeoJSON
         total_trees = len(features)
-        infested_cells = sum(1 for f in features if f.get("properties", {}).get("state") == "infested")
-        n_infested = sim_data.get("n_infested_final", infested_cells)
+        infested_trees_from_geojson = sum(1 for f in features if f.get("properties", {}).get("state") == "infested")
+        n_infested = sim_data.get("n_infested_final", infested_trees_from_geojson)
         rate = n_infested / max(total_trees, 1)
 
         # 1) Infestation Rate KPI
@@ -3343,7 +3591,7 @@ def update_monitoring_tab(_, sim_data):
             color="danger" if rate > 0.5 else "warning" if rate > 0.2 else "success",
             style={"height": "6px"}, className="w-100",
         )
-        rate_content = html.Div([rate_bar, html.Small(f"{n_infested} / {total_trees} cells", className="text-muted")])
+        rate_content = html.Div([rate_bar, html.Small(f"{n_infested} / {total_trees} trees", className="text-muted")])
 
         # 2) Pest Risk Index KPI (from peak_risk)
         peak = sim_data.get("peak_risk", 0)
@@ -3381,38 +3629,27 @@ def update_monitoring_tab(_, sim_data):
         # 4) Total Trees
         total_trees_text = str(total_trees)
 
-        # 5) Pest Population Trend (from time_series)
-        pest_label = meta.get("pest_type", "cecid")
-        pest_name = "Cecid Fly" if pest_label == "cecid" else "Fruit Fly"
+        # 5) Estimated Loss at Risk (scenario-based planning estimate)
         if ts:
-            trend_rows = [{"hour": s.get("timestep", i), "pest_name": pest_name, "count": s.get("n_infested", 0)} for i, s in enumerate(ts)]
-            df_trend = pd.DataFrame(trend_rows)
-            fig_trend = px.line(df_trend, x="hour", y="count", color="pest_name", markers=True,
-                                color_discrete_map={"Cecid Fly": "#ef4444", "Fruit Fly": "#f59e0b"})
-            fig_trend.update_layout(
-                margin=dict(l=20, r=20, t=10, b=30), height=240,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(title="Elapsed Hours", gridcolor="#eee"),
-                yaxis=dict(title="Infested Cells", gridcolor="#eee"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            )
+            loss_rows = []
+            for i, s in enumerate(ts):
+                loss_rows.append({
+                    "x": s.get("timestep", i),
+                    "infested_trees": s.get("n_infested", 0),
+                })
+            fig_trend = _build_loss_at_risk_chart(loss_rows, x_title="Elapsed Hours")
+            if not fig_trend.data:
+                fig_trend = EMPTY_FIG
         else:
             fig_trend = EMPTY_FIG
 
         # 6) Phenology Distribution
         stage = meta.get("orchard_stage", "mature")
-        stage_colors = {"dormant": "#9e9e9e", "flowering": "#e91e63", "fruitlet": "#4caf50", "mature": "#ff9800"}
         all_stages = ["dormant", "flowering", "fruitlet", "mature"]
         pheno_data = [{"stage": s, "count": (total_trees if s == stage else 0)} for s in all_stages]
-        df_pheno = pd.DataFrame(pheno_data)
-        fig_pheno = px.pie(df_pheno, values="count", names="stage", color="stage",
-                           color_discrete_map=stage_colors, hole=0.4)
-        fig_pheno.update_layout(
-            margin=dict(l=10, r=10, t=10, b=10), height=240,
-            paper_bgcolor="rgba(0,0,0,0)",
-            legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
-        )
-        fig_pheno.update_traces(textinfo="percent+label", textposition="inside")
+        fig_pheno = _build_phenology_figure(pheno_data)
+        if not fig_pheno.data:
+            fig_pheno = EMPTY_FIG
 
         # 7) Infestation Spread (from time_series)
         if ts:
@@ -3430,7 +3667,7 @@ def update_monitoring_tab(_, sim_data):
                 margin=dict(l=20, r=20, t=10, b=30), height=240,
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 xaxis=dict(title="Elapsed Hours", gridcolor="#eee"),
-                yaxis=dict(title="Infested Cells", gridcolor="#eee"),
+                yaxis=dict(title="Infested Trees", gridcolor="#eee"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 barmode="overlay",
             )
@@ -3527,7 +3764,7 @@ def update_monitoring_tab(_, sim_data):
 
         # Infested Trees KPI
         infested_trees_text = str(n_infested)
-        infested_trees_detail = html.Small(f"{n_infested} / {total_trees} cells ({rate:.1%})", className="text-muted")
+        infested_trees_detail = html.Small(f"{n_infested} / {total_trees} trees ({rate:.1%})", className="text-muted")
 
         now = dt.datetime.now().strftime("%H:%M:%S")
         return (
@@ -3586,28 +3823,33 @@ def update_monitoring_tab(_, sim_data):
 
     total_trees_text = str(total_trees)
 
-    # Trend chart
-    trend_data = data.get("pest_trend", [])
-    if trend_data:
-        df_trend = pd.DataFrame(trend_data)
-        fig_trend = px.line(df_trend, x="date", y="count", color="pest_name", markers=True,
-                            color_discrete_map={"Cecid Fly": "#ef4444", "Fruit Fly": "#f59e0b"})
-        fig_trend.update_layout(margin=dict(l=20, r=20, t=10, b=30), height=240,
-                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                xaxis=dict(title="Date", gridcolor="#eee"), yaxis=dict(title="Count", gridcolor="#eee"),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    # Estimated Loss at Risk (scenario-based planning estimate)
+    spread_for_loss = data.get("infestation_spread", [])
+    if spread_for_loss:
+        loss_rows = [
+            {
+                "x": row.get("date"),
+                "infested_trees": row.get("cumulative", 0),
+            }
+            for row in spread_for_loss
+        ]
+        fig_trend = _build_loss_at_risk_chart(loss_rows, x_title="Date")
+        if not fig_trend.data:
+            fig_trend = EMPTY_FIG
+    elif inf_trees:
+        fig_trend = _build_loss_at_risk_chart(
+            [{"x": "Current", "infested_trees": inf_trees}],
+            x_title="Date",
+        )
     else:
         fig_trend = EMPTY_FIG
 
     # Phenology
     pheno = data.get("phenology", [])
     if pheno:
-        df_pheno = pd.DataFrame(pheno)
-        fig_pheno = px.pie(df_pheno, values="count", names="stage", color="stage",
-                           color_discrete_map={"dormant": "#9e9e9e", "flowering": "#e91e63", "fruitlet": "#4caf50", "mature": "#ff9800"}, hole=0.4)
-        fig_pheno.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=240, paper_bgcolor="rgba(0,0,0,0)",
-                                legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5))
-        fig_pheno.update_traces(textinfo="percent+label", textposition="inside")
+        fig_pheno = _build_phenology_figure(pheno)
+        if not fig_pheno.data:
+            fig_pheno = EMPTY_FIG
     else:
         fig_pheno = EMPTY_FIG
 

@@ -56,10 +56,10 @@ def update_decision_support_summary(sim_data):
         metrics = compute_decision_metrics(risk_geojson)
         formatted = format_metrics_summary(metrics)
         
-        # Zone percentages with cell counts
-        zone1_text = f"{formatted['safe_percentage']} ({formatted['safe_cells']} cells)"
-        zone2_text = f"{formatted['monitor_percentage']} ({formatted['monitor_cells']} cells)"
-        zone3_text = f"{formatted['spray_percentage']} ({formatted['spray_cells']} cells)"
+        # Zone percentages with tree counts
+        zone1_text = f"{formatted['safe_percentage']} ({formatted['safe_cells']} trees)"
+        zone2_text = f"{formatted['monitor_percentage']} ({formatted['monitor_cells']} trees)"
+        zone3_text = f"{formatted['spray_percentage']} ({formatted['spray_cells']} trees)"
         
         # Generate summary message based on risk levels
         if metrics.spray_percentage >= 0.5:

@@ -111,7 +111,7 @@ class SimulationRequest(BaseModel):
         default=None,
         description="Dict mapping tree_id (str) -> status (str) for manual status overrides. "
                     "Valid statuses: healthy, infected, bagged, dead, history_infected, suspect. "
-                    "Trees marked as 'dead' or 'bagged' are immune to pest spread."
+                    "Trees marked as 'bagged' have reduced infection risk, while 'dead' trees are immune to pest spread."
     )
     
     class Config:

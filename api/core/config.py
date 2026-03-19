@@ -4,8 +4,8 @@ MangoPoint API — Configuration
 Environment-based configuration using Pydantic settings.
 """
 
-from functools import lru_cache
 import json
+from functools import lru_cache
 from typing import Any, Optional
 
 from pydantic import field_validator
@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5433/mangopoint"
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
+
+    # Authentication
+    AUTH_SECRET_KEY: Optional[str] = None
+    AUTH_ALGORITHM: str = "HS256"
+    AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
+    DEFAULT_ADMIN_ENABLED: bool = True
+    DEFAULT_ADMIN_FULL_NAME: str = "MangoPoint Administrator"
+    DEFAULT_ADMIN_USERNAME: str = "admin"
+    DEFAULT_ADMIN_EMAIL: str = "admin@mangopoint.local"
+    DEFAULT_ADMIN_PASSWORD: str = "change-this-admin-password"
+    DEFAULT_ADMIN_ROLE: str = "admin"
     
     # Weather API (Open-Meteo — free, no API key required)
     WEATHER_CACHE_TTL_SECONDS: int = 600  # 10 minutes
@@ -77,6 +88,22 @@ class Settings(BaseSettings):
             if normalized in {"1", "true", "yes", "on", "debug", "dev", "development"}:
                 return True
             if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+                return False
+        return value
+
+    @field_validator("DEFAULT_ADMIN_ENABLED", mode="before")
+    @classmethod
+    def parse_default_admin_enabled(cls, value: Any) -> Any:
+        """Accept environment-style booleans for default admin seeding."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
                 return False
         return value
 

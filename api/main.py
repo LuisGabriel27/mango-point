@@ -17,7 +17,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,8 +26,10 @@ from sqlalchemy.exc import SQLAlchemyError
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.core.config import settings
-from api.core.database import DATABASE_UNAVAILABLE_DETAIL, init_db, close_db
-from api.routes import simulation, weather, observations, evaluation, alerts, validation, monitoring
+from api.core.database import DATABASE_UNAVAILABLE_DETAIL, async_session_maker, close_db, init_db
+from api.core.security import AuthConfigurationError, get_current_active_user
+from api.routes import auth, alerts, evaluation, monitoring, observations, simulation, validation, weather
+from api.services.auth_service import auth_service
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +49,16 @@ async def lifespan(app: FastAPI):
         import db.models  # noqa: F401  — register all ORM models with Base
         await init_db()
         logger.info("Database initialized")
+        try:
+            async with async_session_maker() as session:
+                admin_status, admin_user = await auth_service.ensure_default_admin(session)
+                await session.commit()
+            if admin_user is not None and admin_status in {"created", "updated"}:
+                logger.info("Default admin account %s for '%s'", admin_status, admin_user.username)
+        except AuthConfigurationError as exc:
+            logger.warning("Default admin provisioning skipped: %s", exc)
+        except Exception as exc:
+            logger.warning("Default admin provisioning failed: %s", exc)
     except Exception as e:
         logger.warning(f"Database initialization skipped (may not be configured): {e}")
     
@@ -118,13 +130,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Include routers
-app.include_router(simulation.router)
-app.include_router(weather.router)
-app.include_router(observations.router)
-app.include_router(evaluation.router)
-app.include_router(alerts.router)
-app.include_router(validation.router)
-app.include_router(monitoring.router)
+app.include_router(auth.router)
+
+# Public routes remain limited to auth, health, root, and the generated docs.
+protected_router_dependencies = [Depends(get_current_active_user)]
+app.include_router(simulation.router, dependencies=protected_router_dependencies)
+app.include_router(weather.router, dependencies=protected_router_dependencies)
+app.include_router(observations.router, dependencies=protected_router_dependencies)
+app.include_router(evaluation.router, dependencies=protected_router_dependencies)
+app.include_router(alerts.router, dependencies=protected_router_dependencies)
+app.include_router(validation.router, dependencies=protected_router_dependencies)
+app.include_router(monitoring.router, dependencies=protected_router_dependencies)
 
 
 # Health check endpoint
@@ -164,6 +180,7 @@ async def root():
         "docs": "/docs",
         "health": "/health",
         "endpoints": {
+            "auth": "/auth/login",
             "simulation": "/simulation/run-simulation",
             "weather": "/weather/live",
             "observations": "/observations/submit-observation",

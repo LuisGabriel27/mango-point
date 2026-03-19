@@ -100,6 +100,7 @@ $expectedTables = @(
     "simulation_run",
     "spatial_ref_sys",
     "tree",
+    "user_account",
     "weather_cache"
 )
 
@@ -133,6 +134,7 @@ if ($missing.Count -eq 0) {
     Write-Host "========================================" -ForegroundColor Green
     Write-Host "ALL CHECKS PASSED - Setup complete" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
+    Write-Host "Next: run 'python -m scripts.init_db' to provision the default admin account." -ForegroundColor Cyan
 } else {
     Write-Host "========================================" -ForegroundColor Red
     Write-Host "SETUP INCOMPLETE - $($missing.Count) issue(s) found" -ForegroundColor Red

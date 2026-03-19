@@ -12,6 +12,7 @@ Make sure the FastAPI backend is already running on http://localhost:8000
 
 import datetime as dt
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -59,7 +60,29 @@ from core.config import (
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-API_BASE = "http://localhost:8000"
+def _read_env_setting(name: str, default: str) -> str:
+    """Read settings from process env first, then fall back to the project .env file."""
+    value = os.getenv(name)
+    if value:
+        return value
+
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, raw_value = stripped.split("=", 1)
+                if key.strip() == name:
+                    return raw_value.strip().strip('"').strip("'")
+        except OSError:
+            pass
+
+    return default
+
+
+API_BASE = _read_env_setting("MANGOPOINT_API_BASE", "http://localhost:8000").rstrip("/")
 DEFAULT_LAT = ORCHARD_LAT
 DEFAULT_LON = ORCHARD_LON
 MAP_STYLE = "white-bg"
@@ -117,6 +140,13 @@ VALIDATION_LEVEL_BADGES = {
     "Low": "success",
     "Medium": "warning",
     "High": "danger",
+}
+
+AUTH_STATE_DEFAULT = {
+    "checked": False,
+    "authenticated": False,
+    "message": None,
+    "message_color": "warning",
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1199,26 +1229,111 @@ def build_confusion_matrix_panel(confusion_matrix):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Helpers — API calls
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def api_get(path, params=None, timeout=60):
-    """GET from backend; returns parsed JSON or None."""
-    try:
-        r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as exc:
-        print(f"[API GET {path}] {exc}")
-        return None
+def default_auth_state():
+    """Return a fresh default auth state payload."""
+    return dict(AUTH_STATE_DEFAULT)
 
 
-def api_post(path, json_body=None, timeout=120):
-    """POST to backend; returns parsed JSON or None."""
-    try:
-        r = requests.post(f"{API_BASE}{path}", json=json_body, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as exc:
-        print(f"[API POST {path}] {exc}")
+def build_auth_state(checked=False, authenticated=False, message=None, message_color="warning"):
+    """Create a serializable auth state payload for Dash stores."""
+    return {
+        "checked": checked,
+        "authenticated": authenticated,
+        "message": message,
+        "message_color": message_color,
+    }
+
+
+def extract_access_token(auth_session):
+    """Safely read the bearer token from the session store."""
+    if not isinstance(auth_session, dict):
         return None
+    token = auth_session.get("access_token")
+    return token if isinstance(token, str) and token.strip() else None
+
+
+def is_authenticated_session(auth_session, auth_state):
+    """Return True when both the auth state and session token are valid."""
+    return bool(
+        isinstance(auth_state, dict)
+        and auth_state.get("authenticated")
+        and extract_access_token(auth_session)
+    )
+
+
+def api_request(method, path, *, token=None, params=None, json_body=None, timeout=60):
+    """Call the FastAPI backend and return a structured response."""
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        response = requests.request(
+            method=method.upper(),
+            url=f"{API_BASE}{path}",
+            params=params,
+            json=json_body,
+            headers=headers,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        print(f"[API {method.upper()} {path}] {exc}")
+        return {
+            "ok": False,
+            "status_code": None,
+            "data": None,
+            "error": f"Unable to reach the API at {API_BASE}.",
+        }
+
+    payload = None
+    if response.content:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+    if response.ok:
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "data": payload,
+            "error": None,
+        }
+
+    error_message = None
+    if isinstance(payload, dict):
+        error_message = payload.get("detail") or payload.get("message")
+    if not error_message:
+        error_message = f"Request failed with status {response.status_code}."
+
+    print(f"[API {method.upper()} {path}] {response.status_code}: {error_message}")
+    return {
+        "ok": False,
+        "status_code": response.status_code,
+        "data": payload,
+        "error": error_message,
+    }
+
+
+def api_get(path, *, token=None, params=None, timeout=60):
+    """Structured GET wrapper for the backend API."""
+    return api_request("GET", path, token=token, params=params, timeout=timeout)
+
+
+def api_post(path, json_body=None, *, token=None, timeout=120):
+    """Structured POST wrapper for the backend API."""
+    return api_request("POST", path, token=token, json_body=json_body, timeout=timeout)
+
+
+def auth_error_message(response, fallback_message):
+    """Map API failures to concise auth-aware dashboard messages."""
+    if not isinstance(response, dict):
+        return fallback_message
+    if response.get("status_code") == 404:
+        return "Authentication endpoint not found. Restart the FastAPI backend after installing the new auth dependencies."
+    if response.get("status_code") == 401:
+        return "Session expired. Sign in again."
+    return response.get("error") or fallback_message
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2422,6 +2537,7 @@ app = dash.Dash(
         "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css",
     ],
     title="MangoPoint Dashboard",
+    update_title=None, # type: ignore
     suppress_callback_exceptions=True,
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
 )
@@ -2481,15 +2597,34 @@ app.layout = dbc.Container(
                         [
                             dbc.Badge(
                                 [icon("exclamation-triangle-fill", "me-1"), html.Span(id="navbar-alert-text", children="0 alerts")],
-                                id="navbar-alert-badge", color="danger", pill=True, className="me-3",
+                                id="navbar-alert-badge", color="danger", pill=True, className="me-2 me-lg-3",
                             ),
-                            html.Small(id="navbar-time", className="text-white-50 d-none d-md-inline"),
+                            html.Small(id="navbar-time", className="text-white-50 d-none d-md-inline me-3"),
+                            html.Div(
+                                [
+                                    html.Div(
+                                        [
+                                            html.Div(id="navbar-user-name", className="auth-user-name"),
+                                            html.Small(id="navbar-user-role", className="auth-user-role"),
+                                        ],
+                                        className="auth-user-meta d-none d-lg-block",
+                                    ),
+                                    dbc.Button(
+                                        [icon("box-arrow-right", "me-1"), "Logout"],
+                                        id="logout-btn",
+                                        color="light",
+                                        size="sm",
+                                        className="logout-btn",
+                                    ),
+                                ],
+                                className="d-flex align-items-center gap-2",
+                            ),
                         ],
-                        className="d-flex align-items-center",
+                        className="d-flex align-items-center flex-wrap justify-content-end",
                     ),
                 ],
                 fluid=True,
-                className="d-flex justify-content-between",
+                className="d-flex justify-content-between align-items-center gap-3",
             ),
             color="#2e7d32",
             dark=True,
@@ -2651,6 +2786,317 @@ app.layout = dbc.Container(
     className="px-3 app-shell",
 )
 
+DASHBOARD_LAYOUT = app.layout
+
+
+def make_login_screen(auth_state=None):
+    """Render the login form shown before the dashboard shell."""
+    auth_state = auth_state if isinstance(auth_state, dict) else default_auth_state()
+    message = auth_state.get("message")
+    message_color = auth_state.get("message_color", "warning")
+
+    message_block = None
+    if message:
+        message_block = dbc.Alert(message, color=message_color, className="py-2 mb-3")
+
+    return dbc.Container(
+        [
+            html.Div(
+                [
+                    html.Div(className="login-orb login-orb-a"),
+                    html.Div(className="login-orb login-orb-b"),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                html.Div(
+                                    [
+                                        dbc.Badge("Secure Access", color="warning", className="mb-3 login-badge"),
+                                        html.H1("MangoPoint", className="login-hero-title"),
+                                        html.P(
+                                            "Sign in to unlock the existing simulation, monitoring, GIS, and validation tools.",
+                                            className="login-hero-copy",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Div([icon("shield-lock", "me-2 text-success"), html.Span("Protected FastAPI routes")], className="login-feature"),
+                                                html.Div([icon("map", "me-2 text-success"), html.Span("GIS and monitoring dashboards")], className="login-feature"),
+                                                html.Div([icon("cpu", "me-2 text-success"), html.Span("Simulation and validation workflows")], className="login-feature"),
+                                            ],
+                                            className="login-feature-list",
+                                        ),
+                                    ],
+                                    className="login-hero-panel",
+                                ),
+                                lg=6,
+                                className="mb-4 mb-lg-0",
+                            ),
+                            dbc.Col(
+                                dbc.Card(
+                                    dbc.CardBody(
+                                        [
+                                            html.Div("Dashboard Login", className="login-card-kicker"),
+                                            html.H2("Welcome back", className="login-card-title"),
+                                            html.P(
+                                                "Use your MangoPoint username or email and password.",
+                                                className="text-muted mb-4",
+                                            ),
+                                            message_block,
+                                            dbc.Label("Username or Email", html_for="login-identifier", className="fw-semibold"),
+                                            dbc.Input(
+                                                id="login-identifier",
+                                                type="text",
+                                                placeholder="admin or admin@example.com",
+                                                className="mb-3",
+                                                autoComplete="username",
+                                            ),
+                                            dbc.Label("Password", html_for="login-password", className="fw-semibold"),
+                                            dbc.Input(
+                                                id="login-password",
+                                                type="password",
+                                                placeholder="Enter your password",
+                                                className="mb-3",
+                                                autoComplete="current-password",
+                                            ),
+                                            dcc.Loading(
+                                                html.Div(id="login-processing", className="login-processing"),
+                                                type="circle",
+                                                color="#2e7d32",
+                                            ),
+                                            dbc.Button(
+                                                [icon("box-arrow-in-right", "me-2"), "Login"],
+                                                id="login-btn",
+                                                color="success",
+                                                className="w-100 login-submit-btn",
+                                            ),
+                                            html.Small(
+                                                "Replace the default development admin password after first login.",
+                                                className="text-muted d-block mt-3",
+                                            ),
+                                        ],
+                                        className="p-4 p-lg-5",
+                                    ),
+                                    className="login-card border-0 shadow-lg",
+                                ),
+                                lg=5,
+                            ),
+                        ],
+                        className="align-items-center justify-content-center g-4 login-grid",
+                    ),
+                ],
+                className="login-shell",
+            )
+        ],
+        fluid=True,
+        className="px-3 auth-shell",
+    )
+
+
+def make_auth_loading_screen():
+    """Render a neutral loading view while restoring a stored session."""
+    return dbc.Container(
+        [
+            html.Div(
+                dbc.Card(
+                    dbc.CardBody(
+                        [
+                            dbc.Spinner(color="success", size="md", className="mb-3"),
+                            html.H2("Restoring session", className="login-card-title mb-2"),
+                            html.P(
+                                "Validating your MangoPoint access token.",
+                                className="text-muted mb-0",
+                            ),
+                        ],
+                        className="text-center p-5",
+                    ),
+                    className="login-card border-0 shadow-lg",
+                ),
+                className="login-shell d-flex align-items-center justify-content-center",
+            )
+        ],
+        fluid=True,
+        className="px-3 auth-shell",
+    )
+
+
+app.layout = html.Div(
+    [
+        dcc.Store(id="auth-session-store", storage_type="session"),
+        dcc.Store(id="auth-state-store", data=default_auth_state()),
+        dcc.Interval(id="auth-bootstrap", interval=100, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="auth-session-check-timer", interval=60_000, n_intervals=0),
+        html.Div(id="app-root"),
+    ]
+)
+
+
+@app.callback(
+    Output("app-root", "children"),
+    Input("auth-state-store", "data"),
+    State("auth-session-store", "data"),
+)
+def render_app_root(auth_state, auth_session):
+    """Swap between the login screen and the protected dashboard shell."""
+    token = extract_access_token(auth_session)
+    if token and not (auth_state or {}).get("checked"):
+        return make_auth_loading_screen()
+    if is_authenticated_session(auth_session, auth_state):
+        return DASHBOARD_LAYOUT
+    return make_login_screen(auth_state)
+
+
+@app.callback(
+    Output("auth-state-store", "data", allow_duplicate=True),
+    Output("auth-session-store", "data", allow_duplicate=True),
+    Input("auth-bootstrap", "n_intervals"),
+    Input("auth-session-check-timer", "n_intervals"),
+    State("auth-session-store", "data"),
+    State("auth-state-store", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def validate_auth_session(_bootstrap, _refresh, auth_session, auth_state):
+    """Validate the stored bearer token on load and on a short interval."""
+    token = extract_access_token(auth_session)
+    current_state = auth_state if isinstance(auth_state, dict) else default_auth_state()
+
+    if not token:
+        if current_state.get("checked"):
+            return no_update, no_update
+        return build_auth_state(checked=True, authenticated=False), no_update
+
+    response = api_get("/auth/me", token=token, timeout=15)
+    if response.get("ok"):
+        payload = response.get("data") or {}
+        session_user = payload.get("user") or (auth_session or {}).get("user")
+        updated_session = dict(auth_session or {})
+        updated_session["user"] = session_user
+        updated_state = build_auth_state(checked=True, authenticated=True)
+
+        next_session = no_update if updated_session == auth_session else updated_session
+        next_state = no_update if updated_state == current_state else updated_state
+        return next_state, next_session
+
+    if response.get("status_code") == 401:
+        return (
+            build_auth_state(
+                checked=True,
+                authenticated=False,
+                message="Your session expired. Sign in again.",
+                message_color="warning",
+            ),
+            None,
+        )
+
+    updated_state = build_auth_state(
+        checked=True,
+        authenticated=False,
+        message=response.get("error") or "Unable to validate the current session.",
+        message_color="danger",
+    )
+    if updated_state == current_state:
+        return no_update, no_update
+    return updated_state, no_update
+
+
+@app.callback(
+    Output("auth-session-store", "data", allow_duplicate=True),
+    Output("auth-state-store", "data", allow_duplicate=True),
+    Output("login-processing", "children"),
+    Input("login-btn", "n_clicks"),
+    State("login-identifier", "value"),
+    State("login-password", "value"),
+    prevent_initial_call=True,
+)
+def handle_login(n_clicks, username_or_email, password):
+    """Authenticate the user against the FastAPI auth endpoint."""
+    if not n_clicks:
+        return no_update, no_update, no_update
+
+    identifier = str(username_or_email or "").strip()
+    if not identifier:
+        return (
+            no_update,
+            build_auth_state(
+                checked=True,
+                authenticated=False,
+                message="Username or email is required.",
+                message_color="warning",
+            ),
+            "",
+        )
+
+    if not password:
+        return (
+            no_update,
+            build_auth_state(
+                checked=True,
+                authenticated=False,
+                message="Password is required.",
+                message_color="warning",
+            ),
+            "",
+        )
+
+    response = api_post(
+        "/auth/login",
+        json_body={"username_or_email": identifier, "password": password},
+        timeout=30,
+    )
+    if response.get("ok"):
+        payload = response.get("data") or {}
+        session_data = {
+            "access_token": payload.get("access_token"),
+            "token_type": payload.get("token_type", "bearer"),
+            "expires_at": payload.get("expires_at"),
+            "user": payload.get("user"),
+        }
+        return session_data, build_auth_state(checked=True, authenticated=True), f"login-{n_clicks}"
+
+    status_code = response.get("status_code")
+    return (
+        no_update,
+        build_auth_state(
+            checked=True,
+            authenticated=False,
+            message=response.get("error") or "Login failed. Check your credentials and API connection.",
+            message_color="warning" if status_code == 401 else "danger",
+        ),
+        "",
+    )
+
+
+@app.callback(
+    Output("auth-session-store", "data", allow_duplicate=True),
+    Output("auth-state-store", "data", allow_duplicate=True),
+    Input("logout-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def handle_logout(n_clicks):
+    """Clear the current browser session and return to the login screen."""
+    if not n_clicks:
+        return no_update, no_update
+    return None, build_auth_state(
+        checked=True,
+        authenticated=False,
+        message="You have been signed out.",
+        message_color="info",
+    )
+
+
+@app.callback(
+    Output("navbar-user-name", "children"),
+    Output("navbar-user-role", "children"),
+    Input("auth-session-store", "data"),
+)
+def update_navbar_user(auth_session):
+    """Show the current authenticated user's name and role in the navbar."""
+    user = auth_session.get("user") if isinstance(auth_session, dict) else {}
+    if not isinstance(user, dict):
+        return "Authenticated User", "Authenticated"
+
+    display_name = user.get("full_name") or user.get("username") or "Authenticated User"
+    display_role = str(user.get("role") or "authenticated").replace("_", " ").title()
+    return display_name, display_role
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Callbacks
@@ -2674,22 +3120,45 @@ def toggle_sidebar_panel(_n_clicks, is_open):
     )
 
 
-@app.callback(Output("navbar-time", "children"), Input("clock-timer", "n_intervals"))
-def update_clock(_):
-    return dt.datetime.now().strftime("%b %d, %Y  %H:%M:%S")
+app.clientside_callback(
+    """
+    function(_) {
+        return new Date().toLocaleString("en-US", {
+            month: "short",
+            day: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).replace(",", "");
+    }
+    """,
+    Output("navbar-time", "children"),
+    Input("clock-timer", "n_intervals"),
+)
 
 
 # ── 2) Weather polling — reads data["current"] (matches API response) ──
-@app.callback(Output("weather-content", "children"), Input("weather-timer", "n_intervals"))
-def update_weather(_):
-    data = api_get("/weather/live", params={"lat": DEFAULT_LAT, "lon": DEFAULT_LON})
-    if not data:
+@app.callback(
+    Output("weather-content", "children"),
+    Input("weather-timer", "n_intervals"),
+    State("auth-session-store", "data"),
+)
+def update_weather(_, auth_session):
+    response = api_get(
+        "/weather/live",
+        token=extract_access_token(auth_session),
+        params={"lat": DEFAULT_LAT, "lon": DEFAULT_LON},
+    )
+    if not response.get("ok"):
         return dbc.Alert(
             [icon("wifi-off", "me-2"), "Weather unavailable — is the API running?"],
             color="warning", className="mb-0 py-2",
         )
 
     # API returns { "current": { ... }, "cached": ..., "location": ... }
+    data = response.get("data") or {}
     w = data.get("current") or data
     temp = w.get("temperature_c", "—")
     hum = w.get("humidity", "—")
@@ -2757,10 +3226,11 @@ def update_weather(_):
         Output("active-alerts-store", "data"),
     ],
     Input("alert-timer", "n_intervals"),
+    State("auth-session-store", "data"),
 )
-def update_alerts(_):
-    data = api_get("/alerts", params={"limit": 50})
-    if not data:
+def update_alerts(_, auth_session):
+    response = api_get("/alerts", token=extract_access_token(auth_session), params={"limit": 50})
+    if not response.get("ok"):
         return (
             html.P([icon("check-circle", "me-1"), "No alerts available."], className="text-muted mb-0"),
             "0",
@@ -2768,6 +3238,7 @@ def update_alerts(_):
             [],
         )
 
+    data = response.get("data") or {}
     alerts = data.get("alerts", [])
     active_count = data.get("active_count", 0)
     badge_text = f"{active_count} alert{'s' if active_count != 1 else ''}"
@@ -2823,10 +3294,11 @@ def update_alerts(_):
         State("obs-severity", "value"),
         State("obs-observer", "value"),
         State("obs-notes", "value"),
+        State("auth-session-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def submit_observation(n, tree_id, pest, severity, observer, notes):
+def submit_observation(n, tree_id, pest, severity, observer, notes, auth_session):
     normalized_tree_id = normalize_tree_id_input(tree_id)
     if not normalized_tree_id:
         return dbc.Alert(
@@ -2846,8 +3318,12 @@ def submit_observation(n, tree_id, pest, severity, observer, notes):
         "notes": notes or "",
         "timestamp": dt.datetime.utcnow().isoformat(),
     }
-    resp = api_post("/observations/submit-observation", body)
-    if resp:
+    response = api_post(
+        "/observations/submit-observation",
+        json_body=body,
+        token=extract_access_token(auth_session),
+    )
+    if response.get("ok"):
         return dbc.Alert(
             [icon("check-circle", "me-2"), "Observation submitted successfully."],
             color="success", duration=4000, className="py-2 mb-0",
@@ -2927,10 +3403,11 @@ def auto_suggest_pest_type(stage, current_pest):
         State("days-flowering", "value"),
         State("neighbor-threat", "value"),
         State("sim-data-store", "data"),  # For tree status overrides
+        State("auth-session-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neighbor_threat, sim_data):
+def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neighbor_threat, sim_data, auth_session):
     hours = int(hours_str)
     # Bagging is now applied via Tree Management status overrides.
     bagged_tree_ids = []
@@ -2956,8 +3433,12 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
     if tree_overrides:
         body["tree_overrides"] = tree_overrides
 
-    resp = api_post("/simulation/run-simulation", body)
-    if not resp:
+    response = api_post(
+        "/simulation/run-simulation",
+        json_body=body,
+        token=extract_access_token(auth_session),
+    )
+    if not response.get("ok"):
         err = dbc.Alert(
             [icon("x-octagon", "me-2"), "Simulation failed — is the API server running?"],
             color="danger", className="py-2",
@@ -2965,6 +3446,7 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
         return (no_update, err, no_update, no_update, no_update, no_update,
                 no_update, no_update)
 
+    resp = response.get("data") or {}
     # Extract response fields
     risk_geojson = resp.get("risk_geojson")
     peak = resp.get("peak_risk", 0)
@@ -3333,16 +3815,22 @@ def step_buttons(prev_n, next_n, current, max_val):
     Output("eval-results", "children"),
     Input("eval-btn", "n_clicks"),
     State("eval-threshold", "value"),
+    State("auth-session-store", "data"),
     prevent_initial_call=True,
 )
-def run_evaluation(_, threshold):
-    data = api_get("/evaluation/evaluate", params={"risk_threshold": threshold or 0.5})
-    if not data:
+def run_evaluation(_, threshold, auth_session):
+    response = api_get(
+        "/evaluation/evaluate",
+        token=extract_access_token(auth_session),
+        params={"risk_threshold": threshold or 0.5},
+    )
+    if not response.get("ok"):
         return dbc.Alert(
             [icon("info-circle", "me-2"), "Evaluation unavailable — need observations + a simulation run."],
             color="warning", className="py-2 mb-0",
         )
 
+    data = response.get("data") or {}
     cm = data.get("confusion_matrix", {})
     metrics = [
         ("Precision", data.get("precision"), "bullseye"),
@@ -3396,13 +3884,17 @@ def run_evaluation(_, threshold):
         Output("validation-metrics-explanation-store", "data"),
     ],
     Input("validation-run-btn", "id"),
+    State("auth-session-store", "data"),
     prevent_initial_call=False,
 )
-def load_validation_reference_data(_):
+def load_validation_reference_data(_, auth_session):
     """Load validation metadata used by the presentation panel."""
+    token = extract_access_token(auth_session)
+    historical_response = api_get("/validation/historical-data", token=token, timeout=30)
+    metrics_response = api_get("/validation/metrics-explanation", token=token, timeout=30)
     return (
-        api_get("/validation/historical-data", timeout=30),
-        api_get("/validation/metrics-explanation", timeout=30),
+        historical_response.get("data"),
+        metrics_response.get("data"),
     )
 
 
@@ -3413,9 +3905,10 @@ def load_validation_reference_data(_):
         Input("validation-year-filter", "value"),
         Input("validation-max-cases", "value"),
     ],
+    State("auth-session-store", "data"),
     prevent_initial_call=False,
 )
-def load_validation_case_preview(pest_types, years, max_cases):
+def load_validation_case_preview(pest_types, years, max_cases, auth_session):
     """Preview eligible historical cases for the current validation filters."""
     selected_pests = ensure_list(pest_types)
     selected_years = sorted(int(year) for year in ensure_list(years))
@@ -3427,14 +3920,19 @@ def load_validation_case_preview(pest_types, years, max_cases):
     if selected_years:
         query_params["years"] = ",".join(str(year) for year in selected_years)
 
-    data = api_get("/validation/cases", params=query_params, timeout=60)
-    if data is None:
+    response = api_get(
+        "/validation/cases",
+        token=extract_access_token(auth_session),
+        params=query_params,
+        timeout=60,
+    )
+    if not response.get("ok"):
         return {
-            "error": "Unable to load filtered historical validation cases from the API.",
+            "error": auth_error_message(response, "Unable to load filtered historical validation cases from the API."),
             "total_cases": 0,
             "cases": [],
         }
-    return data
+    return response.get("data")
 
 
 @app.callback(
@@ -3449,10 +3947,11 @@ def load_validation_case_preview(pest_types, years, max_cases):
         State("validation-max-cases", "value"),
         State("validation-hours", "value"),
         State("validation-monte-carlo-runs", "value"),
+        State("auth-session-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, monte_carlo_runs):
+def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, monte_carlo_runs, auth_session):
     """Run historical validation and cache the latest successful response."""
     if not n_clicks:
         return no_update, no_update
@@ -3467,20 +3966,26 @@ def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, mon
         "monte_carlo_runs": max(10, min(int(monte_carlo_runs or 20), 100)),
     }
 
-    response = api_post("/validation/run", json_body=payload, timeout=600)
-    if not response:
+    response = api_post(
+        "/validation/run",
+        json_body=payload,
+        token=extract_access_token(auth_session),
+        timeout=600,
+    )
+    if not response.get("ok"):
         return (
             no_update,
             dbc.Alert(
                 [
                     icon("x-octagon", "me-2"),
-                    "Historical validation failed. The latest successful result remains cached.",
+                    auth_error_message(response, "Historical validation failed. The latest successful result remains cached."),
                 ],
                 color="danger",
                 className="py-2 mb-0",
             ),
         )
 
+    response = response.get("data") or {}
     response["request"] = {
         "max_cases": payload["max_cases"],
         "pest_types": selected_pests,
@@ -3895,9 +4400,10 @@ def render_validation_results(validation_data, explanation_data, cases_data):
     ],
     Input("monitoring-timer", "n_intervals"),
     Input("sim-data-store", "data"),
+    State("auth-session-store", "data"),
     prevent_initial_call=False,
 )
-def update_monitoring_tab(_, sim_data):
+def update_monitoring_tab(_, sim_data, auth_session):
     """
     Compute monitoring metrics.
     When simulation data (sim_data) is available, extract metrics directly
@@ -4132,9 +4638,9 @@ def update_monitoring_tab(_, sim_data):
     # =====================================================
     #  Path B — Fallback to API (database queries)
     # =====================================================
-    data = api_get("/monitoring/metrics")
+    response = api_get("/monitoring/metrics", token=extract_access_token(auth_session))
 
-    if not data:
+    if not response.get("ok"):
         now = dt.datetime.now().strftime("%H:%M:%S")
         return (
             "—", "", "—", "—", "secondary", "—", "",
@@ -4146,6 +4652,7 @@ def update_monitoring_tab(_, sim_data):
         )
 
     # ── Parse DB metrics ──
+    data = response.get("data") or {}
     ir = data.get("infestation_rate", {})
     rate = ir.get("rate", 0)
     inf_trees = ir.get("infested_trees", 0)

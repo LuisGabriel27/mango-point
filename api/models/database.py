@@ -20,7 +20,9 @@ from db.models import (
     PestType,
     AlertSeverity,
     AlertStatus,
+    UserRoleEnum,
     # Models
+    UserAccount,
     Orchard,
     Tree,
     Pest,
@@ -48,8 +50,10 @@ __all__ = [
     "PestType",
     "AlertSeverity",
     "AlertStatus",
+    "UserRoleEnum",
     "CellStateDB",
     # Models
+    "UserAccount",
     "Orchard",
     "Tree",
     "Pest",

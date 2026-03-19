@@ -23,7 +23,7 @@ import pandas as pd
 
 import dash
 from dash import html, dcc, callback_context, no_update, Patch
-from dash.dependencies import Input, Output, State
+from dash.dependencies import Input, Output, State, MATCH
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import plotly.express as px
@@ -1462,20 +1462,77 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
 # Layout — component builders
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _card(header_icon, header_text, body, card_cls="mb-3 shadow-sm panel-card"):
-    """Standard card wrapper with Bootstrap Icon header."""
+def _sidebar_panel_toggle_title(is_open):
+    return "Collapse panel" if is_open else "Expand panel"
+
+
+def _sidebar_panel_toggle_children(is_open):
+    label = _sidebar_panel_toggle_title(is_open)
+    return [icon("chevron-up" if is_open else "chevron-down"), html.Span(label, className="visually-hidden")]
+
+
+def _card(
+    header_icon,
+    header_text,
+    body,
+    card_cls="mb-3 shadow-sm panel-card",
+    *,
+    header_extra=None,
+    collapsible=False,
+    panel_id=None,
+    collapsed=False,
+    header_class_name="py-2",
+    card_style=None,
+):
+    """Standard card wrapper with optional collapsible body for sidebar panels."""
+    header_children = [icon(header_icon, "me-2"), html.Span(header_text, className="fw-semibold")]
+    if header_extra is not None:
+        if isinstance(header_extra, (list, tuple)):
+            header_children.extend(header_extra)
+        else:
+            header_children.append(header_extra)
+
+    body_component = dbc.CardBody(body, className="py-2 px-3")
+    header_controls = []
+
+    if collapsible:
+        if not panel_id:
+            raise ValueError("A panel_id is required when collapsible=True.")
+
+        is_open = not collapsed
+        body_component = dbc.Collapse(
+            body_component,
+            id={"type": "sidebar-panel-collapse", "panel": panel_id},
+            is_open=is_open,
+        )
+        header_controls.append(
+            dbc.Button(
+                _sidebar_panel_toggle_children(is_open),
+                id={"type": "sidebar-panel-toggle", "panel": panel_id},
+                color="link",
+                className="sidebar-panel-toggle",
+                title=_sidebar_panel_toggle_title(is_open),
+                n_clicks=0,
+            )
+        )
+        card_cls = f"{card_cls} sidebar-panel-card".strip()
+
     return dbc.Card(
         [
             dbc.CardHeader(
                 html.Div(
-                    [icon(header_icon, "me-2"), html.Span(header_text, className="fw-semibold")],
-                    className="d-flex align-items-center",
+                    [
+                        html.Div(header_children, className="d-flex align-items-center flex-wrap gap-2"),
+                        *header_controls,
+                    ],
+                    className="d-flex align-items-center justify-content-between gap-2 w-100",
                 ),
-                className="py-2",
+                className=header_class_name,
             ),
-            dbc.CardBody(body, className="py-2 px-3"),
+            body_component,
         ],
         className=card_cls,
+        style=card_style,
     )
 
 
@@ -1487,7 +1544,7 @@ def make_weather_card():
             className="text-muted mt-2 d-block",
         ),
     ]
-    return _card("cloud-sun", "Live Weather", body)
+    return _card("cloud-sun", "Live Weather", body, collapsible=True, panel_id="weather")
 
 
 def make_sim_controls():
@@ -1578,7 +1635,7 @@ def make_sim_controls():
         ),
         html.Div(id="sim-status", className="mt-2"),
     ]
-    return _card("cpu", "Simulation", body)
+    return _card("cpu", "Simulation", body, collapsible=True, panel_id="simulation")
 
 
 def make_playback_controls():
@@ -1598,7 +1655,7 @@ def make_playback_controls():
         html.Div(id="playback-info", className="mt-2 text-center small text-muted"),
         dcc.Interval(id="play-interval", interval=1000, disabled=True),
     ]
-    return _card("film", "Playback", body)
+    return _card("film", "Playback", body, collapsible=True, panel_id="playback")
 
 
 def make_observation_form():
@@ -1631,14 +1688,6 @@ def make_observation_form():
 
 
 def make_alert_panel():
-    header = html.Div(
-        [
-            icon("exclamation-triangle", "me-2"),
-            html.Span("Alerts", className="fw-semibold"),
-            dbc.Badge(id="alert-count-badge", children="0", color="danger", pill=True, className="ms-2"),
-        ],
-        className="d-flex align-items-center",
-    )
     body = [
         dbc.Spinner(html.Div(id="alert-list", children="Loading…"), size="sm"),
         html.Small(
@@ -1646,9 +1695,13 @@ def make_alert_panel():
             className="text-muted mt-2 d-block",
         ),
     ]
-    return dbc.Card(
-        [dbc.CardHeader(header, className="py-2"), dbc.CardBody(body, className="py-2 px-3")],
-        className="mb-3 shadow-sm",
+    return _card(
+        "exclamation-triangle",
+        "Alerts",
+        body,
+        header_extra=dbc.Badge(id="alert-count-badge", children="0", color="danger", pill=True),
+        collapsible=True,
+        panel_id="alerts",
     )
 
 
@@ -1826,7 +1879,290 @@ def make_validation_interpretation_panel():
     return _card("journal-check", "Validation Interpretation", body)
 
 
-def make_operations_dashboard_tab():
+def _monitoring_kpi_card(icon_name, icon_class_name, title, value_id, detail_children):
+    return dbc.Col(
+        dbc.Card(
+            dbc.CardBody(
+                html.Div(
+                    [
+                        html.Div(
+                            icon(icon_name, f"{icon_class_name} fs-4"),
+                            className="monitoring-kpi-icon",
+                        ),
+                        html.Div(
+                            [
+                                html.P(title, className="monitoring-kpi-label text-muted mb-1"),
+                                html.H3("\u2014", id=value_id, className="monitoring-kpi-value mb-1 fw-bold"),
+                                html.Div(detail_children, className="monitoring-kpi-detail"),
+                            ],
+                            className="flex-grow-1",
+                        ),
+                    ],
+                    className="d-flex align-items-start gap-3",
+                ),
+                className="p-3",
+            ),
+            className="shadow-sm border-0 h-100 monitoring-kpi-card",
+        ),
+        xs=12,
+        md=4,
+    )
+
+
+def make_monitoring_overview_module():
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    _monitoring_kpi_card(
+                        "virus",
+                        "text-danger",
+                        "Infestation rate",
+                        "mon-infestation-rate",
+                        html.Div(id="mon-infestation-bar", className="mt-2"),
+                    ),
+                    _monitoring_kpi_card(
+                        "speedometer2",
+                        "text-warning",
+                        "Pest risk level",
+                        "mon-risk-score",
+                        dbc.Badge("\u2014", id="mon-risk-level", pill=True, className="mt-2 monitoring-risk-badge"),
+                    ),
+                    _monitoring_kpi_card(
+                        "tree-fill",
+                        "text-danger",
+                        "Infested trees",
+                        "mon-infested-trees",
+                        html.Div(id="mon-infested-trees-detail", className="mt-2"),
+                    ),
+                ],
+                className="g-3",
+            ),
+        ],
+        className="monitoring-module-panel",
+    )
+
+
+def make_monitoring_impact_module():
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            icon("cash-coin", "me-2"),
+                                            html.Span("Estimated Loss at Risk (Scenario)", className="fw-semibold"),
+                                        ],
+                                        className="d-flex align-items-center",
+                                    ),
+                                    className="py-2",
+                                ),
+                                dbc.CardBody(
+                                    [
+                                        html.Small(_loss_assumptions_text(), className="text-muted d-block px-2 pt-1"),
+                                        dcc.Graph(
+                                            id="mon-pest-trend-chart",
+                                            config={"displayModeBar": False},
+                                            style={"height": "248px"},
+                                        ),
+                                    ],
+                                    className="py-1",
+                                ),
+                            ],
+                            className="shadow-sm border-0 h-100 monitoring-module-chart-card",
+                        ),
+                        lg=8,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            icon("flower1", "me-2"),
+                                            html.Span("Phenology Distribution", className="fw-semibold"),
+                                        ],
+                                        className="d-flex align-items-center",
+                                    ),
+                                    className="py-2",
+                                ),
+                                dbc.CardBody(
+                                    dcc.Graph(
+                                        id="mon-phenology-chart",
+                                        config={"displayModeBar": False},
+                                        style={"height": "260px"},
+                                    ),
+                                    className="py-1",
+                                ),
+                            ],
+                            className="shadow-sm border-0 h-100 monitoring-module-chart-card",
+                        ),
+                        lg=4,
+                    ),
+                ],
+                className="g-3",
+            ),
+        ],
+        className="monitoring-module-panel",
+    )
+
+
+def make_monitoring_surveillance_module():
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            icon("graph-up-arrow", "me-2"),
+                                            html.Span("Infestation Spread Over Time", className="fw-semibold"),
+                                        ],
+                                        className="d-flex align-items-center",
+                                    ),
+                                    className="py-2",
+                                ),
+                                dbc.CardBody(
+                                    dcc.Graph(
+                                        id="mon-spread-chart",
+                                        config={"displayModeBar": False},
+                                        style={"height": "260px"},
+                                    ),
+                                    className="py-1",
+                                ),
+                            ],
+                            className="shadow-sm border-0 h-100 monitoring-module-chart-card",
+                        ),
+                        lg=7,
+                    ),
+                    dbc.Col(
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            icon("cloud-sun", "me-2"),
+                                            html.Span("Environmental Monitoring", className="fw-semibold"),
+                                        ],
+                                        className="d-flex align-items-center",
+                                    ),
+                                    className="py-2",
+                                ),
+                                dbc.CardBody(
+                                    [
+                                        html.Div(id="mon-env-current", className="mb-2"),
+                                        dcc.Graph(
+                                            id="mon-env-trend-chart",
+                                            config={"displayModeBar": False},
+                                            style={"height": "180px"},
+                                        ),
+                                    ],
+                                    className="py-1",
+                                ),
+                            ],
+                            className="shadow-sm border-0 h-100 monitoring-module-chart-card",
+                        ),
+                        lg=5,
+                    ),
+                ],
+                className="g-3",
+            ),
+        ],
+        className="monitoring-module-panel",
+    )
+
+
+def make_operations_map_page():
+    return html.Div(
+        [
+            html.Div(
+                [
+                    dbc.Card(
+                        dcc.Loading(
+                            dcc.Graph(
+                                id="risk-map",
+                                figure=build_risk_map(),
+                                config={"scrollZoom": True, "displayModeBar": False, "displaylogo": False, "doubleClick": False},
+                                style={"borderRadius": "6px"},
+                            ),
+                            type="circle",
+                            color="#4caf50",
+                        ),
+                        className="shadow-sm border-0 map-card",
+                    ),
+                    html.Img(
+                        src=COMPASS_SVG_DATA_URI,
+                        alt="Compass - True North",
+                        className="map-compass",
+                    ),
+                ],
+                style={"position": "relative"},
+                className="mb-0 map-stage operations-map-stage",
+            ),
+        ],
+        className="monitoring-module-panel operations-map-panel",
+    )
+
+
+def make_operations_pages_panel():
+    return dbc.Card(
+        [
+            dbc.CardHeader(
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                icon("layout-sidebar-inset", "me-2"),
+                                html.Span("Operations Pages", className="fw-semibold"),
+                            ],
+                            className="d-flex align-items-center",
+                        ),
+                    ],
+                    className="d-flex flex-wrap gap-2 justify-content-between align-items-center",
+                ),
+                className="py-3",
+            ),
+            dbc.CardBody(
+                [
+                    dbc.Tabs(
+                        [
+                            dbc.Tab(make_operations_map_page(), label="Live Map", tab_id="operations-live-map"),
+                            dbc.Tab(make_monitoring_overview_module(), label="Overview", tab_id="monitoring-overview"),
+                            dbc.Tab(make_monitoring_impact_module(), label="Crop Impact", tab_id="monitoring-impact"),
+                            dbc.Tab(make_monitoring_surveillance_module(), label="Spread and Weather", tab_id="monitoring-surveillance"),
+                        ],
+                        id="operations-page-tabs",
+                        active_tab="operations-live-map",
+                        className="monitoring-module-tabs operations-page-tabs",
+                    ),
+                ],
+                className="pt-3",
+            ),
+            dbc.CardFooter(
+                html.Small(
+                    [
+                        icon("arrow-repeat", "me-1"),
+                        "Auto-refreshes every 30 seconds | ",
+                        html.Span(id="mon-last-updated", children="Never"),
+                    ],
+                    className="text-muted",
+                ),
+                className="border-0 pt-0 pb-3 bg-transparent",
+            ),
+        ],
+        className="shadow-sm border-0 monitoring-modules-card",
+    )
+
+
+# Retained only as a reference for the pre-module dashboard layout.
+def _legacy_make_operations_dashboard_tab_old():
     """Primary operational dashboard content."""
     return html.Div(
         [
@@ -1921,6 +2257,11 @@ def make_operations_dashboard_tab():
     )
 
 
+def make_operations_dashboard_tab():
+    """Primary operational dashboard content."""
+    return make_operations_pages_panel()
+
+
 def make_risk_legend():
     risk_items = [
         ("< 15 %", "#ffffb2"),
@@ -1956,7 +2297,7 @@ def make_risk_legend():
         html.Small([icon("tree", "me-1"), html.Strong(" Tree States")], className="d-block mb-1"),
         *[_swatch(c, l, "50%") for l, c in state_items],
     ]
-    return _card("info-circle", "Legend", body)
+    return _card("info-circle", "Legend", body, collapsible=True, panel_id="legend")
 
 
 def _stat_card(title, value_id, ico, color="light"):
@@ -2056,23 +2397,15 @@ def make_decision_support_panel():
         ], className="text-muted d-block mt-2"),
     ]
     
-    return dbc.Card(
-        [
-            dbc.CardHeader(
-                html.Div(
-                    [
-                        icon("clipboard2-pulse", "me-2"),
-                        html.Span("Decision Support Summary", className="fw-semibold"),
-                        dbc.Badge("NEW", color="info", pill=True, className="ms-2"),
-                    ],
-                    className="d-flex align-items-center",
-                ),
-                className="py-2 bg-light",
-            ),
-            dbc.CardBody(body, className="py-2 px-3"),
-        ],
-        className="mb-3 shadow-sm border-success",
-        style={"borderLeftWidth": "4px"},
+    return _card(
+        "clipboard2-pulse",
+        "Decision Support Summary",
+        body,
+        card_cls="mb-3 shadow-sm panel-card border-success decision-support-card",
+        header_extra=dbc.Badge("NEW", color="info", pill=True),
+        collapsible=True,
+        panel_id="decision-support",
+        header_class_name="py-2 bg-light",
     )
 
 
@@ -2263,24 +2596,27 @@ app.layout = dbc.Container(
                             [
                                 # Left sidebar
                                 dbc.Col(
-                                    [
-                                        make_weather_card(),
-                                        make_sim_controls(),
-                                        make_playback_controls(),
-                                        make_alert_panel(),
-                                        make_decision_support_panel(),
-                                        make_risk_legend(),
-                                        # Keep auxiliary panels mounted because callbacks still target these IDs.
-                                        html.Div(
-                                            [
-                                                make_observation_form(),
-                                                make_evaluation_panel(),
-                                                make_historical_validation_panel(),
-                                                make_validation_interpretation_panel(),
-                                            ],
-                                            style={"display": "none"},
-                                        ),
-                                    ],
+                                    html.Div(
+                                        [
+                                            make_weather_card(),
+                                            make_sim_controls(),
+                                            make_playback_controls(),
+                                            make_alert_panel(),
+                                            make_decision_support_panel(),
+                                            make_risk_legend(),
+                                            # Keep auxiliary panels mounted because callbacks still target these IDs.
+                                            html.Div(
+                                                [
+                                                    make_observation_form(),
+                                                    make_evaluation_panel(),
+                                                    make_historical_validation_panel(),
+                                                    make_validation_interpretation_panel(),
+                                                ],
+                                                style={"display": "none"},
+                                            ),
+                                        ],
+                                        className="sidebar-scroll-frame",
+                                    ),
                                     md=4, lg=3,
                                     className="pe-md-2 sidebar-col",
                                 ),
@@ -2321,6 +2657,23 @@ app.layout = dbc.Container(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ── 1) Live clock ──
+@app.callback(
+    Output({"type": "sidebar-panel-collapse", "panel": MATCH}, "is_open"),
+    Output({"type": "sidebar-panel-toggle", "panel": MATCH}, "children"),
+    Output({"type": "sidebar-panel-toggle", "panel": MATCH}, "title"),
+    Input({"type": "sidebar-panel-toggle", "panel": MATCH}, "n_clicks"),
+    State({"type": "sidebar-panel-collapse", "panel": MATCH}, "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_sidebar_panel(_n_clicks, is_open):
+    next_state = not is_open
+    return (
+        next_state,
+        _sidebar_panel_toggle_children(next_state),
+        _sidebar_panel_toggle_title(next_state),
+    )
+
+
 @app.callback(Output("navbar-time", "children"), Input("clock-timer", "n_intervals"))
 def update_clock(_):
     return dt.datetime.now().strftime("%b %d, %Y  %H:%M:%S")

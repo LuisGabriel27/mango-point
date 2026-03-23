@@ -84,10 +84,48 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+DO $$ BEGIN
+    CREATE TYPE user_role_enum AS ENUM (
+        'admin', 'analyst', 'operator'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION set_updated_at_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 
 -- ────────────────────────────────────────────
 --  1. orchard
 -- ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_account (
+    user_id        SERIAL          PRIMARY KEY,
+    full_name      VARCHAR(200)    NOT NULL,
+    username       VARCHAR(100)    NOT NULL,
+    email          VARCHAR(255)    NOT NULL,
+    password_hash  VARCHAR(255)    NOT NULL,
+    role           user_role_enum  NOT NULL DEFAULT 'admin',
+    is_active      BOOLEAN         NOT NULL DEFAULT TRUE,
+    last_login_at  TIMESTAMP,
+    created_at     TIMESTAMP       NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMP       NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_account_username ON user_account (username);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_account_email    ON user_account (email);
+
+DROP TRIGGER IF EXISTS trg_user_account_set_updated_at ON user_account;
+CREATE TRIGGER trg_user_account_set_updated_at
+BEFORE UPDATE ON user_account
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at_timestamp();
+
+
 CREATE TABLE IF NOT EXISTS orchard (
     orchard_id   SERIAL       PRIMARY KEY,
     name         VARCHAR(200) NOT NULL,

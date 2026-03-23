@@ -6,6 +6,7 @@ All SQLAlchemy ORM models for the MangoPoint PostgreSQL + PostGIS database.
 This is the SINGLE SOURCE OF TRUTH for database models.
 
 Tables:
+    - user_account:             Dashboard users and authentication metadata
     - orchard:                  Orchard metadata
     - tree:                     Tree spatial + biological data (PostGIS)
     - pest:                     Pest species
@@ -86,9 +87,48 @@ class AlertStatus(str, enum.Enum):
     RESOLVED = "resolved"
 
 
+class UserRoleEnum(str, enum.Enum):
+    """Roles supported by the dashboard authentication layer."""
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    OPERATOR = "operator"
+
+
 # ═══════════════════════════════════════════════
 #  1. Orchard
 # ═══════════════════════════════════════════════
+
+class UserAccount(Base):
+    """Dashboard user accounts for FastAPI and Dash authentication."""
+    __tablename__ = "user_account"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True,
+    )
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    username: Mapped[str] = mapped_column(String(100), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRoleEnum] = mapped_column(
+        SQLEnum(UserRoleEnum, name="user_role_enum", create_type=False),
+        nullable=False,
+        default=UserRoleEnum.ADMIN,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    __table_args__ = (
+        Index("idx_user_account_username", "username", unique=True),
+        Index("idx_user_account_email", "email", unique=True),
+    )
+
 
 class Orchard(Base):
     """General information about a mango orchard."""

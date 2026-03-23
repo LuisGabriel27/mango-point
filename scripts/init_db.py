@@ -1,6 +1,6 @@
 """
 MangoPoint Database Initialization Script
-==========================================
+=========================================
 Run this script to initialize the database tables.
 
 Usage:
@@ -15,26 +15,42 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
 async def main():
-    """Initialize database tables."""
+    """Initialize database tables and provision the default admin user."""
     print("=" * 50)
     print("MangoPoint Database Initialization")
     print("=" * 50)
-    
-    try:
-        from api.core.database import init_db, engine
-        from api.core.config import settings
 
-        # Import consolidated models so Base.metadata knows about them
+    try:
+        from api.core.config import settings
+        from api.core.database import async_session_maker, init_db
+        from api.core.security import AuthConfigurationError
+        from api.services.auth_service import auth_service
+
+        # Register ORM models with Base.metadata
         import db.models  # noqa: F401
-        
+
         print(f"\nDatabase URL: {settings.DATABASE_URL.split('@')[-1]}")
         print("Initializing tables...")
-        
+
         await init_db()
-        
-        print("\n✓ Database initialized successfully!")
+
+        admin_status = "disabled"
+        admin_user = None
+        admin_error = None
+        try:
+            async with async_session_maker() as session:
+                admin_status, admin_user = await auth_service.ensure_default_admin(session)
+                await session.commit()
+        except AuthConfigurationError as exc:
+            admin_error = str(exc)
+        except Exception as exc:
+            admin_error = str(exc)
+
+        print("\n[OK] Database initialized successfully!")
         print("\nCreated tables:")
+        print("  - user_account")
         print("  - orchard")
         print("  - tree")
         print("  - pest")
@@ -44,9 +60,30 @@ async def main():
         print("  - mango_stage")
         print("  - alert")
         print("  - weather_cache")
-        
-    except Exception as e:
-        print(f"\n✗ Error: {e}")
+
+        if settings.DEFAULT_ADMIN_ENABLED:
+            if admin_error:
+                print(f"\nDefault admin not provisioned: {admin_error}")
+            elif admin_user is not None and admin_status == "created":
+                print("\nDefault admin account created:")
+                print(f"  username: {admin_user.username}")
+                print(f"  email:    {admin_user.email}")
+            elif admin_user is not None and admin_status == "updated":
+                print("\nDefault admin account updated from .env:")
+                print(f"  username: {admin_user.username}")
+                print(f"  email:    {admin_user.email}")
+            elif admin_user is not None:
+                print("\nDefault admin already exists:")
+                print(f"  username: {admin_user.username}")
+                print(f"  email:    {admin_user.email}")
+
+            if settings.DEFAULT_ADMIN_PASSWORD == "change-this-admin-password":
+                print("  password: change-this-admin-password  [change immediately]")
+        else:
+            print("\nDefault admin provisioning is disabled (DEFAULT_ADMIN_ENABLED=false).")
+
+    except Exception as exc:
+        print(f"\n[ERROR] {exc}")
         print("\nMake sure:")
         print("  1. PostgreSQL is running")
         print("  2. Database 'mangopoint' exists")
@@ -59,6 +96,7 @@ async def main():
         sys.exit(1)
     finally:
         from api.core.database import close_db
+
         await close_db()
 
 

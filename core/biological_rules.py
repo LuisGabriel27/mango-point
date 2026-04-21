@@ -338,10 +338,12 @@ class FruitFlyGate(DispersalGate):
                 sugar_factor = sugar_index / FRUIT_FLY_SUGAR_INDEX_MAX
                 prob *= (0.5 + 1.0 * sugar_factor)  # ranges from 0.5x to 1.5x
                 
-                # Neighbor threat factor: external pressure from unmanaged orchards
-                # Historical data shows unmanaged orchards have ~2x higher CPTD
+                # Neighbor threat factor: amplified when wind blows FROM the
+                # direction of the neighbouring orchard (pests carried inward).
                 neighbor_threat = grid.get_neighbor_threat(tr, tc)
-                threat_boost = neighbor_threat * NEIGHBOR_THREAT_WEIGHT
-                prob += threat_boost
+                if neighbor_threat > 0.0:
+                    wind_factor = grid.get_wind_neighbor_factor(wind_dir_deg)
+                    threat_boost = neighbor_threat * NEIGHBOR_THREAT_WEIGHT * wind_factor
+                    prob += threat_boost
 
                 grid.apply_dispersal_probability(tr, tc, prob)

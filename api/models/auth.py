@@ -8,13 +8,14 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from utils.datetime_utils import format_rfc3339
 
 
 def _serialize_datetime(value: Optional[datetime]) -> Optional[str]:
     """Serialize datetimes consistently for API responses."""
     if value is None:
         return None
-    return value.isoformat() + "Z"
+    return format_rfc3339(value)
 
 
 class LoginRequest(BaseModel):

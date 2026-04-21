@@ -17,6 +17,9 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple, List
 
+import math
+from typing import Optional
+
 from core.config import (
     CellState,
     DEFAULT_GRID_ROWS,
@@ -24,6 +27,8 @@ from core.config import (
     CELL_SIZE_M,
     BAG_RESISTANCE,
     NEIGHBOUR_OFFSETS,
+    WIND_NEIGHBOR_BOOST,
+    DIRECTION_BEARING_MAP,
 )
 
 
@@ -60,6 +65,12 @@ class OrchardGrid:
         # Geo-reference origin (set by GIS loader)
         self.origin_lon: float = 0.0
         self.origin_lat: float = 0.0
+
+        # Bearing toward the neighbouring orchard (degrees, 0=N CW).
+        # Set by the service layer when neighbor_direction is provided.
+        # Used by get_wind_neighbor_factor() to amplify threat when wind
+        # blows FROM that direction.
+        self.neighbor_bearing: Optional[float] = None
 
     # ── factory helpers ─────────────────────────────────────────
     @classmethod
@@ -174,6 +185,72 @@ class OrchardGrid:
         boundary = dilated & ~mask
         self.neighbor_threat[boundary] = threat_value
 
+    def set_neighbor_threat_directional(
+        self,
+        direction: str,
+        threat: float,
+    ) -> None:
+        """
+        Apply a directional neighbor threat gradient.
+
+        Cells near the edge facing *direction* receive a threat proportional
+        to *threat*, decaying linearly toward the opposite edge.  Cells on
+        the far side of the grid from the neighbour receive zero threat.
+
+        The gradient is computed by projecting each cell's position (relative
+        to the grid centre) onto the unit vector pointing toward the neighbour.
+
+        Parameters
+        ----------
+        direction : str
+            One of 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'.
+        threat : float
+            Maximum threat level [0, 1] applied to cells on the nearest edge.
+        """
+        bearing_deg = DIRECTION_BEARING_MAP.get(direction.upper(), 0.0)
+        bearing_rad = math.radians(bearing_deg)
+
+        # Grid-coordinate unit vector toward the neighbour.
+        # Rows increase southward, cols increase eastward.
+        # North bearing → u_row = -1 (row decreases); East → u_col = +1.
+        u_row = -math.cos(bearing_rad)
+        u_col = math.sin(bearing_rad)
+
+        center_r = (self.rows - 1) / 2.0
+        center_c = (self.cols - 1) / 2.0
+
+        rows_arr = np.arange(self.rows, dtype=np.float64) - center_r
+        cols_arr = np.arange(self.cols, dtype=np.float64) - center_c
+        R, C = np.meshgrid(rows_arr, cols_arr, indexing="ij")
+
+        proj = R * u_row + C * u_col          # signed projection, range [-max, +max]
+        max_proj = float(proj.max())
+        if max_proj > 1e-9:
+            self.neighbor_threat = np.clip(
+                threat * proj / max_proj, 0.0, 1.0
+            )
+        else:
+            self.neighbor_threat = np.full_like(self.risk, float(threat))
+
+    def get_wind_neighbor_factor(self, wind_dir_deg: float) -> float:
+        """
+        Return a wind-amplification factor for the neighbour threat.
+
+        When wind blows FROM the same direction as the neighbour (i.e.
+        ``wind_dir_deg ≈ neighbor_bearing``), pests are carried inward and
+        the factor is ``1 + WIND_NEIGHBOR_BOOST``.  When wind blows toward
+        the neighbour the factor is ``1 - WIND_NEIGHBOR_BOOST``.
+
+        Returns 1.0 when no neighbour bearing has been set (uniform threat,
+        no directional wind interaction).
+        """
+        if self.neighbor_bearing is None:
+            return 1.0
+        bearing_rad = math.radians(self.neighbor_bearing)
+        wind_rad = math.radians(wind_dir_deg)
+        factor = 1.0 + WIND_NEIGHBOR_BOOST * math.cos(wind_rad - bearing_rad)
+        return max(0.0, min(2.0, factor))
+
     def get_neighbor_threat(self, row: int, col: int) -> float:
         """Get neighbor threat level for a cell."""
         return float(self.neighbor_threat[row, col])
@@ -250,6 +327,7 @@ class OrchardGrid:
         g.tree_ids = self.tree_ids.copy()
         g.origin_lon = self.origin_lon
         g.origin_lat = self.origin_lat
+        g.neighbor_bearing = self.neighbor_bearing
         return g
 
     # ── repr ────────────────────────────────────────────────────

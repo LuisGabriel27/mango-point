@@ -102,6 +102,17 @@ FRUIT_FLY_DEFAULT_DAYS_FLOWERING = 60     # default days since flowering for MAT
 # Neighbor threat parameters (external orchard pressure)
 NEIGHBOR_THREAT_WEIGHT = 0.3   # multiplier for neighbor threat influence on dispersal
 
+# Directional neighbor threat — wind amplification
+# When wind blows FROM the same direction as the neighbor, threat is amplified by
+# this factor (range: 1 - WIND_NEIGHBOR_BOOST  to  1 + WIND_NEIGHBOR_BOOST).
+WIND_NEIGHBOR_BOOST = 0.4
+
+# Compass bearing map (degrees, meteorological: 0=N, CW positive)
+DIRECTION_BEARING_MAP = {
+    "N":  0.0, "NE":  45.0, "E":  90.0, "SE": 135.0,
+    "S": 180.0, "SW": 225.0, "W": 270.0, "NW": 315.0,
+}
+
 
 # ─────────────────────────────────────────────
 # Bagging Effectiveness
@@ -141,6 +152,33 @@ DECISION_ZONE_HIGH_THRESHOLD  = 0.70   # At or above this → Zone 3 (Critical)
 # Set to None to disable money-saved calculations
 PESTICIDE_COST_PER_HECTARE    = 2500.0   # PHP per hectare (adjust to local costs)
 CELL_AREA_HECTARES            = 0.0025   # Area per grid cell in hectares (5m × 5m = 25m² = 0.0025 ha)
+
+
+# ─────────────────────────────────────────────
+# Tree Graph Model Constants
+# ─────────────────────────────────────────────
+# Crown-aware, tree-to-tree spread model (simulation_mode = "tree_graph").
+# These are calibrated starting values; tune against field observations.
+#
+# Override at runtime via environment variables prefixed TG_:
+#   TG_DEFAULT_CROWN_RADIUS_M, TG_LAMBDA0, TG_ALPHA, TG_BETA,
+#   TG_WIND_BIAS, TG_MAX_NEIGHBOR_DIST_M, TG_DT
+import os as _os
+
+TG_DEFAULT_CROWN_RADIUS_M = float(_os.getenv("TG_DEFAULT_CROWN_RADIUS_M", "2.5"))
+# lambda0: base hazard rate (hr⁻¹) when crown gap is zero; analogous to
+# CECID_BASE_DISPERSAL_PROB / FRUIT_FLY_BASE_DISPERSAL_PROB in grid mode.
+TG_LAMBDA0                = float(_os.getenv("TG_LAMBDA0",               "0.15"))
+# alpha: gap-decay coefficient (m⁻¹); rate halves every ln(2)/alpha ≈ 3.5 m of gap.
+TG_ALPHA                  = float(_os.getenv("TG_ALPHA",                  "0.2"))
+# beta: overlap-bonus coefficient; at full crown overlap the rate is lambda0*(1+beta).
+TG_BETA                   = float(_os.getenv("TG_BETA",                   "1.0"))
+# wind_bias: max directional amplification [0,1]; 0 = isotropic spread.
+TG_WIND_BIAS              = float(_os.getenv("TG_WIND_BIAS",              "0.3"))
+# Maximum centre-to-centre distance for graph edges (m).
+TG_MAX_NEIGHBOR_DIST_M    = float(_os.getenv("TG_MAX_NEIGHBOR_DIST_M",   "20.0"))
+# Timestep duration used in the probability formula (keep equal to TIMESTEP_HOURS).
+TG_DT                     = float(_os.getenv("TG_DT",                    "1.0"))
 
 
 # ─────────────────────────────────────────────

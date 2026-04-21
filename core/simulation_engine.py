@@ -150,6 +150,7 @@ class SimulationEngine:
         gates=None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         days_since_flowering: Optional[int] = None,
+        initial_rainfall_history: Optional[List[float]] = None,
     ):
         self.grid = grid.copy()  # work on a copy to preserve the original
         self.weather = weather
@@ -172,9 +173,13 @@ class SimulationEngine:
         
         # Initialize 24-hour rainfall history (deque for efficient rolling window)
         self.rainfall_history: deque = deque(maxlen=CECID_RAIN_HISTORY_HOURS)
-        # Pre-fill with zeros (simulation starts with no rainfall history)
-        for _ in range(CECID_RAIN_HISTORY_HOURS):
-            self.rainfall_history.append(0.0)
+        if initial_rainfall_history:
+            seed = [0.0] * CECID_RAIN_HISTORY_HOURS + [float(r) for r in initial_rainfall_history]
+            for r in seed[-CECID_RAIN_HISTORY_HOURS:]:
+                self.rainfall_history.append(r)
+        else:
+            for _ in range(CECID_RAIN_HISTORY_HOURS):
+                self.rainfall_history.append(0.0)
 
     # ── main loop ───────────────────────────────────────────────
     def run(self, n_steps: Optional[int] = None, progress: bool = True) -> SimulationResult:

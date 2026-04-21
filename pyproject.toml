@@ -1,0 +1,37 @@
+[tool.pylint.main]
+# Don't fail the lint just because a test file manipulates sys.path or
+# imports lazily. Tests also don't need per-method docstrings.
+ignore-paths = [
+    "^\\.venv/.*$",
+    "^outputs/.*$",
+    "^__pycache__/.*$",
+]
+
+[tool.pylint.messages_control]
+# Silence conventions that are noisy in a research/test codebase but not
+# actual defects. Real errors (E*/F*) and warnings remain enabled.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-few-public-methods",
+    "wrong-import-position",     # tests prepend sys.path before imports
+    "import-outside-toplevel",   # some modules import heavy deps lazily
+    "duplicate-code",
+    "fixme",
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.design]
+max-args = 10
+max-attributes = 15
+max-locals = 20
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+    "ignore::DeprecationWarning:pydantic.*",
+]

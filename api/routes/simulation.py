@@ -18,6 +18,7 @@ from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
 from ..core.config import settings
+from utils.datetime_utils import format_rfc3339
 
 logger = logging.getLogger(__name__)
 
@@ -81,18 +82,40 @@ async def run_simulation(
         else:
             lon, lat = settings.DEFAULT_LON, settings.DEFAULT_LAT
         
-        # Get weather forecast
-        weather_data = await weather_service.get_forecast(
-            lat=lat,
-            lon=lon,
-            hours=request.hours,
-        )
-        
+        # Get weather forecast — or use manual override if any of the
+        # manual_weather* fields are populated (precedence: series > blocks > constant)
+        from utils.weather_builder import build_weather_series, compute_gate_diagnostics
+
+        manual_series = build_weather_series(request)
+        if manual_series is not None:
+            weather_data = manual_series
+            logger.info("Using manual weather override for simulation")
+        else:
+            weather_data = await weather_service.get_forecast(
+                lat=lat,
+                lon=lon,
+                hours=request.hours,
+            )
+
         # Run simulation
         result = await simulation_service.run_simulation(
             request=request,
             weather_data=weather_data,
         )
+
+        # Optional per-hour gate diagnostics for scenario calibration
+        if getattr(request, "debug_gates", False):
+            try:
+                diagnostics = compute_gate_diagnostics(
+                    weather_data=weather_data,
+                    pest_type=request.pest_type.value,
+                    orchard_stage=request.orchard_stage.value,
+                    sugar_index=result.metadata.sugar_index,
+                    initial_rainfall_history=request.manual_weather_prefix_rain,
+                )
+                result.gate_diagnostics = diagnostics
+            except Exception as diag_err:
+                logger.warning(f"Could not compute gate diagnostics: {diag_err}")
         
         # Persist simulation run to database (background task)
         background_tasks.add_task(
@@ -117,6 +140,12 @@ async def run_simulation(
             status_code=500,
             detail=f"Simulation failed: {str(e)}",
         )
+
+
+def _build_manual_weather(overrides: dict, hours: int) -> list:
+    """Backward-compat shim — delegates to ``utils.weather_builder``."""
+    from utils.weather_builder import _series_from_constant
+    return _series_from_constant(overrides or {}, hours)
 
 
 async def save_simulation_run(
@@ -179,6 +208,11 @@ async def check_alerts(
         if not features:
             return
         
+        # tree_graph mode returns Point features without row/col — skip alert check
+        if not all("row" in f.get("properties", {}) for f in features):
+            logger.debug("Skipping alert check: features have no row/col (tree_graph mode)")
+            return
+
         # Determine grid dimensions
         max_row = max(f["properties"]["row"] for f in features)
         max_col = max(f["properties"]["col"] for f in features)
@@ -247,7 +281,7 @@ async def list_simulation_runs(
                 "run_id": r.run_id,
                 "pest_type": r.pest_type.value,
                 "hours": r.hours,
-                "started_at": r.started_at.isoformat() + "Z" if r.started_at else None,
+                "started_at": format_rfc3339(r.started_at) if r.started_at else None,
                 "status": r.status,
                 "peak_risk": r.peak_risk,
                 "cells_at_risk": r.cells_at_risk,
@@ -281,8 +315,8 @@ async def get_simulation_run(
         "run_id": run.run_id,
         "pest_type": run.pest_type.value,
         "hours": run.hours,
-        "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
-        "completed_at": run.completed_at.isoformat() + "Z" if run.completed_at else None,
+        "started_at": format_rfc3339(run.started_at) if run.started_at else None,
+        "completed_at": format_rfc3339(run.completed_at) if run.completed_at else None,
         "duration_seconds": run.duration_seconds,
         "status": run.status,
         "peak_risk": run.peak_risk,

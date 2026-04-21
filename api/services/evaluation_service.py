@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from db.models import InfestationRecord, SimulationRun, Tree
 from ..models.schemas import ConfusionMatrix, EvaluationResponse
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class EvaluationService:
             logger.warning("No observations found for evaluation")
             return EvaluationResponse(
                 simulation_run_id=simulation_run_id,
-                evaluation_timestamp=datetime.utcnow().isoformat() + "Z",
+                evaluation_timestamp=format_rfc3339(utcnow_naive()),
                 precision=0.0,
                 recall=0.0,
                 f1_score=0.0,
@@ -104,7 +105,7 @@ class EvaluationService:
         
         return EvaluationResponse(
             simulation_run_id=simulation_run_id,
-            evaluation_timestamp=datetime.utcnow().isoformat() + "Z",
+            evaluation_timestamp=format_rfc3339(utcnow_naive()),
             **metrics,
         )
     

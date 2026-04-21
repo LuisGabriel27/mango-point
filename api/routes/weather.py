@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ..models.schemas import WeatherResponse, WeatherData
 from ..services.weather_service import weather_service
 from ..core.config import settings
+from utils.datetime_utils import format_rfc3339
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ async def get_live_weather(
             ),
             location={"lat": lat, "lon": lon},
             cached=weather.get("cached", False),
-            cache_expires_at=weather["cache_expires_at"].isoformat() + "Z" if weather.get("cache_expires_at") else None,
+            cache_expires_at=format_rfc3339(weather["cache_expires_at"]) if weather.get("cache_expires_at") else None,
         )
         
     except Exception as e:

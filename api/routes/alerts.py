@@ -21,6 +21,7 @@ from ..models.schemas import (
 )
 from db.models import AlertStatus
 from ..services.alert_service import alert_service
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ async def get_alerts(
         for a in alerts:
             alert_responses.append(AlertResponse(
                 alert_id=a.alert_id,
-                triggered_at=a.triggered_at.isoformat() + "Z" if a.triggered_at else "",
+                triggered_at=format_rfc3339(a.triggered_at) if a.triggered_at else "",
                 severity=severity_map.get(a.severity.value, AlertSeverityEnum.HIGH) if a.severity else AlertSeverityEnum.HIGH,
                 status=status_map_reverse.get(a.status, AlertStatusEnum.ACTIVE) if a.status else AlertStatusEnum.ACTIVE,
                 risk_value=a.risk_value or 0.0,
@@ -108,8 +109,8 @@ async def get_alerts(
                 email_sent=a.email_sent or False,
                 sms_sent=a.sms_sent or False,
                 acknowledged_by=a.acknowledged_by,
-                acknowledged_at=a.acknowledged_at.isoformat() + "Z" if a.acknowledged_at else None,
-                resolved_at=a.resolved_at.isoformat() + "Z" if a.resolved_at else None,
+                acknowledged_at=format_rfc3339(a.acknowledged_at) if a.acknowledged_at else None,
+                resolved_at=format_rfc3339(a.resolved_at) if a.resolved_at else None,
             ))
         
         return AlertListResponse(
@@ -189,7 +190,7 @@ async def get_alert(
     
     return AlertResponse(
         alert_id=alert.alert_id,
-        triggered_at=alert.triggered_at.isoformat() + "Z" if alert.triggered_at else "",
+        triggered_at=format_rfc3339(alert.triggered_at) if alert.triggered_at else "",
         severity=severity_map.get(alert.severity.value, AlertSeverityEnum.HIGH) if alert.severity else AlertSeverityEnum.HIGH,
         status=status_map.get(alert.status, AlertStatusEnum.ACTIVE) if alert.status else AlertStatusEnum.ACTIVE,
         risk_value=alert.risk_value or 0.0,
@@ -201,8 +202,8 @@ async def get_alert(
         email_sent=alert.email_sent or False,
         sms_sent=alert.sms_sent or False,
         acknowledged_by=alert.acknowledged_by,
-        acknowledged_at=alert.acknowledged_at.isoformat() + "Z" if alert.acknowledged_at else None,
-        resolved_at=alert.resolved_at.isoformat() + "Z" if alert.resolved_at else None,
+        acknowledged_at=format_rfc3339(alert.acknowledged_at) if alert.acknowledged_at else None,
+        resolved_at=format_rfc3339(alert.resolved_at) if alert.resolved_at else None,
     )
 
 
@@ -310,7 +311,7 @@ async def get_alert_stats(
     # Recent alerts (last 24 hours)
     recent_count = await db.execute(
         select(func.count(Alert.id))
-        .where(Alert.triggered_at >= datetime.utcnow().replace(hour=0, minute=0, second=0))
+        .where(Alert.triggered_at >= utcnow_naive().replace(hour=0, minute=0, second=0))
     )
     today_count = recent_count.scalar() or 0
     

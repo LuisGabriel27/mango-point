@@ -19,7 +19,12 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 DATABASE_UNAVAILABLE_DETAIL = "Database unavailable. Check PostgreSQL configuration and credentials."
-DATABASE_ERROR_TYPES = (SQLAlchemyError, asyncpg.PostgresError)
+DATABASE_ERROR_TYPES = (
+    SQLAlchemyError,
+    asyncpg.PostgresError,
+    ConnectionError,
+    OSError,
+)
 
 # Convert sync URL to async
 DATABASE_URL = settings.DATABASE_URL
@@ -50,7 +55,18 @@ Base = declarative_base()
 
 def is_database_unavailable(exc: Exception) -> bool:
     """Return True when an exception indicates a database connectivity issue."""
-    return isinstance(exc, DATABASE_ERROR_TYPES)
+    if isinstance(exc, DATABASE_ERROR_TYPES):
+        return True
+
+    message = str(exc).lower()
+    connectivity_markers = (
+        "connection refused",
+        "database unavailable",
+        "could not connect",
+        "failed to establish a new connection",
+        "remote computer refused",
+    )
+    return any(marker in message for marker in connectivity_markers)
 
 
 def database_unavailable_http_exception() -> HTTPException:

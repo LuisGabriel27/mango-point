@@ -16,7 +16,16 @@ import numpy as np
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ..models.schemas import PestTypeEnum, SimulationRequest, SimulationResponse, TimeSeriesSnapshot, TimestepEntry, SimulationMetadata
+from utils.datetime_utils import format_rfc3339, utcnow_naive
+from ..models.schemas import (
+    PestTypeEnum,
+    SimulationModeEnum,
+    SimulationRequest,
+    SimulationResponse,
+    TimeSeriesSnapshot,
+    TimestepEntry,
+    SimulationMetadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +159,7 @@ class SimulationService:
         self._load_modules()
         
         run_id = f"sim_{uuid.uuid4().hex[:12]}"
-        started_at = datetime.utcnow()
+        started_at = utcnow_naive()
         
         # Generate random seed for reproducibility
         if request.random_seed is not None:
@@ -169,13 +178,37 @@ class SimulationService:
             orchard_stage_str = orchard_stage_str.value
         days_since_flowering = getattr(request, 'days_since_flowering', 60) or 60
         neighbor_threat = getattr(request, 'neighbor_threat', 0.0) or 0.0
+        neighbor_direction = getattr(request, 'neighbor_direction', None)
+        if neighbor_direction:
+            neighbor_direction = neighbor_direction.strip().upper()
         
+        simulation_mode = getattr(request, "simulation_mode", SimulationModeEnum.GRID)
+        if hasattr(simulation_mode, "value"):
+            simulation_mode = simulation_mode.value
+
         logger.info(
-            f"Starting simulation {run_id}: pest={request.pest_type}, "
-            f"hours={request.hours}, seed={random_seed}, threshold={risk_threshold}, "
-            f"stage={orchard_stage_str}, days_flowering={days_since_flowering}, neighbor_threat={neighbor_threat}"
+            "Starting simulation %s: pest=%s, mode=%s, hours=%d, seed=%d, "
+            "threshold=%.2f, stage=%s, days_flowering=%d, neighbor_threat=%.2f",
+            run_id, request.pest_type, simulation_mode, request.hours,
+            random_seed, risk_threshold, orchard_stage_str,
+            days_since_flowering, neighbor_threat,
         )
-        
+
+        # ── branch: tree_graph mode ──────────────────────────────
+        if simulation_mode == SimulationModeEnum.TREE_GRAPH.value:
+            return await self._run_tree_graph_simulation(
+                request=request,
+                weather_data=weather_data,
+                run_id=run_id,
+                started_at=started_at,
+                random_seed=random_seed,
+                risk_threshold=risk_threshold,
+                orchard_stage_str=orchard_stage_str,
+                days_since_flowering=days_since_flowering,
+                neighbor_threat=neighbor_threat,
+                neighbor_direction=neighbor_direction,
+            )
+
         try:
             # Create grid from GeoJSON
             grid, origin = self._create_grid_from_geojson(request.orchard_geojson)
@@ -219,12 +252,23 @@ class SimulationService:
             }
             orchard_stage = orchard_stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
             
-            # Apply neighbor threat to grid (uniform across all cells)
+            # Apply neighbor threat — directional gradient when direction is given,
+            # uniform otherwise (preserves original behaviour for existing callers).
             if neighbor_threat > 0:
-                grid.set_neighbor_threat_uniform(neighbor_threat)
+                from core.config import DIRECTION_BEARING_MAP
+                if neighbor_direction and neighbor_direction in DIRECTION_BEARING_MAP:
+                    grid.set_neighbor_threat_directional(neighbor_direction, neighbor_threat)
+                    grid.neighbor_bearing = DIRECTION_BEARING_MAP[neighbor_direction]
+                    logger.info(
+                        "Directional neighbor threat: direction=%s, bearing=%.0f°, threat=%.2f",
+                        neighbor_direction, grid.neighbor_bearing, neighbor_threat,
+                    )
+                else:
+                    grid.set_neighbor_threat_uniform(neighbor_threat)
             
             # Run simulation with phenology parameters
             assert self._engine_class is not None, "Modules not loaded"
+            initial_rain_history = getattr(request, "manual_weather_prefix_rain", None)
             engine = self._engine_class(
                 grid=grid,
                 weather=weather,
@@ -232,11 +276,12 @@ class SimulationService:
                 gates=gates,
                 orchard_stage=orchard_stage,
                 days_since_flowering=days_since_flowering,
+                initial_rainfall_history=initial_rain_history,
             )
             
             result = engine.run(n_steps=request.hours, progress=False)
             
-            completed_at = datetime.utcnow()
+            completed_at = utcnow_naive()
             duration = (completed_at - started_at).total_seconds()
             
             # Convert to time-series GeoJSON
@@ -269,8 +314,8 @@ class SimulationService:
                 pest_type=request.pest_type.value,
                 hours=request.hours,
                 random_seed=random_seed,
-                started_at=started_at.isoformat() + "Z",
-                completed_at=completed_at.isoformat() + "Z",
+                started_at=format_rfc3339(started_at),
+                completed_at=format_rfc3339(completed_at),
                 duration_seconds=duration,
                 peak_risk=peak_risk,
                 cells_at_risk=cells_at_risk,
@@ -280,6 +325,8 @@ class SimulationService:
                 days_since_flowering=days_since_flowering,
                 sugar_index=engine.sugar_index,
                 neighbor_threat=neighbor_threat,
+                simulation_mode="grid",
+                neighbor_direction=neighbor_direction,
             )
             
             logger.info(
@@ -291,8 +338,8 @@ class SimulationService:
                 run_id=run_id,
                 pest_type=request.pest_type,
                 hours=request.hours,
-                started_at=started_at.isoformat() + "Z",
-                completed_at=completed_at.isoformat() + "Z",
+                started_at=format_rfc3339(started_at),
+                completed_at=format_rfc3339(completed_at),
                 status="completed",
                 peak_risk=peak_risk,
                 cells_at_risk=cells_at_risk,
@@ -490,7 +537,7 @@ class SimulationService:
             )
             
             dt = snap["datetime"]
-            dt_str = dt.isoformat() + "Z" if hasattr(dt, "isoformat") else str(dt)
+            dt_str = format_rfc3339(dt) if hasattr(dt, "isoformat") else str(dt)
             
             time_series.append(TimeSeriesSnapshot(
                 timestep=snap["timestep"],
@@ -510,7 +557,7 @@ class SimulationService:
         if len(result) - 1 not in range(0, len(result), step_size):
             final = result.snapshots[-1]
             dt = final["datetime"]
-            dt_str = dt.isoformat() + "Z" if hasattr(dt, "isoformat") else str(dt)
+            dt_str = format_rfc3339(dt) if hasattr(dt, "isoformat") else str(dt)
             
             time_series.append(TimeSeriesSnapshot(
                 timestep=final["timestep"],
@@ -593,6 +640,369 @@ class SimulationService:
             "type": "FeatureCollection",
             "features": features,
         }
+
+
+    # ════════════════════════════════════════════════════════════
+    #  tree_graph mode — private implementation
+    # ════════════════════════════════════════════════════════════
+
+    async def _run_tree_graph_simulation(
+        self,
+        request: SimulationRequest,
+        weather_data: Optional[List[Dict[str, Any]]],
+        run_id: str,
+        started_at,
+        random_seed: int,
+        risk_threshold: float,
+        orchard_stage_str: str,
+        days_since_flowering: int,
+        neighbor_threat: float,
+        neighbor_direction: Optional[str] = None,
+    ) -> SimulationResponse:
+        """Execute the crown-aware tree-graph simulation."""
+        self._load_modules()
+
+        try:
+            from core.tree_graph_model import (
+                TreeGraphEngine,
+                TreeState,
+                build_tree_graph_from_lonlat,
+            )
+            from core.config import (
+                TG_ALPHA,
+                TG_BETA,
+                TG_DEFAULT_CROWN_RADIUS_M,
+                TG_LAMBDA0,
+                TG_MAX_NEIGHBOR_DIST_M,
+                TG_WIND_BIAS,
+            )
+        except ImportError as exc:
+            logger.error("Failed to import tree_graph modules: %s", exc)
+            raise
+
+        # ── resolve per-run constants (request overrides env defaults) ───
+        lambda0 = float(request.tg_lambda0 or TG_LAMBDA0)
+        alpha   = float(request.tg_alpha   or TG_ALPHA)
+        beta    = float(request.tg_beta    or TG_BETA)
+        wind_bias = float(request.tg_wind_bias or TG_WIND_BIAS)
+        max_dist  = float(request.tg_max_neighbor_dist_m or TG_MAX_NEIGHBOR_DIST_M)
+        crown_fallback = float(request.crown_radius_m or TG_DEFAULT_CROWN_RADIUS_M)
+
+        logger.info(
+            "tree_graph params: lambda0=%.3f, alpha=%.3f, beta=%.3f, "
+            "wind_bias=%.3f, max_dist=%.1f m, crown_fallback=%.2f m",
+            lambda0, alpha, beta, wind_bias, max_dist, crown_fallback,
+        )
+
+        # ── build graph from GeoJSON ──────────────────────────────
+        geojson = request.orchard_geojson
+        features = geojson.get("features", [])
+        point_features = [
+            f for f in features
+            if f.get("geometry", {}).get("type") == "Point"
+        ]
+        if not point_features:
+            raise ValueError(
+                "tree_graph mode requires Point features in orchard_geojson. "
+                "Polygon-only GeoJSON is not supported in this mode."
+            )
+
+        # Derive bounding box and metre-per-degree scale (same as grid mode)
+        lons = [f["geometry"]["coordinates"][0] for f in point_features]
+        lats = [f["geometry"]["coordinates"][1] for f in point_features]
+        origin_lon = min(lons)
+        origin_lat = min(lats)
+        mid_lat = (origin_lat + max(lats)) / 2.0
+        m_lat = 111_132.0
+        m_lon = 111_132.0 * np.cos(np.radians(mid_lat))
+
+        graph = build_tree_graph_from_lonlat(
+            features=point_features,
+            origin_lon=origin_lon,
+            origin_lat=origin_lat,
+            m_lat=m_lat,
+            m_lon=m_lon,
+            default_crown_radius=crown_fallback,
+            max_dist=max_dist,
+            bagged_ids=list(request.bagged_tree_ids or []),
+        )
+
+        if not graph.nodes:
+            raise ValueError("No valid Point trees found in orchard_geojson.")
+
+        # ── apply tree overrides ──────────────────────────────────
+        tree_overrides = getattr(request, "tree_overrides", None) or {}
+        if tree_overrides:
+            state_map = {
+                "healthy": TreeState.SUSCEPTIBLE,
+                "unbagged": TreeState.SUSCEPTIBLE,
+                "infected": TreeState.INFESTED,
+                "infested": TreeState.INFESTED,
+                "bagged": TreeState.BAGGED,
+                "dead": TreeState.DEAD,
+            }
+            for node in graph.nodes:
+                if node.tree_id in tree_overrides:
+                    new_status = tree_overrides[node.tree_id].lower()
+                    if new_status in state_map:
+                        node.state = state_map[new_status]
+                        logger.debug(
+                            "tree_graph override: tree %s → %s",
+                            node.tree_id, new_status,
+                        )
+
+        # ── seed initial infestation ──────────────────────────────
+        seed_ids = list(request.initial_infestation_tree_ids or [])
+        if seed_ids:
+            id_to_node = {n.tree_id: n for n in graph.nodes}
+            for tid in seed_ids:
+                if tid in id_to_node:
+                    id_to_node[tid].state = TreeState.INFESTED
+                else:
+                    logger.warning(
+                        "initial_infestation_tree_id %r not found in graph", tid
+                    )
+        else:
+            # Auto-seed: same logic as grid mode
+            n_seeded = self._seed_tree_graph_infestation(
+                graph=graph,
+                pest_type=request.pest_type,
+                orchard_stage=orchard_stage_str,
+                random_seed=random_seed,
+                tree_overrides=tree_overrides,
+            )
+            logger.info("tree_graph auto-seeded %d infested tree(s)", n_seeded)
+
+        # ── weather & biological gates ────────────────────────────
+        weather = self._create_weather(weather_data, request.hours)
+        gates   = self._get_gates(request.pest_type)
+
+        assert self._orchard_stage_enum is not None
+        stage_map = {
+            "dormant":   self._orchard_stage_enum.DORMANT,
+            "flowering": self._orchard_stage_enum.FLOWERING,
+            "fruitlet":  self._orchard_stage_enum.FRUITLET,
+            "mature":    self._orchard_stage_enum.MATURE,
+        }
+        orchard_stage = stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
+
+        # ── run engine ────────────────────────────────────────────
+        engine = TreeGraphEngine(
+            graph=graph,
+            weather=weather,
+            transition_mode="stochastic",
+            gates=gates,
+            orchard_stage=orchard_stage,
+            days_since_flowering=days_since_flowering,
+            lambda0=lambda0,
+            alpha=alpha,
+            beta=beta,
+            wind_bias=wind_bias,
+            pest_type=request.pest_type.value,
+            neighbor_threat=neighbor_threat,
+            neighbor_direction=neighbor_direction,
+            initial_rainfall_history=getattr(request, "manual_weather_prefix_rain", None),
+        )
+        result = engine.run(n_steps=request.hours, progress=False)
+
+        completed_at = utcnow_naive()
+        duration = (completed_at - started_at).total_seconds()
+
+        # ── summary statistics ────────────────────────────────────
+        all_final_risks = result.snapshots[-1]["risks"] if result.snapshots else []
+        peak_risk = float(max(all_final_risks)) if all_final_risks else 0.0
+        cells_at_risk = int(
+            sum(1 for r in all_final_risks if r > risk_threshold)
+        )
+        n_infested_final = result.graph.n_infested() if result.graph else 0
+
+        # ── convert to time-series ────────────────────────────────
+        time_series = self._tg_result_to_time_series(result, graph)
+        risk_geojson = self._tg_snapshot_to_geojson(
+            graph=result.graph or graph,
+            states=result.snapshots[-1]["states"] if result.snapshots else [],
+            risks=result.snapshots[-1]["risks"] if result.snapshots else [],
+        )
+
+        timesteps = [
+            TimestepEntry(hour=ts.hour, geojson=ts.risk_geojson)
+            for ts in time_series
+        ]
+
+        # ── metadata ──────────────────────────────────────────────
+        metadata = SimulationMetadata(
+            run_id=run_id,
+            pest_type=request.pest_type.value,
+            hours=request.hours,
+            random_seed=random_seed,
+            started_at=format_rfc3339(started_at),
+            completed_at=format_rfc3339(completed_at),
+            duration_seconds=duration,
+            peak_risk=peak_risk,
+            cells_at_risk=cells_at_risk,
+            n_infested_final=n_infested_final,
+            risk_threshold=risk_threshold,
+            orchard_stage=orchard_stage_str,
+            days_since_flowering=days_since_flowering,
+            sugar_index=engine.sugar_index,
+            neighbor_threat=neighbor_threat,
+            simulation_mode="tree_graph",
+            neighbor_direction=neighbor_direction,
+            tg_n_trees=len(graph.nodes),
+            tg_n_edges=graph.edge_count(),
+            tg_lambda0=lambda0,
+            tg_alpha=alpha,
+            tg_beta=beta,
+            tg_wind_bias=wind_bias,
+            tg_max_neighbor_dist_m=max_dist,
+            tg_default_crown_radius_m=crown_fallback,
+        )
+
+        logger.info(
+            "tree_graph %s completed in %.2fs: n_trees=%d, n_edges=%d, "
+            "peak_risk=%.2f, n_infested=%d, seed=%d",
+            run_id, duration, len(graph.nodes), graph.edge_count(),
+            peak_risk, n_infested_final, random_seed,
+        )
+
+        return SimulationResponse(
+            run_id=run_id,
+            pest_type=request.pest_type,
+            hours=request.hours,
+            started_at=format_rfc3339(started_at),
+            completed_at=format_rfc3339(completed_at),
+            status="completed",
+            peak_risk=peak_risk,
+            cells_at_risk=cells_at_risk,
+            n_infested_final=n_infested_final,
+            random_seed=random_seed,
+            risk_threshold=risk_threshold,
+            metadata=metadata,
+            time_series=time_series,
+            timesteps=timesteps,
+            risk_geojson=risk_geojson,
+        )
+
+    def _seed_tree_graph_infestation(
+        self,
+        graph,
+        pest_type: PestTypeEnum,
+        orchard_stage: str,
+        random_seed: int,
+        tree_overrides: Optional[Dict[str, str]],
+    ) -> int:
+        """Auto-seed infestation for tree_graph mode (mirrors grid behaviour)."""
+        from core.tree_graph_model import TreeState
+
+        if not self._pest_is_active_for_stage(pest_type, orchard_stage):
+            return 0
+        if self._has_manual_infestation_source(tree_overrides):
+            return 0
+
+        susceptible = [
+            n for n in graph.nodes if n.state == TreeState.SUSCEPTIBLE
+        ]
+        if not susceptible:
+            # Fallback: infest first node if no susceptible trees
+            if graph.nodes:
+                graph.nodes[0].state = TreeState.INFESTED
+                return 1
+            return 0
+
+        max_seeds = min(3, len(susceptible))
+        rng = np.random.default_rng(random_seed)
+        n_seeds = int(rng.integers(1, max_seeds + 1))
+        chosen = rng.choice(len(susceptible), size=n_seeds, replace=False)
+        for idx in np.atleast_1d(chosen):
+            susceptible[int(idx)].state = TreeState.INFESTED
+        return n_seeds
+
+    def _tg_result_to_time_series(
+        self,
+        result,
+        graph,
+    ) -> List[TimeSeriesSnapshot]:
+        """Convert TreeGraphResult snapshots to TimeSeriesSnapshot list."""
+        time_series: List[TimeSeriesSnapshot] = []
+        total = len(result)
+        if total == 0:
+            return time_series
+
+        n_samples = min(total, 12)
+        step_size = max(1, total // n_samples)
+        sampled_indices = list(range(0, total, step_size))
+        # Always include final snapshot
+        if (total - 1) not in sampled_indices:
+            sampled_indices.append(total - 1)
+
+        for i in sampled_indices:
+            snap = result.snapshots[i]
+            dt = snap["datetime"]
+            dt_str = format_rfc3339(dt) if hasattr(dt, "isoformat") else str(dt)
+
+            risk_geojson = self._tg_snapshot_to_geojson(
+                graph=result.graph or graph,
+                states=snap["states"],
+                risks=snap["risks"],
+            )
+            time_series.append(TimeSeriesSnapshot(
+                timestep=snap["timestep"],
+                datetime=dt_str,
+                hour=snap["hour"],
+                risk_geojson=risk_geojson,
+                n_infested=snap["n_infested"],
+                n_new=snap["n_new"],
+                weather={
+                    "wind_speed_ms":  snap["weather"]["wind_speed_ms"],
+                    "wind_dir_deg":   snap["weather"]["wind_dir_deg"],
+                    "temperature_c":  snap["weather"]["temperature_c"],
+                },
+            ))
+
+        return time_series
+
+    def _tg_snapshot_to_geojson(
+        self,
+        graph,
+        states: List[int],
+        risks: List[float],
+    ) -> Dict[str, Any]:
+        """
+        Render a tree_graph snapshot as a GeoJSON FeatureCollection of Points.
+
+        Each feature carries:
+          tree_id, risk, state (name), crown_radius_m, index
+        """
+        from core.tree_graph_model import TreeState
+
+        state_names = {
+            TreeState.SUSCEPTIBLE: "unbagged",
+            TreeState.BAGGED:      "bagged",
+            TreeState.INFESTED:    "infested",
+            TreeState.DEAD:        "dead",
+        }
+
+        features = []
+        for node in graph.nodes:
+            idx = node.index
+            state_val = states[idx] if idx < len(states) else node.state
+            risk_val  = risks[idx]  if idx < len(risks)  else 0.0
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [node.lon, node.lat],
+                },
+                "properties": {
+                    "tree_id":       node.tree_id,
+                    "risk":          round(float(risk_val), 6),
+                    "state":         state_names.get(state_val, "unknown"),
+                    "crown_radius_m": node.crown_radius,
+                    "index":         idx,
+                },
+            })
+
+        return {"type": "FeatureCollection", "features": features}
 
 
 # Singleton instance

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_tree_graph.py -v --tb=short)",
+      "Bash(python -m pytest tests/test_grid_stability.py -v --tb=short)",
+      "Bash(grep -E \"\\\\.\\(py|html|css|js\\)$\")"
+    ]
+  }
+}

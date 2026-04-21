@@ -30,6 +30,7 @@ from geoalchemy2 import Geometry
 import enum
 
 from api.core.database import Base
+from utils.datetime_utils import utcnow_naive
 
 
 # ─────────────────────────────────────────────
@@ -116,12 +117,12 @@ class UserAccount(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utcnow_naive,
+        onupdate=utcnow_naive,
     )
 
     __table_args__ = (
@@ -276,7 +277,7 @@ class SimulationRun(Base):
 
     # Timestamps
     started_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, default=datetime.utcnow,
+        DateTime, default=utcnow_naive,
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True,
@@ -431,7 +432,7 @@ class Alert(Base):
         nullable=True,
     )
     triggered_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, default=datetime.utcnow,
+        DateTime, default=utcnow_naive,
     )
 
     # Alert details
@@ -513,7 +514,7 @@ class WeatherCache(Base):
 
     # Cache management
     fetched_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, default=datetime.utcnow,
+        DateTime, default=utcnow_naive,
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     source: Mapped[str] = mapped_column(String(50), default="openweathermap")

@@ -20,6 +20,7 @@ from ..core.database import (
 )
 from ..models.schemas import ObservationSubmission, ObservationResponse, PestTypeEnum
 from db.models import InfestationRecord, Tree, Pest, PestType
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +112,9 @@ async def submit_observation(
             id=record.infestation_id,
             tree_id=str(record.tree_id),
             observed_pest=observation.observed_pest,
-            timestamp=record.record_date.isoformat() + "Z" if record.record_date else datetime.utcnow().isoformat() + "Z",
+            timestamp=format_rfc3339(record.record_date) if record.record_date else format_rfc3339(utcnow_naive()),
             severity=observation.severity,
-            created_at=datetime.utcnow().isoformat() + "Z",
+            created_at=format_rfc3339(utcnow_naive()),
         )
         
     except HTTPException:
@@ -192,9 +193,9 @@ async def list_observations(
                 "id": r.infestation_id,
                 "tree_id": str(r.tree_id),
                 "observed_pest": pest_type_reverse.get(pests.get(r.pest_id, ""), "unknown"),
-                "timestamp": r.record_date.isoformat() + "Z" if r.record_date else None,
+                "timestamp": format_rfc3339(r.record_date) if r.record_date else None,
                 "severity": float(r.infestation_level or 0) / 100.0,
-                "created_at": r.record_date.isoformat() + "Z" if r.record_date else None,
+                "created_at": format_rfc3339(r.record_date) if r.record_date else None,
             }
             for r in records
         ],
@@ -238,9 +239,9 @@ async def get_observation(
         "id": obs.infestation_id,
         "tree_id": str(obs.tree_id),
         "observed_pest": pest_type_reverse.get(pest_name, "unknown"),
-        "timestamp": obs.record_date.isoformat() + "Z" if obs.record_date else None,
+        "timestamp": format_rfc3339(obs.record_date) if obs.record_date else None,
         "severity": float(obs.infestation_level or 0) / 100.0,
-        "created_at": obs.record_date.isoformat() + "Z" if obs.record_date else None,
+        "created_at": format_rfc3339(obs.record_date) if obs.record_date else None,
     }
 
 

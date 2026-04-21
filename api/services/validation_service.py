@@ -11,6 +11,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from utils.datetime_utils import utcnow_naive
 
 # Add parent path for validation module
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -98,7 +99,7 @@ class ValidationService:
         """
         self._load_validation_modules()
         
-        started_at = datetime.utcnow()
+        started_at = utcnow_naive()
         
         # Create and run validation
         runner = self._ValidationRunner(seed=seed)
@@ -116,7 +117,7 @@ class ValidationService:
         regression = _round_mapping(metrics.regression.to_dict())
         confusion_matrix = metrics.classification.confusion_matrix
         
-        completed_at = datetime.utcnow()
+        completed_at = utcnow_naive()
         duration = (completed_at - started_at).total_seconds()
         
         # Format response

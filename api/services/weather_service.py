@@ -13,6 +13,7 @@ from functools import lru_cache
 import asyncio
 
 from ..core.config import settings
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class WeatherCache:
         async with self._lock:
             if key in self._cache:
                 data, timestamp = self._cache[key]
-                if datetime.utcnow() - timestamp < timedelta(seconds=self.ttl):
+                if utcnow_naive() - timestamp < timedelta(seconds=self.ttl):
                     return data
                 else:
                     del self._cache[key]
@@ -48,7 +49,7 @@ class WeatherCache:
         """Cache weather data."""
         key = self._make_key(lat, lon)
         async with self._lock:
-            self._cache[key] = (data, datetime.utcnow())
+            self._cache[key] = (data, utcnow_naive())
     
     async def get_expiry(self, lat: float, lon: float) -> Optional[datetime]:
         """Get cache expiry time."""
@@ -145,7 +146,7 @@ class WeatherService:
             "wind_dir_deg":   current.get("wind_direction_10m", 0.0),
             "temperature_c":  current.get("temperature_2m", 25.0),
             "humidity":       current.get("relative_humidity_2m", 70.0),
-            "datetime":       current.get("time", datetime.utcnow().isoformat()) + "Z",
+            "datetime":       current.get("time", utcnow_naive().isoformat()) + "Z",
             "source":         "open-meteo",
         }
         
@@ -161,7 +162,7 @@ class WeatherService:
         """
         import numpy as np
         
-        now = datetime.utcnow()
+        now = utcnow_naive()
         hour = now.hour
         
         # Temperature: diurnal cycle (26-34°C for tropical)
@@ -187,7 +188,7 @@ class WeatherService:
             "wind_dir_deg": float(wind_dir),
             "temperature_c": float(temp),
             "humidity": float(humidity),
-            "datetime": now.isoformat() + "Z",
+            "datetime": format_rfc3339(now),
             "source": "synthetic",
             "cached": False,
             "cache_expires_at": None,
@@ -251,7 +252,7 @@ class WeatherService:
         for i in range(n):
             dt = datetime.fromisoformat(times_raw[i])
             forecasts.append({
-                "datetime":       dt.isoformat() + "Z",
+                "datetime":       format_rfc3339(dt),
                 "hour":           dt.hour,
                 "wind_speed_ms":  float(winds[i])  if i < len(winds) else 2.0,
                 "wind_dir_deg":   float(dirs[i])   if i < len(dirs)  else 45.0,
@@ -283,7 +284,7 @@ class WeatherService:
         import numpy as np
         
         rng = np.random.default_rng()
-        start = datetime.utcnow()
+        start = utcnow_naive()
         forecasts = []
         
         for h in range(hours):
@@ -317,7 +318,7 @@ class WeatherService:
             rainfall = float(np.clip(rng.exponential(3.0), 0.0, 25.0)) if rng.random() < rain_prob else 0.0
             
             forecasts.append({
-                "datetime": dt.isoformat() + "Z",
+                "datetime": format_rfc3339(dt),
                 "hour": hour,
                 "wind_speed_ms": float(wind_speed),
                 "wind_dir_deg": float(wind_dir),

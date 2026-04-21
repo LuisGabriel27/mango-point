@@ -20,6 +20,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from sqlalchemy import select, func, case, desc, and_, text, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class MonitoringService:
             logger.warning(f"[Monitoring] hotspots failed: {e}")
             results["hotspots"] = []
 
-        results["computed_at"] = datetime.utcnow().isoformat() + "Z"
+        results["computed_at"] = format_rfc3339(utcnow_naive())
         return results
 
     # ─────────────────────────────────────────────
@@ -219,7 +220,7 @@ class MonitoringService:
         rain_result = await db.execute(
             select(func.sum(EnvironmentalCondition.rainfall))
             .where(
-                EnvironmentalCondition.condition_date >= datetime.utcnow() - timedelta(hours=24)
+                EnvironmentalCondition.condition_date >= utcnow_naive() - timedelta(hours=24)
             )
         )
         total_rain = rain_result.scalar()
@@ -455,7 +456,7 @@ class MonitoringService:
                 "severity": a.severity.value if hasattr(a.severity, "value") else str(a.severity),
                 "message": a.message or "",
                 "risk_value": a.risk_value,
-                "triggered_at": a.triggered_at.isoformat() + "Z" if a.triggered_at else None,
+                "triggered_at": format_rfc3339(a.triggered_at) if a.triggered_at else None,
             }
             for a in recent_alerts
         ]

@@ -18,6 +18,7 @@ from ..core.database import (
 )
 from ..models.schemas import EvaluationRequest, EvaluationResponse
 from ..services.evaluation_service import evaluation_service
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ async def evaluate_inline(
         )
         
         return {
-            "evaluation_timestamp": datetime.utcnow().isoformat() + "Z",
+            "evaluation_timestamp": format_rfc3339(utcnow_naive()),
             **result,
         }
         
@@ -241,7 +242,7 @@ async def get_metrics_history(
             
             metrics_history.append({
                 "run_id": run.run_id,
-                "timestamp": run.started_at.isoformat() + "Z" if run.started_at else None,
+                "timestamp": format_rfc3339(run.started_at) if run.started_at else None,
                 "precision": eval_result.precision,
                 "recall": eval_result.recall,
                 "f1_score": eval_result.f1_score,

@@ -14,8 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
-from api.core.database import get_db
-from db.models import UserAccount
+from api.core.database import (
+    database_unavailable_http_exception,
+    get_db,
+    is_database_unavailable,
+)
+from db.models import UserAccount, UserRoleEnum
+from utils.datetime_utils import utcnow_naive
 
 
 class AuthConfigurationError(RuntimeError):
@@ -35,6 +40,35 @@ except ModuleNotFoundError:
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _role_from_claim(role_value: Any) -> UserRoleEnum:
+    """Coerce token role claim to a known enum value."""
+    normalized = str(role_value or "").strip().lower()
+    try:
+        return UserRoleEnum(normalized)
+    except ValueError:
+        return UserRoleEnum.ADMIN
+
+
+def _build_offline_user_from_payload(payload: dict[str, Any], user_id: int) -> UserAccount | None:
+    """Create an in-memory user model when offline auth claims are present."""
+    if not payload.get("offline_auth"):
+        return None
+
+    now = utcnow_naive()
+    return UserAccount(
+        user_id=user_id,
+        full_name=str(payload.get("full_name") or settings.DEFAULT_ADMIN_FULL_NAME or "MangoPoint Administrator"),
+        username=str(payload.get("username") or settings.DEFAULT_ADMIN_USERNAME or "admin"),
+        email=str(payload.get("email") or settings.DEFAULT_ADMIN_EMAIL or "admin@mangopoint.local"),
+        password_hash="",
+        role=_role_from_claim(payload.get("role")),
+        is_active=bool(payload.get("is_active", True)),
+        created_at=now,
+        updated_at=now,
+        last_login_at=now,
+    )
 
 
 def _get_secret_key() -> str:
@@ -142,9 +176,21 @@ async def get_current_user(
             detail="Invalid authentication token.",
         ) from exc
 
-    result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
+    offline_user = _build_offline_user_from_payload(payload, user_id)
+
+    try:
+        result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
+    except Exception as exc:
+        if offline_user is not None and is_database_unavailable(exc):
+            return offline_user
+        if is_database_unavailable(exc):
+            raise database_unavailable_http_exception() from exc
+        raise
+
     user = result.scalar_one_or_none()
     if user is None:
+        if offline_user is not None:
+            return offline_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authenticated user no longer exists.",

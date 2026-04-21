@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
+from api.core.database import is_database_unavailable
 from api.core.security import (
     AuthConfigurationError,
     create_access_token,
@@ -26,6 +27,76 @@ class AuthenticationError(RuntimeError):
 
 class AuthService:
     """Authentication-related business logic."""
+
+    def _build_offline_default_admin(self) -> UserAccount:
+        """Build an in-memory default admin user for offline auth fallback."""
+        role_value = settings.DEFAULT_ADMIN_ROLE.strip().lower() or UserRoleEnum.ADMIN.value
+        try:
+            role = UserRoleEnum(role_value)
+        except ValueError:
+            role = UserRoleEnum.ADMIN
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return UserAccount(
+            user_id=0,
+            full_name=settings.DEFAULT_ADMIN_FULL_NAME.strip() or "MangoPoint Administrator",
+            username=settings.DEFAULT_ADMIN_USERNAME.strip() or "admin",
+            email=settings.DEFAULT_ADMIN_EMAIL.strip().lower() or "admin@mangopoint.local",
+            password_hash="",
+            role=role,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+            last_login_at=now,
+        )
+
+    def _matches_default_admin_credentials(self, username_or_email: str, password: str) -> bool:
+        """Validate whether submitted credentials match configured default admin values."""
+        if not settings.DEFAULT_ADMIN_ENABLED:
+            return False
+
+        normalized_login = (username_or_email or "").strip().lower()
+        if not normalized_login:
+            return False
+
+        username = settings.DEFAULT_ADMIN_USERNAME.strip().lower()
+        email = settings.DEFAULT_ADMIN_EMAIL.strip().lower()
+        expected_password = settings.DEFAULT_ADMIN_PASSWORD
+        return (
+            normalized_login in {username, email}
+            and password == expected_password
+            and bool(expected_password)
+        )
+
+    def login_with_default_admin_fallback(self, username_or_email: str, password: str) -> LoginResponse | None:
+        """
+        Authenticate against default admin credentials when the database is unavailable.
+
+        Returns None when fallback credentials do not match.
+        """
+        if not self._matches_default_admin_credentials(username_or_email, password):
+            return None
+
+        user = self._build_offline_default_admin()
+        token, expires_at = create_access_token(
+            subject=str(user.user_id),
+            extra_claims={
+                "role": user.role.value,
+                "offline_auth": True,
+                "username": user.username,
+                "email": user.email,
+                "full_name": user.full_name,
+                "is_active": user.is_active,
+            },
+        )
+
+        expires_at_utc = expires_at.astimezone(timezone.utc)
+        return LoginResponse(
+            access_token=token,
+            expires_at=expires_at_utc.isoformat().replace("+00:00", "Z"),
+            expires_in_seconds=max(int((expires_at_utc - datetime.now(timezone.utc)).total_seconds()), 0),
+            user=AuthUserResponse.from_user(user),
+        )
 
     async def get_user_by_id(self, db: AsyncSession, user_id: int) -> UserAccount | None:
         """Fetch a user by primary key."""
@@ -69,7 +140,17 @@ class AuthService:
         password: str,
     ) -> LoginResponse:
         """Authenticate a user and issue a bearer token."""
-        user = await self.authenticate_user(db, username_or_email, password)
+        try:
+            user = await self.authenticate_user(db, username_or_email, password)
+        except Exception as exc:
+            if not is_database_unavailable(exc):
+                raise
+
+            fallback = self.login_with_default_admin_fallback(username_or_email, password)
+            if fallback is not None:
+                return fallback
+            raise
+
         token, expires_at = create_access_token(
             subject=str(user.user_id),
             extra_claims={"role": user.role.value},

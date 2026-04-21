@@ -17,6 +17,7 @@ from ..core.config import settings
 from db.models import Alert, AlertSeverity, AlertStatus
 from ..models.schemas import AlertCreate, AlertResponse, AlertSeverityEnum
 from .notification_service import notification_service
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,10 @@ class AlertService:
     
     def store_alert_in_memory(self, alert_data: "AlertCreate") -> None:
         """Store alert in memory when database is unavailable."""
-        from datetime import datetime
         self._memory_alerts.append({
             "alert_id": alert_data.alert_id,
             "simulation_run_id": alert_data.simulation_run_id,
-            "triggered_at": datetime.utcnow().isoformat() + "Z",
+            "triggered_at": format_rfc3339(utcnow_naive()),
             "severity": alert_data.severity.value if hasattr(alert_data.severity, 'value') else str(alert_data.severity),
             "status": "active",
             "risk_value": alert_data.risk_value,
@@ -219,7 +219,7 @@ class AlertService:
         alert = Alert(
             alert_id=alert_data.alert_id,
             simulation_run_id=alert_data.simulation_run_id,
-            triggered_at=datetime.utcnow(),
+            triggered_at=utcnow_naive(),
             severity=alert_data.severity,
             status=AlertStatus.ACTIVE,
             risk_value=alert_data.risk_value,
@@ -255,7 +255,7 @@ class AlertService:
             )
             if email_sent:
                 alert.email_sent = True
-                alert.email_sent_at = datetime.utcnow()
+                alert.email_sent_at = utcnow_naive()
                 logger.info(f"Email notification sent for alert {alert.alert_id}")
         except Exception as e:
             logger.error(f"Failed to send email for alert {alert.alert_id}: {e}")
@@ -268,7 +268,7 @@ class AlertService:
             )
             if sms_sent:
                 alert.sms_sent = True
-                alert.sms_sent_at = datetime.utcnow()
+                alert.sms_sent_at = utcnow_naive()
                 logger.info(f"SMS notification sent for alert {alert.alert_id}")
         except Exception as e:
             logger.error(f"Failed to send SMS for alert {alert.alert_id}: {e}")
@@ -325,7 +325,7 @@ class AlertService:
         if alert:
             alert.status = AlertStatus.ACKNOWLEDGED
             alert.acknowledged_by = acknowledged_by
-            alert.acknowledged_at = datetime.utcnow()
+            alert.acknowledged_at = utcnow_naive()
             if notes:
                 alert.resolution_notes = notes
             await db.flush()
@@ -347,7 +347,7 @@ class AlertService:
         
         if alert:
             alert.status = AlertStatus.RESOLVED
-            alert.resolved_at = datetime.utcnow()
+            alert.resolved_at = utcnow_naive()
             if resolution_notes:
                 alert.resolution_notes = resolution_notes
             await db.flush()

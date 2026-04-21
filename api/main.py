@@ -26,7 +26,13 @@ from sqlalchemy.exc import SQLAlchemyError
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.core.config import settings
-from api.core.database import DATABASE_UNAVAILABLE_DETAIL, async_session_maker, close_db, init_db
+from api.core.database import (
+    DATABASE_UNAVAILABLE_DETAIL,
+    async_session_maker,
+    close_db,
+    init_db,
+    is_database_unavailable,
+)
 from api.core.security import AuthConfigurationError, get_current_active_user
 from api.routes import auth, alerts, evaluation, monitoring, observations, simulation, validation, weather
 from api.services.auth_service import auth_service
@@ -122,6 +128,13 @@ async def database_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    if is_database_unavailable(exc):
+        logger.error(f"Database unavailable on {request.method} {request.url.path}: {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": DATABASE_UNAVAILABLE_DETAIL},
+        )
+
     logger.error(f"Unhandled exception: {exc}")
     return JSONResponse(
         status_code=500,

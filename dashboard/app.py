@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 import dash
-from dash import html, dcc, callback_context, no_update, Patch
+from dash import html, dcc, callback_context, no_update, Patch, dash_table
 from dash.dependencies import Input, Output, State, MATCH
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
@@ -54,6 +54,7 @@ from core.config import (
     PESTICIDE_COST_PER_HECTARE,
     CELL_AREA_HECTARES,
 )
+from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 
 
@@ -292,6 +293,7 @@ LOSS_ESTIMATE_ASSUMPTIONS = {
     "damage_low": 0.15,
     "damage_base": 0.30,
     "damage_high": 0.45,
+    "pesticide_cost_per_ha": float(PESTICIDE_COST_PER_HECTARE or 0.0),
 }
 PHENO_STAGE_COLORS = {
     "dormant": "#9e9e9e",
@@ -302,34 +304,103 @@ PHENO_STAGE_COLORS = {
 PHENO_STAGE_ORDER = ["dormant", "flowering", "fruitlet", "mature"]
 
 
-def _loss_assumptions_text():
+def _coerce_float(value, default, min_value=None, max_value=None):
+    """Safely coerce numeric UI inputs and clamp into valid range."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = float(default)
+
+    if min_value is not None:
+        numeric = max(min_value, numeric)
+    if max_value is not None:
+        numeric = min(max_value, numeric)
+    return numeric
+
+
+def _sanitize_economic_assumptions(data=None):
+    """Normalize mutable economic assumptions used by crop/economic impact cards."""
+    src = data if isinstance(data, dict) else {}
+
+    yield_per_tree = _coerce_float(
+        src.get("yield_per_tree_kg"),
+        LOSS_ESTIMATE_ASSUMPTIONS["yield_per_tree_kg"],
+        min_value=0.0,
+    )
+    farmgate_price = _coerce_float(
+        src.get("farmgate_price_php_per_kg"),
+        LOSS_ESTIMATE_ASSUMPTIONS["farmgate_price_php_per_kg"],
+        min_value=0.0,
+    )
+    damage_low = _coerce_float(
+        src.get("damage_low"),
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_low"],
+        min_value=0.0,
+        max_value=1.0,
+    )
+    damage_base = _coerce_float(
+        src.get("damage_base"),
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_base"],
+        min_value=0.0,
+        max_value=1.0,
+    )
+    damage_high = _coerce_float(
+        src.get("damage_high"),
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_high"],
+        min_value=0.0,
+        max_value=1.0,
+    )
+    damage_values = sorted([damage_low, damage_base, damage_high])
+
+    pesticide_cost = _coerce_float(
+        src.get("pesticide_cost_per_ha"),
+        LOSS_ESTIMATE_ASSUMPTIONS["pesticide_cost_per_ha"],
+        min_value=0.0,
+    )
+
+    return {
+        "yield_per_tree_kg": yield_per_tree,
+        "farmgate_price_php_per_kg": farmgate_price,
+        "damage_low": damage_values[0],
+        "damage_base": damage_values[1],
+        "damage_high": damage_values[2],
+        "pesticide_cost_per_ha": pesticide_cost,
+    }
+
+
+def _loss_assumptions_text(assumptions=None):
+    assumptions = _sanitize_economic_assumptions(assumptions)
     return (
         "Planning estimate only: "
-        f"{LOSS_ESTIMATE_ASSUMPTIONS['yield_per_tree_kg']:.0f} kg/tree, "
-        f"PHP {LOSS_ESTIMATE_ASSUMPTIONS['farmgate_price_php_per_kg']:.0f}/kg, "
-        "damage: 15% / 30% / 45%"
+        f"{assumptions['yield_per_tree_kg']:.0f} kg/tree, "
+        f"PHP {assumptions['farmgate_price_php_per_kg']:.0f}/kg, "
+        f"damage: {assumptions['damage_low'] * 100:.0f}% / "
+        f"{assumptions['damage_base'] * 100:.0f}% / "
+        f"{assumptions['damage_high'] * 100:.0f}%"
     )
 
 
-def _loss_scenario_values(infested_trees):
+def _loss_scenario_values(infested_trees, assumptions=None):
     """Compute low/base/high loss-at-risk scenarios in PHP."""
+    assumptions = _sanitize_economic_assumptions(assumptions)
     try:
         infested = max(float(infested_trees), 0.0)
     except (TypeError, ValueError):
         infested = 0.0
 
     unit_value = (
-        LOSS_ESTIMATE_ASSUMPTIONS["yield_per_tree_kg"]
-        * LOSS_ESTIMATE_ASSUMPTIONS["farmgate_price_php_per_kg"]
+        assumptions["yield_per_tree_kg"]
+        * assumptions["farmgate_price_php_per_kg"]
     )
-    low = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_low"]
-    base = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_base"]
-    high = infested * unit_value * LOSS_ESTIMATE_ASSUMPTIONS["damage_high"]
+    low = infested * unit_value * assumptions["damage_low"]
+    base = infested * unit_value * assumptions["damage_base"]
+    high = infested * unit_value * assumptions["damage_high"]
     return low, base, high
 
 
-def _build_loss_at_risk_chart(rows, x_title):
+def _build_loss_at_risk_chart(rows, x_title, assumptions=None):
     """Build scenario-based estimated loss-at-risk chart."""
+    assumptions = _sanitize_economic_assumptions(assumptions)
     if not rows:
         return go.Figure()
 
@@ -337,7 +408,7 @@ def _build_loss_at_risk_chart(rows, x_title):
     for row in rows:
         x_value = row.get("x")
         infested = row.get("infested_trees", 0)
-        low, base, high = _loss_scenario_values(infested)
+        low, base, high = _loss_scenario_values(infested, assumptions)
         x_vals.append(x_value)
         infested_vals.append(int(max(float(infested or 0), 0)))
         low_vals.append(low)
@@ -352,7 +423,7 @@ def _build_loss_at_risk_chart(rows, x_title):
         x=x_vals,
         y=low_vals,
         mode="lines",
-        name="Low Scenario (15%)",
+        name=f"Low Scenario ({assumptions['damage_low'] * 100:.0f}%)",
         line=dict(color="#16a34a", width=1.8),
         customdata=infested_vals,
         hovertemplate=(
@@ -366,7 +437,7 @@ def _build_loss_at_risk_chart(rows, x_title):
         x=x_vals,
         y=high_vals,
         mode="lines",
-        name="High Scenario (45%)",
+        name=f"High Scenario ({assumptions['damage_high'] * 100:.0f}%)",
         line=dict(color="#dc2626", width=1.8),
         fill="tonexty",
         fillcolor="rgba(220, 38, 38, 0.10)",
@@ -382,7 +453,7 @@ def _build_loss_at_risk_chart(rows, x_title):
         x=x_vals,
         y=base_vals,
         mode="lines+markers",
-        name="Base Scenario (30%)",
+        name=f"Base Scenario ({assumptions['damage_base'] * 100:.0f}%)",
         line=dict(color="#f59e0b", width=2.4),
         marker=dict(size=5),
         customdata=infested_vals,
@@ -1333,13 +1404,204 @@ def auth_error_message(response, fallback_message):
         return "Authentication endpoint not found. Restart the FastAPI backend after installing the new auth dependencies."
     if response.get("status_code") == 401:
         return "Session expired. Sign in again."
+    if response.get("status_code") == 503:
+        return "Database is offline. Sign in using default admin credentials, or start PostgreSQL/PostGIS."
     return response.get("error") or fallback_message
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Map figure builder
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_heatmap_layer=False, tree_overrides=None):
+def _build_map_layers(show_grid_overlay=False):
+    """Compose map raster/image layers in draw order."""
+    _ = show_grid_overlay
+    layers = [
+        {
+            "sourcetype": "raster",
+            "source": [SATELLITE_TILE_URL],
+            "below": "traces",
+            "opacity": 1.0,
+        }
+    ]
+
+    if ORTHO_OVERLAY:
+        layers.append(
+            {
+                "sourcetype": "image",
+                "source": ORTHO_OVERLAY["b64"],
+                "coordinates": ORTHO_OVERLAY["coordinates"],
+                "below": "traces",
+                "opacity": 0.92,
+            }
+        )
+
+    return layers
+
+
+def _grid_lines_from_cell_polygons(geojson):
+    """Build exact grid boundary lines from simulation cell polygons."""
+    if not geojson or "features" not in geojson:
+        return None
+
+    lon_edges = set()
+    lat_edges = set()
+
+    for feat in geojson.get("features", []):
+        geom = feat.get("geometry", {})
+        if geom.get("type") != "Polygon":
+            continue
+        coords = geom.get("coordinates", [])
+        if not coords or not coords[0] or len(coords[0]) < 4:
+            continue
+
+        ring = coords[0][:4]
+        lons = [pt[0] for pt in ring]
+        lats = [pt[1] for pt in ring]
+        lon_edges.add(round(min(lons), 12))
+        lon_edges.add(round(max(lons), 12))
+        lat_edges.add(round(min(lats), 12))
+        lat_edges.add(round(max(lats), 12))
+
+    if len(lon_edges) < 2 or len(lat_edges) < 2:
+        return None
+
+    lon_values = sorted(lon_edges)
+    lat_values = sorted(lat_edges)
+    lon_min, lon_max = lon_values[0], lon_values[-1]
+    lat_min, lat_max = lat_values[0], lat_values[-1]
+
+    vertical_lon, vertical_lat = [], []
+    for lon in lon_values:
+        vertical_lon.extend([lon, lon, None])
+        vertical_lat.extend([lat_min, lat_max, None])
+
+    horizontal_lon, horizontal_lat = [], []
+    for lat in lat_values:
+        horizontal_lon.extend([lon_min, lon_max, None])
+        horizontal_lat.extend([lat, lat, None])
+
+    return {
+        "vertical_lon": vertical_lon,
+        "vertical_lat": vertical_lat,
+        "horizontal_lon": horizontal_lon,
+        "horizontal_lat": horizontal_lat,
+    }
+
+
+def _grid_lines_from_point_features(features, cell_size_m=5.0, buffer_cells=2):
+    """Approximate simulation grid lines directly from point features (default orchard view)."""
+    points = []
+    for feat in features or []:
+        geom = feat.get("geometry", {})
+        if geom.get("type") != "Point":
+            continue
+        coords = geom.get("coordinates", [])
+        if len(coords) < 2:
+            continue
+        points.append((float(coords[0]), float(coords[1])))
+
+    if len(points) < 2:
+        return None
+
+    lons = [p[0] for p in points]
+    lats = [p[1] for p in points]
+    min_lon, max_lon = min(lons), max(lons)
+    min_lat, max_lat = min(lats), max(lats)
+
+    m_lat = 111_132.0
+    m_lon = 111_132.0 * np.cos(np.radians((min_lat + max_lat) / 2))
+    if abs(m_lon) < 1e-9:
+        return None
+
+    cols = int(np.ceil((max_lon - min_lon) * m_lon / cell_size_m)) + 2 * buffer_cells
+    rows = int(np.ceil((max_lat - min_lat) * m_lat / cell_size_m)) + 2 * buffer_cells
+    rows = max(rows, 10)
+    cols = max(cols, 10)
+
+    origin_lon = min_lon - buffer_cells * cell_size_m / m_lon
+    origin_lat = min_lat - buffer_cells * cell_size_m / m_lat
+
+    occupied_rows = []
+    occupied_cols = []
+    for lon, lat in points:
+        col = int(np.floor((lon - origin_lon) * m_lon / cell_size_m))
+        row = int(np.floor((lat - origin_lat) * m_lat / cell_size_m))
+        if 0 <= row < rows and 0 <= col < cols:
+            occupied_rows.append(row)
+            occupied_cols.append(col)
+
+    if not occupied_rows or not occupied_cols:
+        return None
+
+    row_min, row_max = min(occupied_rows), max(occupied_rows)
+    col_min, col_max = min(occupied_cols), max(occupied_cols)
+
+    vertical_lon, vertical_lat = [], []
+    for col_edge in range(col_min, col_max + 2):
+        lon_edge = origin_lon + col_edge * cell_size_m / m_lon
+        lat_start = origin_lat + row_min * cell_size_m / m_lat
+        lat_end = origin_lat + (row_max + 1) * cell_size_m / m_lat
+        vertical_lon.extend([lon_edge, lon_edge, None])
+        vertical_lat.extend([lat_start, lat_end, None])
+
+    horizontal_lon, horizontal_lat = [], []
+    for row_edge in range(row_min, row_max + 2):
+        lat_edge = origin_lat + row_edge * cell_size_m / m_lat
+        lon_start = origin_lon + col_min * cell_size_m / m_lon
+        lon_end = origin_lon + (col_max + 1) * cell_size_m / m_lon
+        horizontal_lon.extend([lon_start, lon_end, None])
+        horizontal_lat.extend([lat_edge, lat_edge, None])
+
+    return {
+        "vertical_lon": vertical_lon,
+        "vertical_lat": vertical_lat,
+        "horizontal_lon": horizontal_lon,
+        "horizontal_lat": horizontal_lat,
+    }
+
+
+def _add_grid_overlay_traces(fig: go.Figure, geojson=None):
+    """Draw geometry-based grid lines on top of the map."""
+    lines = _grid_lines_from_cell_polygons(geojson)
+    if lines is None:
+        feature_source = geojson.get("features", []) if isinstance(geojson, dict) else DEFAULT_ORCHARD.get("features", [])
+        lines = _grid_lines_from_point_features(feature_source)
+    if lines is None:
+        return
+
+    line_style = dict(color="rgba(20, 34, 30, 0.46)", width=1)
+    fig.add_trace(
+        go.Scattermap(
+            lon=lines["vertical_lon"],
+            lat=lines["vertical_lat"],
+            mode="lines",
+            line=line_style,
+            hoverinfo="skip",
+            showlegend=False,
+            name="Grid",
+        )
+    )
+    fig.add_trace(
+        go.Scattermap(
+            lon=lines["horizontal_lon"],
+            lat=lines["horizontal_lat"],
+            mode="lines",
+            line=line_style,
+            hoverinfo="skip",
+            showlegend=False,
+            name="Grid",
+        )
+    )
+
+
+def build_risk_map(
+    geojson=None,
+    alerts=None,
+    title="Pest Risk Heatmap",
+    show_heatmap_layer=False,
+    tree_overrides=None,
+    show_grid_overlay=False,
+):
     """Build a Plotly Mapbox scatter plot coloured by risk, with optional density heatmap layer.
     
     Parameters
@@ -1423,6 +1685,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                     ),
                     hoverinfo="skip",
                     name="Risk Heatmap",
+                    showlegend=False,
                 )
             )
 
@@ -1451,6 +1714,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                 hoverinfo="text",
                 customdata=customdata,  # For tree management modal
                 name="Trees",
+                showlegend=False,
             )
         )
         if ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
@@ -1506,6 +1770,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                     marker=dict(size=14, color=tree_colors, opacity=0.9),
                     text=tree_texts, hoverinfo="text",
                     name="Trees",
+                    showlegend=False,
                     customdata=tree_customdata,  # For tree management modal
                 )
             )
@@ -1518,6 +1783,9 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                     hoverinfo="skip", showlegend=False,
                 )
             )
+
+    if show_grid_overlay:
+        _add_grid_overlay_traces(fig, geojson=geojson)
 
     # Alert markers
     if alerts:
@@ -1537,20 +1805,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
                 )
 
     # --- satellite basemap under the orchard overlay and simulation traces ---
-    mapbox_layers = [{
-        "sourcetype": "raster",
-        "source": [SATELLITE_TILE_URL],
-        "below": "traces",
-        "opacity": 1.0,
-    }]
-    if ORTHO_OVERLAY:
-        mapbox_layers.append({
-            "sourcetype": "image",
-            "source": ORTHO_OVERLAY["b64"],
-            "coordinates": ORTHO_OVERLAY["coordinates"],
-            "below": "traces",
-            "opacity": 0.92,
-        })
+    mapbox_layers = _build_map_layers(show_grid_overlay=show_grid_overlay)
 
     fig.update_layout(
         map=dict(
@@ -1562,6 +1817,7 @@ def build_risk_map(geojson=None, alerts=None, title="Pest Risk Heatmap", show_he
         ),
         margin=dict(l=0, r=0, t=32, b=0),
         title=dict(text=title, x=0.5, font=dict(size=14)),
+        showlegend=False,
         height=720,
         paper_bgcolor="rgba(0,0,0,0)",
         dragmode="pan",  # Allow pan for click interaction
@@ -1653,102 +1909,446 @@ def _card(
 
 def make_weather_card():
     body = [
+        # ── Live weather (always visible, auto-refreshes) ──────────
         dbc.Spinner(html.Div(id="weather-content", children="Waiting for data…"), size="sm"),
         html.Small(
             [icon("arrow-repeat", "me-1"), "Auto-refreshes every 60 s"],
             className="text-muted mt-2 d-block",
         ),
+
+        html.Hr(className="my-2"),
+
+        # ── Manual weather override section ────────────────────────
+        html.Div(
+            [
+                dbc.Switch(
+                    id="weather-override-toggle",
+                    label=" Manual Weather Override",
+                    value=False,
+                    className="fw-medium mb-0",
+                ),
+                html.Small(
+                    "Override live forecast for scenario testing. "
+                    "Only used when running a simulation.",
+                    className="text-muted d-block mb-1",
+                ),
+            ]
+        ),
+        dbc.Collapse(
+            html.Div(
+                [
+                    dbc.Alert(
+                        [icon("flask", "me-1"), " Scenario mode active — simulation uses these values"],
+                        color="warning",
+                        className="py-1 px-2 mb-2",
+                        style={"fontSize": "0.78rem"},
+                    ),
+                    # Temperature
+                    dbc.Label(
+                        [icon("thermometer-half", "me-1"), " Temperature (°C)"],
+                        className="small fw-medium mb-1",
+                    ),
+                    dcc.Slider(
+                        id="weather-manual-temp",
+                        min=15,
+                        max=45,
+                        step=0.5,
+                        value=30.0,
+                        marks={15: "15", 25: "25", 35: "35", 45: "45"},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                        className="mb-3",
+                    ),
+                    # Wind speed
+                    dbc.Label(
+                        [icon("wind", "me-1"), " Wind Speed (m/s)"],
+                        className="small fw-medium mb-1",
+                    ),
+                    dcc.Slider(
+                        id="weather-manual-wind-speed",
+                        min=0,
+                        max=15,
+                        step=0.5,
+                        value=2.0,
+                        marks={0: "0", 5: "5", 10: "10", 15: "15"},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                        className="mb-3",
+                    ),
+                    # Wind direction
+                    dbc.Label(
+                        [icon("compass", "me-1"), " Wind Direction (° from)"],
+                        className="small fw-medium mb-1",
+                    ),
+                    dcc.Slider(
+                        id="weather-manual-wind-dir",
+                        min=0,
+                        max=355,
+                        step=5,
+                        value=90,
+                        marks={0: "N", 90: "E", 180: "S", 270: "W", 355: "N"},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                        className="mb-3",
+                    ),
+                    # Rainfall
+                    dbc.Label(
+                        [icon("cloud-rain", "me-1"), " Rainfall (mm/h)"],
+                        className="small fw-medium mb-1",
+                    ),
+                    dcc.Slider(
+                        id="weather-manual-rainfall",
+                        min=0,
+                        max=50,
+                        step=1,
+                        value=0,
+                        marks={0: "0", 10: "10", 25: "25", 50: "50"},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                        className="mb-1",
+                    ),
+                    html.Small(
+                        "Rainfall > 5 mm triggers Cecid Fly emergence (requires FRUITLET stage).",
+                        className="text-muted d-block",
+                    ),
+
+                    # ── Time-varying weather (advanced) ───────────────
+                    html.Hr(className="my-3"),
+                    dbc.Switch(
+                        id="weather-timevarying-toggle",
+                        label=" Time-varying schedule (advanced)",
+                        value=False,
+                        className="fw-medium mb-1",
+                    ),
+                    html.Small(
+                        "Vary weather hour-by-hour. Use this to simulate "
+                        "wet → dry transitions for Cecid Fly emergence.",
+                        className="text-muted d-block mb-2",
+                    ),
+                    dbc.Collapse(
+                        html.Div(
+                            [
+                                # Simulation start hour-of-day (anchors crepuscular gate timing)
+                                dbc.Label(
+                                    [icon("clock", "me-1"), " Start time (hour of day, 0–23)"],
+                                    className="small fw-medium mb-1",
+                                ),
+                                dcc.Slider(
+                                    id="weather-start-hour",
+                                    min=0, max=23, step=1, value=0,
+                                    marks={0: "00", 6: "06", 12: "12", 18: "18", 23: "23"},
+                                    tooltip={"placement": "bottom", "always_visible": True},
+                                    className="mb-1",
+                                ),
+                                html.Small(
+                                    "Hour of day that index 0 of the schedule represents. "
+                                    "Start at 00 to keep hour-of-day == hour-index for the first day.",
+                                    className="text-muted d-block mb-3",
+                                ),
+
+                                # Pre-history rainfall (yesterday's rain)
+                                dbc.Label(
+                                    [icon("clock-history", "me-1"), " Rain in last 24 h (mm total)"],
+                                    className="small fw-medium mb-1",
+                                ),
+                                dcc.Slider(
+                                    id="weather-prefix-rain-total",
+                                    min=0, max=80, step=1, value=0,
+                                    marks={0: "0", 20: "20", 40: "40", 80: "80"},
+                                    tooltip={"placement": "bottom", "always_visible": True},
+                                    className="mb-1",
+                                ),
+                                html.Small(
+                                    "Pre-seeds the engine's 24-h rainfall buffer. "
+                                    "Spread evenly across the prior 24 hours.",
+                                    className="text-muted d-block mb-3",
+                                ),
+
+                                # Cecid preset button
+                                dbc.Button(
+                                    [icon("droplet", "me-1"), " Apply Cecid wet→dry preset"],
+                                    id="weather-cecid-preset-btn",
+                                    color="info",
+                                    size="sm",
+                                    outline=True,
+                                    className="mb-2 w-100",
+                                ),
+                                html.Small(
+                                    "Fills the table with 11 wet hours then dry — "
+                                    "opens cecid gate at dawn/dusk.",
+                                    className="text-muted d-block mb-2",
+                                ),
+
+                                # Blocks editor (small table)
+                                dbc.Label(
+                                    [icon("table", "me-1"), " Weather blocks"],
+                                    className="small fw-medium mb-1",
+                                ),
+                                dash_table.DataTable(
+                                    id="weather-blocks-table",
+                                    columns=[
+                                        {"name": "Start hr", "id": "start_hour", "type": "numeric"},
+                                        {"name": "End hr",   "id": "end_hour",   "type": "numeric"},
+                                        {"name": "Temp °C",  "id": "temperature_c", "type": "numeric"},
+                                        {"name": "Wind m/s", "id": "wind_speed_ms", "type": "numeric"},
+                                        {"name": "Dir °",    "id": "wind_dir_deg",  "type": "numeric"},
+                                        {"name": "Rain mm",  "id": "rainfall_mm",   "type": "numeric"},
+                                    ],
+                                    data=[],
+                                    editable=True,
+                                    row_deletable=True,
+                                    style_table={"overflowX": "auto", "fontSize": "0.78rem"},
+                                    style_cell={"padding": "4px", "textAlign": "center", "minWidth": 50},
+                                    style_header={"backgroundColor": "#f3f4f6", "fontWeight": "600"},
+                                ),
+                                dbc.Button(
+                                    [icon("plus-circle", "me-1"), " Add block"],
+                                    id="weather-blocks-add-btn",
+                                    color="secondary",
+                                    size="sm",
+                                    outline=True,
+                                    className="mt-2 mb-2 w-100",
+                                ),
+                                html.Small(
+                                    "end_hour is exclusive. Later rows override "
+                                    "earlier rows in overlapping ranges.",
+                                    className="text-muted d-block mb-3",
+                                ),
+
+                                # Debug gates toggle
+                                dbc.Switch(
+                                    id="weather-debug-gates",
+                                    label=" Show per-hour gate diagnostics",
+                                    value=False,
+                                    className="fw-medium mb-1",
+                                ),
+                                html.Small(
+                                    "After running, displays which hours opened "
+                                    "the gate and why the others stayed closed.",
+                                    className="text-muted d-block",
+                                ),
+                            ],
+                            className="pt-1 ps-1",
+                        ),
+                        id="weather-timevarying-collapse",
+                        is_open=False,
+                    ),
+                ],
+                className="pt-2",
+            ),
+            id="weather-manual-collapse",
+            is_open=False,
+        ),
     ]
     return _card("cloud-sun", "Live Weather", body, collapsible=True, panel_id="weather")
 
 
+def _section_label(text, icon_name=None):
+    """Compact uppercase section divider label for sidebar panels."""
+    children = [html.Span(text, className="px-2 text-uppercase fw-semibold small")]
+    if icon_name:
+        children.insert(0, icon(icon_name, "me-1"))
+    return html.Div(
+        children,
+        className="d-flex align-items-center mt-3 mb-2",
+        style={"color": "var(--mp-accent, #6bab90)", "borderBottom": "1.5px solid var(--mp-accent, #6bab90)", "paddingBottom": "2px"},
+    )
+
+
 def make_sim_controls():
+    # ── shared compass direction options ───────────────────────
+    _dir_opts = [
+        {"label": "↖  NW — North-West", "value": "NW"},
+        {"label": "↑   N  — North",      "value": "N"},
+        {"label": "↗  NE — North-East",  "value": "NE"},
+        {"label": "←  W  — West",        "value": "W"},
+        {"label": "→  E  — East",        "value": "E"},
+        {"label": "↙  SW — South-West",  "value": "SW"},
+        {"label": "↓   S  — South",      "value": "S"},
+        {"label": "↘  SE — South-East",  "value": "SE"},
+    ]
+
     body = [
-        # Pest type selector
-        dbc.Label([icon("bug", "me-1"), " Pest type"], className="fw-medium mb-1"),
+
+        # ── SPREAD MODEL ───────────────────────────────────────
+        _section_label("Spread Model", "diagram-3"),
         dbc.Select(
-            id="pest-type",
+            id="sim-mode",
             options=[
-                {"label": "Cecid Fly (Gall Midge)", "value": "cecid"},
-                {"label": "Fruit Fly (Bactrocera)", "value": "fruitfly"},
+                {"label": "⬜  Grid — Cellular Automata (baseline)", "value": "grid"},
+                {"label": "🌐  Tree Graph — Crown-aware model",       "value": "tree_graph"},
             ],
-            value="fruitfly",
-            className="mb-2",
+            value="grid",
+            className="mb-1",
         ),
-        
-        # Orchard phenology stage selector (NEW - from 2022-2025 data calibration)
-        dbc.Label([icon("flower1", "me-1"), " Orchard Stage"], className="fw-medium mb-1"),
-        dbc.Select(
-            id="orchard-stage",
-            options=[
-                {"label": "🌿 Dormant — No fruit activity", "value": "dormant"},
-                {"label": "🌸 Flowering — Blossoms present", "value": "flowering"},
-                {"label": "🫛 Fruitlet — Young fruit forming (Cecid Fly risk)", "value": "fruitlet"},
-                {"label": "🥭 Mature — Ripe fruit (Fruit Fly risk)", "value": "mature"},
-            ],
-            value="mature",
-            className="mb-2",
+        dbc.Collapse(
+            dbc.Alert(
+                [icon("info-circle", "me-1"),
+                 " Tree Graph uses crown-to-crown distances. Supply ",
+                 html.Code("crown_radius_m"), " in GeoJSON properties, or set a global fallback."],
+                color="info", className="py-1 px-2 mt-1 mb-0", style={"fontSize": "0.78rem"},
+            ),
+            id="sim-mode-tg-hint",
+            is_open=False,
         ),
+
+        # ── PEST & PHENOLOGY ───────────────────────────────────
+        _section_label("Pest & Phenology", "bug"),
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("Pest", className="small fw-medium mb-1"),
+                dbc.Select(
+                    id="pest-type",
+                    options=[
+                        {"label": "🦟  Cecid Fly",   "value": "cecid"},
+                        {"label": "🪰  Fruit Fly",   "value": "fruitfly"},
+                    ],
+                    value="fruitfly",
+                    size="sm",
+                ),
+            ], md=6, xs=12),
+            dbc.Col([
+                dbc.Label("Stage", className="small fw-medium mb-1"),
+                dbc.Select(
+                    id="orchard-stage",
+                    options=[
+                        {"label": "🌿 Dormant",   "value": "dormant"},
+                        {"label": "🌸 Flowering", "value": "flowering"},
+                        {"label": "🫛 Fruitlet",  "value": "fruitlet"},
+                        {"label": "🥭 Mature",    "value": "mature"},
+                    ],
+                    value="mature",
+                    size="sm",
+                ),
+            ], md=6, xs=12),
+        ], className="g-2 mb-1"),
         html.Small(
-            "Stage determines which pests can activate based on biological triggers.",
+            "Fruitlet activates Cecid Fly · Mature activates Fruit Fly",
             className="text-muted d-block mb-2",
         ),
-        
-        # Days since flowering (for sugar index calculation)
-        dbc.Label([icon("calendar-event", "me-1"), " Days Since Flowering"], className="fw-medium mb-1"),
+
+        dbc.Label([icon("calendar-event", "me-1"), " Days Since Flowering"],
+                  className="small fw-medium mb-1"),
         dcc.Slider(
             id="days-flowering",
-            min=0,
-            max=120,
-            step=5,
-            value=60,
-            marks={0: "0", 30: "30", 60: "60", 90: "90", 120: "120"},
+            min=0, max=120, step=5, value=60,
+            marks={0: "0d", 30: "30d", 60: "60d", 90: "90d", 120: "120d"},
             tooltip={"placement": "bottom", "always_visible": False},
+            className="mb-1",
         ),
-        html.Small(
-            "Controls fruit ripeness (sugar index). Higher = riper fruit, more attractive to Fruit Fly.",
-            className="text-muted d-block mb-2",
-        ),
-        
-        # Neighbor threat slider (external orchard pressure)
-        dbc.Label([icon("exclamation-triangle", "me-1"), " Neighbor Threat Level"], className="fw-medium mb-1"),
+        html.Small("Higher = riper fruit = stronger Fruit Fly attraction.",
+                   className="text-muted d-block mb-0"),
+
+        # ── NEIGHBOR PRESSURE ──────────────────────────────────
+        _section_label("Neighbor Pressure", "exclamation-triangle"),
+
+        dbc.Label([icon("bar-chart-steps", "me-1"), " Threat Level"],
+                  className="small fw-medium mb-1"),
         dcc.Slider(
             id="neighbor-threat",
-            min=0,
-            max=1,
-            step=0.1,
-            value=0.0,
+            min=0, max=1, step=0.1, value=0.0,
             marks={0: "None", 0.3: "Low", 0.5: "Med", 0.7: "High", 1: "Max"},
             tooltip={"placement": "bottom", "always_visible": False},
+            className="mb-1",
+        ),
+
+        # Direction picker — revealed when threat > 0
+        dbc.Collapse(
+            html.Div([
+                dbc.Label([icon("compass", "me-1"), " Neighbor Direction"],
+                          className="small fw-medium mb-1 mt-2"),
+                dbc.Select(
+                    id="neighbor-direction",
+                    options=_dir_opts,
+                    value="N",
+                    className="mb-1",
+                ),
+                # Wind alignment hint — updated by callback
+                html.Div(id="neighbor-wind-hint"),
+            ]),
+            id="neighbor-direction-collapse",
+            is_open=False,
         ),
         html.Small(
-            "External pressure from adjacent unmanaged orchards (historical data shows ~2× higher CPTD).",
-            className="text-muted d-block mb-2",
+            "Pressure from unmanaged orchards (historical ~2× higher CPTD).",
+            className="text-muted d-block mb-0",
         ),
-        
-        html.Hr(className="my-2"),
-        
-        # Forecast duration
-        dbc.Label([icon("clock-history", "me-1"), " Forecast duration"], className="fw-medium mb-1"),
+
+        # ── DURATION ───────────────────────────────────────────
+        _section_label("Forecast Duration", "clock-history"),
         dbc.Select(
             id="sim-hours",
             options=[
-                {"label": "24 h", "value": "24"},
-                {"label": "48 h (recommended)", "value": "48"},
-                {"label": "72 h", "value": "72"},
-                {"label": "168 h (7 days)", "value": "168"},
+                {"label": "24 h — Short-range",      "value": "24"},
+                {"label": "48 h — Standard ✓",        "value": "48"},
+                {"label": "72 h — Extended",          "value": "72"},
+                {"label": "168 h — 7-day outlook",    "value": "168"},
             ],
             value="48",
-            className="mb-3",
+            className="mb-0",
         ),
+
+        # ── IMPACT ASSUMPTIONS (collapsed by default) ──────────
+        html.Div(
+            dbc.Button(
+                [icon("chevron-down", "me-1"), " Impact Assumptions"],
+                id="impact-collapse-toggle",
+                color="link",
+                size="sm",
+                className="px-0 text-muted fw-medium mt-3 mb-1",
+                n_clicks=0,
+            ),
+        ),
+        dbc.Collapse(
+            html.Div([
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Yield (kg/tree)", className="small mb-1"),
+                        dbc.Input(id="impact-yield-per-tree", type="number", min=0, step=1,
+                                  value=LOSS_ESTIMATE_ASSUMPTIONS["yield_per_tree_kg"], size="sm"),
+                    ], md=6, xs=12),
+                    dbc.Col([
+                        dbc.Label("Farmgate (PHP/kg)", className="small mb-1"),
+                        dbc.Input(id="impact-farmgate-price", type="number", min=0, step=1,
+                                  value=LOSS_ESTIMATE_ASSUMPTIONS["farmgate_price_php_per_kg"], size="sm"),
+                    ], md=6, xs=12),
+                ], className="g-2 mb-2"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Low %", className="small mb-1"),
+                        dbc.Input(id="impact-damage-low", type="number", min=0, max=100, step=1,
+                                  value=LOSS_ESTIMATE_ASSUMPTIONS["damage_low"] * 100, size="sm"),
+                    ], md=4, xs=12),
+                    dbc.Col([
+                        dbc.Label("Base %", className="small mb-1"),
+                        dbc.Input(id="impact-damage-base", type="number", min=0, max=100, step=1,
+                                  value=LOSS_ESTIMATE_ASSUMPTIONS["damage_base"] * 100, size="sm"),
+                    ], md=4, xs=12),
+                    dbc.Col([
+                        dbc.Label("High %", className="small mb-1"),
+                        dbc.Input(id="impact-damage-high", type="number", min=0, max=100, step=1,
+                                  value=LOSS_ESTIMATE_ASSUMPTIONS["damage_high"] * 100, size="sm"),
+                    ], md=4, xs=12),
+                ], className="g-2 mb-2"),
+                dbc.Label([icon("cash-stack", "me-1"), " Pesticide cost (PHP/ha)"],
+                          className="small fw-medium mb-1"),
+                dbc.Input(id="impact-pesticide-cost", type="number", min=0, step=50,
+                          value=LOSS_ESTIMATE_ASSUMPTIONS["pesticide_cost_per_ha"], size="sm",
+                          className="mb-1"),
+                html.Small("Updates Crop Impact and Economic Impact estimates.",
+                           className="text-muted d-block"),
+            ]),
+            id="impact-assumptions-collapse",
+            is_open=False,
+        ),
+
+        html.Hr(className="mt-3 mb-2"),
+
         dbc.Button(
-            [icon("play-circle", "me-2"), "Run Simulation"],
+            [icon("play-circle-fill", "me-2"), "Run Simulation"],
             id="run-sim-btn",
             color="success",
             className="w-100 fw-semibold",
             n_clicks=0,
         ),
         html.Div(id="sim-status", className="mt-2"),
+        html.Div(id="gate-diagnostics-output", className="mt-2"),
     ]
     return _card("cpu", "Simulation", body, collapsible=True, panel_id="simulation")
 
@@ -2078,7 +2678,11 @@ def make_monitoring_impact_module():
                                 ),
                                 dbc.CardBody(
                                     [
-                                        html.Small(_loss_assumptions_text(), className="text-muted d-block px-2 pt-1"),
+                                        html.Small(
+                                            _loss_assumptions_text(),
+                                            id="mon-loss-assumptions-text",
+                                            className="text-muted d-block px-2 pt-1",
+                                        ),
                                         dcc.Graph(
                                             id="mon-pest-trend-chart",
                                             config={"displayModeBar": False},
@@ -2199,11 +2803,19 @@ def make_operations_map_page():
         [
             html.Div(
                 [
+                    dbc.Button(
+                        [icon("grid-3x3-gap", "me-1"), "Show Grid"],
+                        id="grid-overlay-btn",
+                        color="light",
+                        size="sm",
+                        className="map-overlay-btn",
+                        n_clicks=0,
+                    ),
                     dbc.Card(
                         dcc.Loading(
                             dcc.Graph(
                                 id="risk-map",
-                                figure=build_risk_map(),
+                                figure=build_risk_map(show_grid_overlay=False),
                                 config={"scrollZoom": True, "displayModeBar": False, "displaylogo": False, "doubleClick": False},
                                 style={"borderRadius": "6px"},
                             ),
@@ -2636,12 +3248,18 @@ app.layout = dbc.Container(
         dcc.Store(id="active-alerts-store"),
         dcc.Store(id="is-playing", data=False),
         dcc.Store(id="playback-frames-store"), # Pre-computed frame data for smooth animation
+        dcc.Store(id="gate-diagnostics-store"), # Per-hour gate-open diagnostics from API
         dcc.Store(id="selected-tree-store"),   # Selected tree for management modal
         dcc.Store(id="monitoring-data-store"), # Monitoring tab metrics cache
         dcc.Store(id="validation-summary-store"),
         dcc.Store(id="validation-metrics-explanation-store"),
         dcc.Store(id="validation-cases-store"),
         dcc.Store(id="validation-latest-result-store", storage_type="session"),
+        dcc.Store(id="grid-overlay-store", data=False),
+        dcc.Store(
+            id="economic-assumptions-store",
+            data=_sanitize_economic_assumptions(LOSS_ESTIMATE_ASSUMPTIONS),
+        ),
 
         # ── Tree Management Modal ──
         dbc.Modal(
@@ -3057,8 +3675,11 @@ def handle_login(n_clicks, username_or_email, password):
         build_auth_state(
             checked=True,
             authenticated=False,
-            message=response.get("error") or "Login failed. Check your credentials and API connection.",
-            message_color="warning" if status_code == 401 else "danger",
+            message=auth_error_message(
+                response,
+                "Login failed. Check your credentials and API connection.",
+            ),
+            message_color="warning" if status_code in {401, 503} else "danger",
         ),
         "",
     )
@@ -3137,6 +3758,224 @@ app.clientside_callback(
     Output("navbar-time", "children"),
     Input("clock-timer", "n_intervals"),
 )
+
+
+# ── 1b) Manual weather collapse toggle ──
+@app.callback(
+    Output("weather-manual-collapse", "is_open"),
+    Input("weather-override-toggle", "value"),
+    prevent_initial_call=False,
+)
+def toggle_manual_weather_panel(enabled):
+    return bool(enabled)
+
+
+# ── 1c) Time-varying schedule collapse toggle ──
+@app.callback(
+    Output("weather-timevarying-collapse", "is_open"),
+    Input("weather-timevarying-toggle", "value"),
+    prevent_initial_call=False,
+)
+def toggle_timevarying_panel(enabled):
+    return bool(enabled)
+
+
+# ── 1d) Add row to weather blocks table ──
+@app.callback(
+    Output("weather-blocks-table", "data", allow_duplicate=True),
+    Input("weather-blocks-add-btn", "n_clicks"),
+    State("weather-blocks-table", "data"),
+    State("sim-hours", "value"),
+    prevent_initial_call=True,
+)
+def add_weather_block_row(n_clicks, rows, hours_str):
+    if not n_clicks:
+        return no_update
+    rows = list(rows or [])
+    last_end = max((int(r.get("end_hour") or 0) for r in rows), default=0)
+    try:
+        sim_hours = int(hours_str)
+    except (TypeError, ValueError):
+        sim_hours = 48
+    rows.append({
+        "start_hour":    last_end,
+        "end_hour":      min(sim_hours, last_end + 6),
+        "temperature_c": 30.0,
+        "wind_speed_ms": 2.0,
+        "wind_dir_deg":  90.0,
+        "rainfall_mm":   0.0,
+    })
+    return rows
+
+
+# ── 1e) Cecid wet→dry preset ──
+@app.callback(
+    Output("weather-blocks-table", "data", allow_duplicate=True),
+    Output("weather-prefix-rain-total", "value", allow_duplicate=True),
+    Input("weather-cecid-preset-btn", "n_clicks"),
+    State("sim-hours", "value"),
+    prevent_initial_call=True,
+)
+def apply_cecid_preset(n_clicks, hours_str):
+    """Wet first 11 hours (gate condition: ≥ 5 mm in last 24 h, currently dry)."""
+    if not n_clicks:
+        return no_update, no_update
+    try:
+        sim_hours = int(hours_str)
+    except (TypeError, ValueError):
+        sim_hours = 48
+    sim_hours = max(12, sim_hours)
+    rows = [
+        {"start_hour": 0,  "end_hour": 11,        "temperature_c": 26.0, "wind_speed_ms": 1.5, "wind_dir_deg": 90.0, "rainfall_mm": 2.5},
+        {"start_hour": 11, "end_hour": sim_hours, "temperature_c": 28.0, "wind_speed_ms": 1.5, "wind_dir_deg": 90.0, "rainfall_mm": 0.0},
+    ]
+    return rows, 0  # preset handles rain inside the window; clear pre-history
+
+
+# ── 1f) Render gate diagnostics ──
+@app.callback(
+    Output("gate-diagnostics-output", "children"),
+    Input("gate-diagnostics-store", "data"),
+    prevent_initial_call=True,
+)
+def render_gate_diagnostics(diagnostics):
+    if not diagnostics:
+        return None
+
+    open_count = sum(1 for d in diagnostics if d.get("gate_open"))
+    open_hours = [d for d in diagnostics if d.get("gate_open")]
+
+    summary_color = "success" if open_count > 0 else "warning"
+    summary = dbc.Alert(
+        [
+            icon("activity", "me-1"),
+            html.Strong(f" Gate opened in {open_count} of {len(diagnostics)} hours."),
+        ],
+        color=summary_color,
+        className="py-2 mb-2",
+        style={"fontSize": "0.82rem"},
+    )
+
+    if open_count == 0:
+        # Show top reasons gate stayed closed (heuristic: report first failed condition)
+        reasons = []
+        for d in diagnostics[:6]:
+            r = []
+            if d.get("rainfall_mm", 0) > 0:
+                r.append("rain now")
+            if d.get("rain_24h_sum", 0) < 5:
+                r.append("rain<5mm")
+            if d.get("wind_speed_ms", 0) > 3:
+                r.append("wind")
+            hod = d.get("hour_of_day", 0)
+            if not (5 <= hod < 7 or 17 <= hod < 19):
+                r.append("not crepuscular")
+            reasons.append(html.Li(f"hour {d['step']:>2} (h-of-d {hod:>2}): {', '.join(r) or 'closed'}",
+                                   style={"fontSize": "0.74rem"}))
+        return html.Div([summary, html.Small("First-hour blockers:", className="text-muted"), html.Ul(reasons, className="mb-0 ps-3")])
+
+    # Compact list of when gate opened
+    open_list = html.Ul(
+        [
+            html.Li(
+                f"hour {d['step']:>2} — h-of-d {d['hour_of_day']:>2}, "
+                f"rain24h={d['rain_24h_sum']:.1f} mm, wind={d['wind_speed_ms']:.1f} m/s",
+                style={"fontSize": "0.74rem"},
+            )
+            for d in open_hours[:10]
+        ],
+        className="mb-0 ps-3",
+    )
+    extra = (html.Small(f"…and {open_count - 10} more", className="text-muted")
+             if open_count > 10 else None)
+    return html.Div([summary, html.Small("Gate-open hours:", className="text-muted"), open_list, extra])
+
+
+@app.callback(
+    Output("neighbor-direction-collapse", "is_open"),
+    Input("neighbor-threat", "value"),
+    prevent_initial_call=False,
+)
+def toggle_neighbor_direction_panel(threat_value):
+    return float(threat_value or 0) > 0
+
+
+@app.callback(
+    Output("sim-mode-tg-hint", "is_open"),
+    Input("sim-mode", "value"),
+    prevent_initial_call=False,
+)
+def toggle_sim_mode_hint(mode):
+    return mode == "tree_graph"
+
+
+@app.callback(
+    Output("impact-assumptions-collapse", "is_open"),
+    Input("impact-collapse-toggle", "n_clicks"),
+    State("impact-assumptions-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_impact_assumptions(n, is_open):
+    return not is_open
+
+
+_DIR_BEARING = {
+    "N": 0.0, "NE": 45.0, "E": 90.0, "SE": 135.0,
+    "S": 180.0, "SW": 225.0, "W": 270.0, "NW": 315.0,
+}
+_DIR_LABEL = {
+    "N": "North", "NE": "North-East", "E": "East", "SE": "South-East",
+    "S": "South", "SW": "South-West", "W": "West", "NW": "North-West",
+}
+
+
+@app.callback(
+    Output("neighbor-wind-hint", "children"),
+    [
+        Input("neighbor-direction", "value"),
+        Input("weather-override-toggle", "value"),
+        Input("weather-manual-wind-dir", "value"),
+    ],
+)
+def update_neighbor_wind_hint(direction, weather_override, manual_wind_dir):
+    import math as _math
+    if not direction:
+        return None
+    bearing_deg = _DIR_BEARING.get(direction, 0.0)
+    label = _DIR_LABEL.get(direction, direction)
+
+    # Wind FROM the neighbor bearing maximally amplifies inward pest pressure.
+    amplifying_dir = label
+    hint_parts = [
+        html.Small(
+            [icon("wind", "me-1"), f"Threat amplified when wind blows from {amplifying_dir}."],
+            className="text-info d-block mt-1",
+        )
+    ]
+
+    if weather_override and manual_wind_dir is not None:
+        wind_deg = float(manual_wind_dir)
+        bearing_rad = _math.radians(bearing_deg)
+        wind_rad = _math.radians(wind_deg)
+        factor = 1.0 + 0.4 * _math.cos(wind_rad - bearing_rad)
+        factor = max(0.0, min(2.0, factor))
+        if factor >= 1.3:
+            align_label, align_color = "Strong amplification", "danger"
+        elif factor >= 1.1:
+            align_label, align_color = "Moderate amplification", "warning"
+        elif factor >= 0.9:
+            align_label, align_color = "Neutral", "secondary"
+        else:
+            align_label, align_color = "Dampened (wind away)", "info"
+        hint_parts.append(
+            dbc.Badge(
+                [icon("arrow-up-right", "me-1"), f"Manual wind {wind_deg:.0f}° — {align_label} ×{factor:.2f}"],
+                color=align_color, pill=True, className="mt-1",
+                style={"fontSize": "0.72rem"},
+            )
+        )
+
+    return html.Div(hint_parts, className="mb-1")
 
 
 # ── 2) Weather polling — reads data["current"] (matches API response) ──
@@ -3316,7 +4155,7 @@ def submit_observation(n, tree_id, pest, severity, observer, notes, auth_session
         "severity": severity or 0.5,
         "observer_id": observer or "dashboard_user",
         "notes": notes or "",
-        "timestamp": dt.datetime.utcnow().isoformat(),
+        "timestamp": format_rfc3339(utcnow_naive()),
     }
     response = api_post(
         "/observations/submit-observation",
@@ -3385,6 +4224,63 @@ def auto_suggest_pest_type(stage, current_pest):
 
 # ── 5) Run simulation → store + map + stats + playback ──
 @app.callback(
+    Output("grid-overlay-store", "data"),
+    Output("grid-overlay-btn", "children"),
+    Output("grid-overlay-btn", "color"),
+    Input("grid-overlay-btn", "n_clicks"),
+    State("grid-overlay-store", "data"),
+    prevent_initial_call=True,
+)
+def toggle_grid_overlay_state(n_clicks, current_state):
+    """Toggle persistent grid-overlay state and update button appearance."""
+    if not n_clicks:
+        return no_update, no_update, no_update
+
+    enabled = not bool(current_state)
+    label = [icon("grid-3x3-gap", "me-1"), "Hide Grid"] if enabled else [icon("grid-3x3-gap", "me-1"), "Show Grid"]
+    color = "success" if enabled else "light"
+    return enabled, label, color
+
+
+@app.callback(
+    Output("risk-map", "figure", allow_duplicate=True),
+    Input("grid-overlay-store", "data"),
+    State("sim-data-store", "data"),
+    State("active-alerts-store", "data"),
+    prevent_initial_call=True,
+)
+def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
+    """Apply current grid-overlay state by rebuilding from the latest available map data."""
+    show_grid_overlay = bool(grid_overlay_enabled)
+    alerts = active_alerts if isinstance(active_alerts, list) else None
+
+    tree_overrides = {}
+    if isinstance(sim_data, dict):
+        tree_overrides = sim_data.get("tree_overrides") or {}
+
+    if isinstance(sim_data, dict) and sim_data.get("risk_geojson"):
+        pest_type = str(sim_data.get("pest_type") or "").lower()
+        hours = sim_data.get("hours")
+        pest_label = "Cecid Fly" if pest_type == "cecid" else "Fruit Fly" if pest_type == "fruitfly" else "Pest"
+        title = f"{pest_label} — {hours}h Risk Forecast" if hours else "Pest Risk Heatmap"
+        return build_risk_map(
+            sim_data.get("risk_geojson"),
+            alerts=alerts,
+            title=title,
+            show_heatmap_layer=True,
+            tree_overrides=tree_overrides,
+            show_grid_overlay=show_grid_overlay,
+        )
+
+    return build_risk_map(
+        alerts=alerts,
+        tree_overrides=tree_overrides,
+        show_grid_overlay=show_grid_overlay,
+    )
+
+
+# ── 5) Run simulation → store + map + stats + playback ──
+@app.callback(
     [
         Output("sim-data-store", "data"),
         Output("sim-status", "children"),
@@ -3394,6 +4290,7 @@ def auto_suggest_pest_type(stage, current_pest):
         Output("playback-slider", "disabled"),
         Output("playback-slider", "value"),
         Output("playback-frames-store", "data"),  # Pre-computed frame data for smooth animation
+        Output("gate-diagnostics-store", "data"),  # Per-hour gate diagnostics (None unless debug_gates)
     ],
     Input("run-sim-btn", "n_clicks"),
     [
@@ -3402,13 +4299,49 @@ def auto_suggest_pest_type(stage, current_pest):
         State("orchard-stage", "value"),
         State("days-flowering", "value"),
         State("neighbor-threat", "value"),
+        State("grid-overlay-store", "data"),
         State("sim-data-store", "data"),  # For tree status overrides
         State("auth-session-store", "data"),
+        State("sim-mode", "value"),
+        State("weather-override-toggle", "value"),
+        State("weather-manual-temp", "value"),
+        State("weather-manual-wind-speed", "value"),
+        State("weather-manual-wind-dir", "value"),
+        State("weather-manual-rainfall", "value"),
+        State("neighbor-direction", "value"),
+        State("weather-timevarying-toggle", "value"),
+        State("weather-blocks-table", "data"),
+        State("weather-prefix-rain-total", "value"),
+        State("weather-debug-gates", "value"),
+        State("weather-start-hour", "value"),
     ],
     prevent_initial_call=True,
 )
-def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neighbor_threat, sim_data, auth_session):
+def run_simulation(
+    n,
+    pest_type,
+    hours_str,
+    orchard_stage,
+    days_flowering,
+    neighbor_threat,
+    grid_overlay_enabled,
+    sim_data,
+    auth_session,
+    sim_mode,
+    weather_override_enabled,
+    manual_temp,
+    manual_wind_speed,
+    manual_wind_dir,
+    manual_rainfall,
+    neighbor_direction,
+    timevarying_enabled,
+    weather_blocks_rows,
+    prefix_rain_total,
+    debug_gates,
+    start_hour,
+):
     hours = int(hours_str)
+    show_grid_overlay = bool(grid_overlay_enabled)
     # Bagging is now applied via Tree Management status overrides.
     bagged_tree_ids = []
     
@@ -3427,8 +4360,63 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
         "orchard_stage": orchard_stage,
         "days_since_flowering": int(days_flowering) if days_flowering else 60,
         "neighbor_threat": float(neighbor_threat) if neighbor_threat else 0.0,
+        "simulation_mode": sim_mode or "grid",
     }
-    
+    if neighbor_direction and float(neighbor_threat or 0) > 0:
+        body["neighbor_direction"] = neighbor_direction
+
+    # Manual weather override — only added when the toggle is ON
+    if weather_override_enabled:
+        # Time-varying schedule takes precedence over the constant override
+        # when the user has filled in any blocks.
+        valid_blocks = []
+        if timevarying_enabled and weather_blocks_rows:
+            for r in weather_blocks_rows:
+                try:
+                    s = int(r.get("start_hour"))
+                    e = int(r.get("end_hour"))
+                except (TypeError, ValueError):
+                    continue
+                if e <= s:
+                    continue
+                block = {"start_hour": s, "end_hour": e}
+                for k in ("temperature_c", "wind_speed_ms", "wind_dir_deg", "rainfall_mm"):
+                    v = r.get(k)
+                    if v is not None and v != "":
+                        try:
+                            block[k] = float(v)
+                        except (TypeError, ValueError):
+                            pass
+                valid_blocks.append(block)
+
+        if valid_blocks:
+            body["manual_weather_blocks"] = valid_blocks
+        else:
+            body["manual_weather"] = {
+                "temperature_c": float(manual_temp) if manual_temp is not None else 30.0,
+                "wind_speed_ms": float(manual_wind_speed) if manual_wind_speed is not None else 2.0,
+                "wind_dir_deg": float(manual_wind_dir) if manual_wind_dir is not None else 90.0,
+                "rainfall_mm": float(manual_rainfall) if manual_rainfall is not None else 0.0,
+            }
+
+        # Pre-history rainfall — spread evenly across the prior 24 hours
+        if timevarying_enabled and prefix_rain_total and float(prefix_rain_total) > 0:
+            per_hour = float(prefix_rain_total) / 24.0
+            body["manual_weather_prefix_rain"] = [per_hour] * 24
+
+        # Start hour-of-day anchor — only send when the user set something other than
+        # the default (0). Today's UTC date is used so downstream RFC3339 parsing works.
+        if timevarying_enabled and start_hour is not None and int(start_hour) > 0:
+            from datetime import datetime as _dt, timezone as _tz
+            anchor = _dt.now(_tz.utc).replace(
+                hour=int(start_hour), minute=0, second=0, microsecond=0
+            )
+            body["manual_weather_start"] = anchor.isoformat()
+
+        # Gate diagnostics flag
+        if timevarying_enabled and debug_gates:
+            body["debug_gates"] = True
+
     # Add tree overrides if present
     if tree_overrides:
         body["tree_overrides"] = tree_overrides
@@ -3444,7 +4432,7 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
             color="danger", className="py-2",
         )
         return (no_update, err, no_update, no_update, no_update, no_update,
-                no_update, no_update)
+                no_update, no_update, no_update)
 
     resp = response.get("data") or {}
     # Extract response fields
@@ -3456,7 +4444,12 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
 
     pest_label = "Cecid Fly" if pest_type == "cecid" else "Fruit Fly"
     # Build map with heatmap layer to show thermal spread
-    fig_map = build_risk_map(risk_geojson, title=f"{pest_label} — {hours}h Risk Forecast", show_heatmap_layer=True)
+    fig_map = build_risk_map(
+        risk_geojson,
+        title=f"{pest_label} — {hours}h Risk Forecast",
+        show_heatmap_layer=True,
+        show_grid_overlay=show_grid_overlay,
+    )
 
     # Playback marks — use timestep (elapsed hours), NOT hour-of-day
     n_steps = len(ts)
@@ -3528,16 +4521,20 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
     stage_display = metadata.get("orchard_stage", orchard_stage).title()
     sugar_idx = metadata.get("sugar_index", 0)
     
+    mode_label = "Tree Graph" if (sim_mode or "grid") == "tree_graph" else "Grid CA"
+    weather_label = "Manual override" if weather_override_enabled else "Live forecast"
     done_msg = dbc.Alert(
         [
-            icon("check-circle-fill", "me-2"), 
+            icon("check-circle-fill", "me-2"),
             html.Span([
                 html.Strong("Simulation complete"), f" — ID: {resp.get('run_id', '?')}",
                 html.Br(),
                 html.Small([
+                    f"Mode: {mode_label} | ",
                     f"Stage: {stage_display} | ",
                     f"Sugar Index: {sugar_idx:.2f} | " if sugar_idx else "",
-                    f"Neighbor Threat: {neighbor_threat:.0%}" if neighbor_threat else "Neighbor Threat: None"
+                    f"Weather: {weather_label} | ",
+                    f"Neighbor Threat: {neighbor_threat:.0%}" if neighbor_threat else "Neighbor Threat: None",
                 ], className="text-muted"),
             ]),
         ],
@@ -3553,6 +4550,7 @@ def run_simulation(n, pest_type, hours_str, orchard_stage, days_flowering, neigh
         n_steps <= 1,               # slider disabled
         0,                          # slider reset
         playback_frames,            # pre-computed frame data for clientside playback
+        resp.get("gate_diagnostics"),  # per-hour gate diagnostics (None if debug_gates off)
     )
 
 
@@ -3630,9 +4628,17 @@ app.clientside_callback(
         if (fig.layout && fig.layout.title) {
             fig.layout.title.text = "Hour " + frame.timestep + " — Spread Animation";
         }
+
+        // Force-hide legend entries on the map (e.g., "Trees")
+        if (fig.data) {
+            for (let i = 0; i < fig.data.length; i++) {
+                fig.data[i].showlegend = false;
+            }
+        }
         
         // Preserve map state (viewport, zoom) with uirevision
         if (fig.layout) {
+            fig.layout.showlegend = false;
             fig.layout.uirevision = 'constant';
         }
         
@@ -3680,6 +4686,58 @@ def update_playback_info(step, frames):
 
 # ── 6c) Decision Support Summary — updates when sim data changes ──
 @app.callback(
+    Output("economic-assumptions-store", "data"),
+    [
+        Input("impact-yield-per-tree", "value"),
+        Input("impact-farmgate-price", "value"),
+        Input("impact-damage-low", "value"),
+        Input("impact-damage-base", "value"),
+        Input("impact-damage-high", "value"),
+        Input("impact-pesticide-cost", "value"),
+    ],
+    prevent_initial_call=False,
+)
+def update_economic_assumptions_store(
+    yield_per_tree,
+    farmgate_price,
+    damage_low_pct,
+    damage_base_pct,
+    damage_high_pct,
+    pesticide_cost_per_ha,
+):
+    """Persist editable impact assumptions for both Crop and Economic panels."""
+    low_pct = _coerce_float(
+        damage_low_pct,
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_low"] * 100,
+        min_value=0,
+        max_value=100,
+    )
+    base_pct = _coerce_float(
+        damage_base_pct,
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_base"] * 100,
+        min_value=0,
+        max_value=100,
+    )
+    high_pct = _coerce_float(
+        damage_high_pct,
+        LOSS_ESTIMATE_ASSUMPTIONS["damage_high"] * 100,
+        min_value=0,
+        max_value=100,
+    )
+
+    return _sanitize_economic_assumptions(
+        {
+            "yield_per_tree_kg": yield_per_tree,
+            "farmgate_price_php_per_kg": farmgate_price,
+            "damage_low": low_pct / 100.0,
+            "damage_base": base_pct / 100.0,
+            "damage_high": high_pct / 100.0,
+            "pesticide_cost_per_ha": pesticide_cost_per_ha,
+        }
+    )
+
+
+@app.callback(
     [
         Output("ds-zone1-pct", "children"),
         Output("ds-zone2-pct", "children"),
@@ -3689,9 +4747,10 @@ def update_playback_info(step, frames):
         Output("ds-summary-message", "children"),
     ],
     Input("sim-data-store", "data"),
+    Input("economic-assumptions-store", "data"),
     prevent_initial_call=True,
 )
-def update_decision_support_summary(sim_data):
+def update_decision_support_summary(sim_data, assumptions_data):
     """
     Compute and display Decision Support metrics.
     
@@ -3709,8 +4768,14 @@ def update_decision_support_summary(sim_data):
         )
     
     try:
+        assumptions = _sanitize_economic_assumptions(assumptions_data)
+
         # Compute metrics using the decision support module
-        metrics = compute_decision_metrics(risk_geojson)
+        metrics = compute_decision_metrics(
+            risk_geojson,
+            pesticide_cost_per_ha=assumptions["pesticide_cost_per_ha"],
+            cell_area_ha=CELL_AREA_HECTARES,
+        )
         formatted = format_metrics_summary(metrics)
         
         # Zone percentages with tree counts
@@ -4389,6 +5454,7 @@ def render_validation_results(validation_data, explanation_data, cases_data):
         Output("mon-infested-trees-detail", "children"),
         # Charts
         Output("mon-pest-trend-chart", "figure"),
+        Output("mon-loss-assumptions-text", "children"),
         Output("mon-phenology-chart", "figure"),
         Output("mon-spread-chart", "figure"),
         # Environment
@@ -4400,10 +5466,11 @@ def render_validation_results(validation_data, explanation_data, cases_data):
     ],
     Input("monitoring-timer", "n_intervals"),
     Input("sim-data-store", "data"),
+    Input("economic-assumptions-store", "data"),
     State("auth-session-store", "data"),
     prevent_initial_call=False,
 )
-def update_monitoring_tab(_, sim_data, auth_session):
+def update_monitoring_tab(_, sim_data, assumptions_data, auth_session):
     """
     Compute monitoring metrics.
     When simulation data (sim_data) is available, extract metrics directly
@@ -4420,6 +5487,8 @@ def update_monitoring_tab(_, sim_data, auth_session):
                           x=0.5, y=0.5, showarrow=False,
                           font=dict(size=14, color="#aaa"))],
     )
+    assumptions = _sanitize_economic_assumptions(assumptions_data)
+    assumptions_text = _loss_assumptions_text(assumptions)
 
     # =====================================================
     #  Path A — Use SIMULATION DATA when available
@@ -4496,7 +5565,11 @@ def update_monitoring_tab(_, sim_data, auth_session):
                     "x": s.get("timestep", i),
                     "infested_trees": s.get("n_infested", 0),
                 })
-            fig_trend = _build_loss_at_risk_chart(loss_rows, x_title="Elapsed Hours")
+            fig_trend = _build_loss_at_risk_chart(
+                loss_rows,
+                x_title="Elapsed Hours",
+                assumptions=assumptions,
+            )
             if not fig_trend.data:
                 fig_trend = EMPTY_FIG
         else:
@@ -4629,7 +5702,7 @@ def update_monitoring_tab(_, sim_data, auth_session):
         return (
             rate_pct, rate_content, risk_score_text, risk_level.title(), risk_color,
             infested_trees_text, infested_trees_detail,
-            fig_trend, fig_pheno, fig_spread,
+            fig_trend, assumptions_text, fig_pheno, fig_spread,
             env_content, fig_env,
             f"Last updated: {now} (from simulation)",
             sim_data,
@@ -4644,7 +5717,7 @@ def update_monitoring_tab(_, sim_data, auth_session):
         now = dt.datetime.now().strftime("%H:%M:%S")
         return (
             "—", "", "—", "—", "secondary", "—", "",
-            EMPTY_FIG, EMPTY_FIG, EMPTY_FIG,
+            EMPTY_FIG, assumptions_text, EMPTY_FIG, EMPTY_FIG,
             html.Small("No data — run a simulation", className="text-muted"),
             EMPTY_FIG,
             f"Waiting at {now}",
@@ -4693,13 +5766,18 @@ def update_monitoring_tab(_, sim_data, auth_session):
             }
             for row in spread_for_loss
         ]
-        fig_trend = _build_loss_at_risk_chart(loss_rows, x_title="Date")
+        fig_trend = _build_loss_at_risk_chart(
+            loss_rows,
+            x_title="Date",
+            assumptions=assumptions,
+        )
         if not fig_trend.data:
             fig_trend = EMPTY_FIG
     elif inf_trees:
         fig_trend = _build_loss_at_risk_chart(
             [{"x": "Current", "infested_trees": inf_trees}],
             x_title="Date",
+            assumptions=assumptions,
         )
     else:
         fig_trend = EMPTY_FIG
@@ -4807,7 +5885,7 @@ def update_monitoring_tab(_, sim_data, auth_session):
     return (
         rate_pct, rate_content, risk_score_text, risk_level.title(), risk_color,
         infested_trees_text, infested_trees_detail,
-        fig_trend, fig_pheno, fig_spread,
+        fig_trend, assumptions_text, fig_pheno, fig_spread,
         env_content, fig_env,
         f"Last updated: {now}",
         data,
@@ -5021,11 +6099,12 @@ def handle_tree_modal(
     [
         State("selected-tree-store", "data"),
         State("tree-status-dropdown", "value"),
+        State("grid-overlay-store", "data"),
         State("sim-data-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def update_tree_status(n_clicks, selected_tree, new_status, sim_data):
+def update_tree_status(n_clicks, selected_tree, new_status, grid_overlay_enabled, sim_data):
     """Update tree status in the sim-data-store and refresh modal display."""
     if not n_clicks or not selected_tree or not new_status:
         return no_update, no_update, no_update, no_update, no_update
@@ -5156,7 +6235,11 @@ def update_tree_status(n_clicks, selected_tree, new_status, sim_data):
     )
     
     # Build updated map with new tree colors
-    updated_map = build_risk_map(tree_overrides=sim_data.get("tree_overrides", {}))
+    show_grid_overlay = bool(grid_overlay_enabled)
+    updated_map = build_risk_map(
+        tree_overrides=sim_data.get("tree_overrides", {}),
+        show_grid_overlay=show_grid_overlay,
+    )
     
     return sim_data, status_msg, info_content, updated_tree, updated_map
 

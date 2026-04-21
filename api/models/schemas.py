@@ -6,8 +6,16 @@ Request and response schemas for the API endpoints.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from enum import Enum
+from core.config import (
+    TG_LAMBDA0,
+    TG_ALPHA,
+    TG_BETA,
+    TG_WIND_BIAS,
+    TG_MAX_NEIGHBOR_DIST_M,
+    TG_DEFAULT_CROWN_RADIUS_M,
+)
 
 
 # ═══════════════════════════════════════════════
@@ -31,6 +39,18 @@ class OrchardStageEnum(str, Enum):
     FLOWERING = "flowering"  # Active flowering, no fruit yet
     FRUITLET = "fruitlet"    # Post-flowering, young fruitlets forming (Cecid Fly vulnerable)
     MATURE = "mature"        # Fruit maturing/ripening (Fruit Fly attractive)
+
+
+class SimulationModeEnum(str, Enum):
+    """
+    Spatial spread model to use.
+
+    grid       — 2-D cellular automata on a regular 5 m grid (baseline).
+    tree_graph — Crown-aware, tree-to-tree hazard model using a spatial graph.
+                 Requires crown_radius_m per tree (or the global fallback).
+    """
+    GRID       = "grid"
+    TREE_GRAPH = "tree_graph"
 
 
 class AlertSeverityEnum(str, Enum):
@@ -63,6 +83,59 @@ class GeoJSONFeatureCollection(BaseModel):
     """GeoJSON FeatureCollection schema."""
     type: str = "FeatureCollection"
     features: List[GeoJSONFeature]
+
+
+# ═══════════════════════════════════════════════
+#  Manual Weather Override Schemas
+# ═══════════════════════════════════════════════
+class ManualWeather(BaseModel):
+    """
+    Constant weather override (legacy ``manual_weather`` payload).
+
+    Same four keys accepted before, but now rejects negative wind/rain and
+    out-of-range wind direction. Clients that posted raw dicts continue to
+    work — FastAPI coerces ``Dict[str, float]`` → ``ManualWeather`` via the
+    union type on the request field.
+    """
+    temperature_c: Optional[float] = Field(default=None, description="Air temperature in °C.")
+    wind_speed_ms: Optional[float] = Field(default=None, ge=0.0, description="Wind speed (m/s). Must be ≥ 0.")
+    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0,
+                                           description="Wind direction in degrees [0, 360]. "
+                                                       "Values equal to 360 are normalized to 0 downstream.")
+    rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall (mm/h). Must be ≥ 0.")
+
+
+class ManualWeatherEntry(BaseModel):
+    """A single hour of weather for manual_weather_series. All fields optional;
+    missing keys inherit from the previous hour (defaults for hour 0)."""
+    temperature_c: Optional[float] = Field(default=None, description="Air temperature in °C.")
+    wind_speed_ms: Optional[float] = Field(default=None, ge=0.0, description="Wind speed in m/s.")
+    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0, description="Wind direction (0=N, 90=E).")
+    rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall in mm for this hour.")
+
+
+class ManualWeatherBlock(BaseModel):
+    """
+    A contiguous block of hours sharing the same weather profile.
+
+    ``start_hour`` is inclusive, ``end_hour`` is exclusive. Blocks may overlap;
+    later blocks override earlier ones. Hours not covered by any block fall
+    back to defaults (30 °C, 2 m/s, 90°, 0 mm).
+    """
+    start_hour: int = Field(..., ge=0, description="First hour the block applies to (inclusive).")
+    end_hour:   int = Field(..., gt=0, description="One past the last hour the block applies to (exclusive).")
+    temperature_c: Optional[float] = Field(default=None)
+    wind_speed_ms: Optional[float] = Field(default=None, ge=0.0)
+    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0)
+    rainfall_mm:   Optional[float] = Field(default=None, ge=0.0)
+
+    @field_validator("end_hour")
+    @classmethod
+    def _end_after_start(cls, v, info):
+        start = info.data.get("start_hour")
+        if start is not None and v <= start:
+            raise ValueError(f"end_hour ({v}) must be greater than start_hour ({start})")
+        return v
 
 
 # ═══════════════════════════════════════════════
@@ -107,15 +180,122 @@ class SimulationRequest(BaseModel):
         description="External pest pressure from neighboring unmanaged orchards (0-1). "
                     "Historical data shows unmanaged orchards have ~2x higher CPTD values."
     )
+    neighbor_direction: Optional[str] = Field(
+        default=None,
+        description="Compass direction of the neighbouring orchard. "
+                    "One of: N, NE, E, SE, S, SW, W, NW. "
+                    "When set, threat is applied as a gradient on the cells nearest that edge; "
+                    "wind blowing FROM this direction further amplifies the threat. "
+                    "If None, threat is distributed uniformly (original behaviour).",
+    )
     tree_overrides: Optional[Dict[str, str]] = Field(
         default=None,
         description="Dict mapping tree_id (str) -> status (str) for manual status overrides. "
                     "Valid statuses: healthy, infected, bagged, dead, history_infected, suspect. "
                     "Trees marked as 'bagged' have reduced infection risk, while 'dead' trees are immune to pest spread."
     )
-    
-    class Config:
-        json_schema_extra = {
+
+    # ── simulation mode ──────────────────────────────────────────
+    simulation_mode: SimulationModeEnum = Field(
+        default=SimulationModeEnum.GRID,
+        description="Spatial spread model: 'grid' (default, cellular automata) or "
+                    "'tree_graph' (crown-aware tree-to-tree model).",
+    )
+
+    # ── tree_graph mode — initial infestation (by tree ID) ───────
+    initial_infestation_tree_ids: Optional[List[str]] = Field(
+        default=None,
+        description="(tree_graph mode only) IDs of trees to seed as initially infested. "
+                    "Takes precedence over initial_infestation row/col pairs when mode=tree_graph.",
+    )
+
+    # ── tree_graph mode — crown fallback ─────────────────────────
+    crown_radius_m: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="(tree_graph mode) Fallback crown radius (m) applied to any tree that "
+                    f"does not supply crown_radius_m in its GeoJSON properties. "
+                    f"Defaults to TG_DEFAULT_CROWN_RADIUS_M = {TG_DEFAULT_CROWN_RADIUS_M} m.",
+    )
+
+    # ── tree_graph model constants (optional overrides) ──────────
+    tg_lambda0: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description=f"(tree_graph) Base hazard rate (hr⁻¹). Default: {TG_LAMBDA0}.",
+    )
+    tg_alpha: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description=f"(tree_graph) Gap-decay coefficient (m⁻¹). Default: {TG_ALPHA}.",
+    )
+    tg_beta: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description=f"(tree_graph) Overlap-bonus coefficient. Default: {TG_BETA}.",
+    )
+    tg_wind_bias: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=f"(tree_graph) Wind directional amplification [0,1]. Default: {TG_WIND_BIAS}.",
+    )
+    tg_max_neighbor_dist_m: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="(tree_graph) Maximum centre-to-centre distance for graph edges (m). "
+                    f"Default: {TG_MAX_NEIGHBOR_DIST_M}.",
+    )
+
+    # ── manual weather override ───────────────────────────────────
+    manual_weather: Optional[ManualWeather] = Field(
+        default=None,
+        description="If provided, the API uses these constant weather values for every "
+                    "timestep instead of fetching a real forecast. Useful for scenario "
+                    "testing ('what if it rains heavily?'). "
+                    "Keys: temperature_c, wind_speed_ms, wind_dir_deg, rainfall_mm. "
+                    "Missing keys fall back to synthetic defaults. "
+                    "Negative wind/rain or out-of-range direction are rejected.",
+    )
+    manual_weather_series: Optional[List[ManualWeatherEntry]] = Field(
+        default=None,
+        description="Per-hour list of weather overrides. Index 0 = first hour of the "
+                    "simulation, index N-1 = hour N. Missing keys in any entry are "
+                    "inherited from the previous hour (defaults for index 0). If the "
+                    "list is shorter than `hours`, the last entry is repeated. "
+                    "Takes precedence over `manual_weather_blocks` and `manual_weather`.",
+    )
+    manual_weather_blocks: Optional[List[ManualWeatherBlock]] = Field(
+        default=None,
+        description="Block-based weather schedule. Each block specifies a half-open "
+                    "[start_hour, end_hour) range and the weather values that apply. "
+                    "Later blocks override earlier ones in overlapping ranges. Hours "
+                    "not covered by any block fall back to defaults. Ideal for cecid "
+                    "scenarios (wet buildup → dry emergence). Takes precedence over "
+                    "`manual_weather`.",
+    )
+    manual_weather_start: Optional[datetime] = Field(
+        default=None,
+        description="Optional start datetime for the manual weather series. Controls "
+                    "the hour-of-day stamped on each entry, which the engine uses for "
+                    "crepuscular gate checks. Defaults to current UTC time.",
+    )
+    manual_weather_prefix_rain: Optional[List[float]] = Field(
+        default=None,
+        description="Optional pre-seed for the engine's 24-hour rainfall history "
+                    "(mm per hour, oldest first). Lets cecid scenarios start with "
+                    "rain already accumulated. Length is clipped to the engine's "
+                    "history window (24 h).",
+    )
+    debug_gates: bool = Field(
+        default=False,
+        description="If true, the response includes a `gate_diagnostics` array with "
+                    "per-hour gate-open/closed flags and the inputs that determined "
+                    "them. Useful for tuning manual weather scenarios.",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "pest_type": "fruitfly",
                 "orchard_geojson": {
@@ -144,6 +324,7 @@ class SimulationRequest(BaseModel):
                 "neighbor_threat": 0.3
             }
         }
+    )
 
 
 class TimeSeriesSnapshot(BaseModel):
@@ -181,6 +362,20 @@ class SimulationMetadata(BaseModel):
     sugar_index: float
     neighbor_threat: float
 
+    # Mode selector — present in every response for explicit A/B comparison
+    simulation_mode: str = "grid"
+    neighbor_direction: Optional[str] = None
+
+    # tree_graph-specific parameters (None when mode = grid)
+    tg_n_trees: Optional[int] = None
+    tg_n_edges: Optional[int] = None
+    tg_lambda0: Optional[float] = None
+    tg_alpha: Optional[float] = None
+    tg_beta: Optional[float] = None
+    tg_wind_bias: Optional[float] = None
+    tg_max_neighbor_dist_m: Optional[float] = None
+    tg_default_crown_radius_m: Optional[float] = None
+
 
 class SimulationResponse(BaseModel):
     """Response schema for POST /run-simulation."""
@@ -211,6 +406,9 @@ class SimulationResponse(BaseModel):
     
     # Final risk heatmap as GeoJSON
     risk_geojson: Dict[str, Any]
+
+    # Optional gate diagnostics (only present when request.debug_gates=True)
+    gate_diagnostics: Optional[List[Dict[str, Any]]] = None
 
 
 # ═══════════════════════════════════════════════
@@ -249,8 +447,8 @@ class ObservationSubmission(BaseModel):
     lon: Optional[float] = Field(None, description="Longitude of observation")
     lat: Optional[float] = Field(None, description="Latitude of observation")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "tree_id": "tree_042",
                 "observed_pest": "cecid",
@@ -259,6 +457,7 @@ class ObservationSubmission(BaseModel):
                 "notes": "Moderate gall midge infestation on young leaves"
             }
         }
+    )
 
 
 class ObservationResponse(BaseModel):

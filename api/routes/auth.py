@@ -7,7 +7,11 @@ Login and current-session endpoints for the dashboard.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.core.database import get_db
+from api.core.database import (
+    database_unavailable_http_exception,
+    get_db,
+    is_database_unavailable,
+)
 from api.core.security import AuthConfigurationError, get_current_active_user
 from api.models.auth import CurrentUserResponse, LoginRequest, LoginResponse, LogoutResponse
 from api.services.auth_service import AuthenticationError, auth_service
@@ -35,6 +39,10 @@ async def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
+    except Exception as exc:
+        if is_database_unavailable(exc):
+            raise database_unavailable_http_exception() from exc
+        raise
 
 
 @router.get("/me", response_model=CurrentUserResponse, summary="Get the current authenticated user")

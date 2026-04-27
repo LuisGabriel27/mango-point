@@ -6,14 +6,14 @@ Computes precision, recall, F1-score, and spatial overlap metrics.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple, Sequence
+from datetime import datetime
+from typing import Optional, Dict, Any, Sequence
 import numpy as np
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
-from db.models import InfestationRecord, SimulationRun, Tree
+from db.models import InfestationRecord, SimulationRun
 from ..models.schemas import ConfusionMatrix, EvaluationResponse
 from utils.datetime_utils import format_rfc3339, utcnow_naive
 
@@ -50,12 +50,26 @@ class EvaluationService:
                 select(SimulationRun).where(SimulationRun.run_id == simulation_run_id)
             )
             simulation_run = result.scalar_one_or_none()
-            
-            if simulation_run and simulation_run.output_geojson:
-                risk_data = simulation_run.output_geojson
+        else:
+            result = await db.execute(
+                select(SimulationRun)
+                .where(
+                    SimulationRun.status == "completed",
+                    SimulationRun.output_geojson.isnot(None),
+                )
+                .order_by(desc(SimulationRun.started_at), desc(SimulationRun.id))
+                .limit(1)
+            )
+            simulation_run = result.scalar_one_or_none()
+
+        if simulation_run and simulation_run.output_geojson:
+            risk_data = simulation_run.output_geojson
+
+        effective_run_id = simulation_run.run_id if simulation_run else simulation_run_id
         
-        # Get infestation records within time window
-        obs_query = select(InfestationRecord)
+        # Get ground-truth field observations within time window. Simulation
+        # generated infestation rows carry a simulation_id; observations do not.
+        obs_query = select(InfestationRecord).where(InfestationRecord.simulation_id.is_(None))
         
         if time_window_start:
             obs_query = obs_query.where(InfestationRecord.record_date >= time_window_start)
@@ -68,7 +82,7 @@ class EvaluationService:
         if not observations:
             logger.warning("No observations found for evaluation")
             return EvaluationResponse(
-                simulation_run_id=simulation_run_id,
+                simulation_run_id=effective_run_id,
                 evaluation_timestamp=format_rfc3339(utcnow_naive()),
                 precision=0.0,
                 recall=0.0,
@@ -86,33 +100,82 @@ class EvaluationService:
                 matched_cells=0,
             )
         
-        # Get tree records for spatial matching
-        trees_query = select(Tree)
-        if simulation_run and simulation_run.orchard_id:
-            # Try to match orchard by name (orchard_id in simulation_run is a string label)
-            pass  # query all trees for now
-        
-        result = await db.execute(trees_query)
-        trees = result.scalars().all()
-        
         # Compute metrics
         metrics = self._compute_spatial_metrics(
             observations=observations,
-            trees=trees,
+            trees=[],
             risk_data=risk_data,
             risk_threshold=risk_threshold,
         )
         
         return EvaluationResponse(
-            simulation_run_id=simulation_run_id,
+            simulation_run_id=effective_run_id,
             evaluation_timestamp=format_rfc3339(utcnow_naive()),
             **metrics,
         )
+
+    @staticmethod
+    def _normalize_tree_id(value: Any) -> Optional[str]:
+        """Normalize tree identifiers across DB ints and GeoJSON properties."""
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized or normalized.lower() in {"none", "null"}:
+            return None
+        return normalized
+
+    @classmethod
+    def _feature_key(cls, props: Dict[str, Any]) -> Optional[tuple]:
+        """Return the comparable unit key for one risk GeoJSON feature."""
+        raw_tree_id = None
+        for candidate in ("tree_id", "Tree_ID", "fid"):
+            if candidate in props and props[candidate] is not None:
+                raw_tree_id = props[candidate]
+                break
+
+        tree_id = cls._normalize_tree_id(raw_tree_id)
+        if tree_id is not None:
+            return ("tree", tree_id)
+
+        row = props.get("row")
+        col = props.get("col")
+        if row is None or col is None:
+            return None
+        try:
+            return ("cell", int(row), int(col))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _extract_predicted_risk(cls, risk_data: Optional[Dict[str, Any]]) -> Dict[tuple, float]:
+        """
+        Extract prediction units from grid or tree_graph GeoJSON.
+
+        Grid output usually supplies row/col and tree_id. Tree-graph output
+        supplies point features keyed by tree_id. Matching by tree_id first
+        keeps both modes comparable against field observations.
+        """
+        predicted_risk: Dict[tuple, float] = {}
+        if not risk_data or not isinstance(risk_data, dict):
+            return predicted_risk
+
+        for feature in risk_data.get("features", []):
+            props = feature.get("properties", {}) if isinstance(feature, dict) else {}
+            key = cls._feature_key(props)
+            if key is None:
+                continue
+            try:
+                risk = float(props.get("risk", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                risk = 0.0
+            predicted_risk[key] = max(predicted_risk.get(key, 0.0), risk)
+
+        return predicted_risk
     
     def _compute_spatial_metrics(
         self,
         observations: Sequence[InfestationRecord],
-        trees: Sequence[Tree],
+        trees: Sequence[Any],
         risk_data: Optional[Dict[str, Any]],
         risk_threshold: float,
     ) -> Dict[str, Any]:
@@ -125,50 +188,32 @@ class EvaluationService:
         3. Compute confusion matrix
         4. Calculate precision, recall, F1, spatial overlap
         """
-        # Build tree lookup by tree_id
-        tree_lookup = {}
-        for tree in trees:
-            tree_lookup[tree.tree_id] = tree
-        
-        # Extract predicted risk by cell (from GeoJSON output)
-        predicted_risk = {}
-        if risk_data and isinstance(risk_data, dict):
-            features = risk_data.get("features", [])
-            for feature in features:
-                props = feature.get("properties", {})
-                row = props.get("row")
-                col = props.get("col")
-                risk = props.get("risk", 0)
-                if row is not None and col is not None:
-                    predicted_risk[(row, col)] = risk
-        
-        # Map observation tree_ids to cells using tree_id from GeoJSON output
-        observed_cells = set()
+        _ = trees
+
+        # Extract predicted risk by comparable unit. Grid and tree_graph both
+        # prefer tree IDs; grid row/col is only used when no tree ID exists.
+        predicted_risk = self._extract_predicted_risk(risk_data)
+
+        # Map field observations to tree IDs. Unmatched observations are still
+        # included in the universe so they correctly count as false negatives.
+        observed_units = set()
         for obs in observations:
-            tree_id_str = str(obs.tree_id)
-            # Match tree_id from observations to tree_id in risk GeoJSON features
-            if risk_data and isinstance(risk_data, dict):
-                for feature in risk_data.get("features", []):
-                    props = feature.get("properties", {})
-                    if props.get("tree_id") == tree_id_str:
-                        row = props.get("row")
-                        col = props.get("col")
-                        if row is not None and col is not None:
-                            observed_cells.add((row, col))
-                        break
+            tree_id = self._normalize_tree_id(getattr(obs, "tree_id", None))
+            if tree_id is not None:
+                observed_units.add(("tree", tree_id))
         
-        # Compute confusion matrix over all cells in prediction
+        # Compute confusion matrix over all comparable units.
         tp = 0
         fp = 0
         fn = 0
         tn = 0
         
-        all_cells = set(predicted_risk.keys())
+        all_units = set(predicted_risk.keys()) | observed_units
         
-        for cell_key in all_cells:
-            risk = predicted_risk.get(cell_key, 0)
+        for unit_key in all_units:
+            risk = predicted_risk.get(unit_key, 0.0)
             predicted_positive = risk >= risk_threshold
-            actual_positive = cell_key in observed_cells
+            actual_positive = unit_key in observed_units
             
             if predicted_positive and actual_positive:
                 tp += 1
@@ -183,13 +228,13 @@ class EvaluationService:
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        accuracy = (tp + tn) / len(all_cells) if len(all_cells) > 0 else 0.0
+        accuracy = (tp + tn) / len(all_units) if len(all_units) > 0 else 0.0
         
         # Spatial overlap: intersection over union
-        predicted_positive_cells = {k for k, v in predicted_risk.items() if v >= risk_threshold}
-        if predicted_positive_cells or observed_cells:
-            intersection = len(predicted_positive_cells & observed_cells)
-            union = len(predicted_positive_cells | observed_cells)
+        predicted_positive_units = {k for k, v in predicted_risk.items() if v >= risk_threshold}
+        if predicted_positive_units or observed_units:
+            intersection = len(predicted_positive_units & observed_units)
+            union = len(predicted_positive_units | observed_units)
             spatial_overlap = intersection / union if union > 0 else 0.0
         else:
             spatial_overlap = 1.0

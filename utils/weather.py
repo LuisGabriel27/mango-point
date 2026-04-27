@@ -54,19 +54,22 @@ class WeatherTimeSeries:
         if "rainfall_mm" not in self.df.columns:
             self.df["rainfall_mm"] = 0.0
         self.source = source
+        self._records = [
+            {
+                "hour": int(row.hour),
+                "wind_speed_ms": float(row.wind_speed_ms),
+                "wind_dir_deg": float(row.wind_dir_deg),
+                "temperature_c": float(row.temperature_c),
+                "rainfall_mm": float(row.rainfall_mm),
+                "datetime": row.datetime,
+            }
+            for row in self.df.itertuples(index=False)
+        ]
 
     # ── query ───────────────────────────────────────────────────
     def at(self, step: int) -> dict:
         """Return a dict of weather values for timestep index *step*."""
-        row = self.df.iloc[step]
-        return {
-            "hour":           int(row["hour"]),
-            "wind_speed_ms":  float(row["wind_speed_ms"]),
-            "wind_dir_deg":   float(row["wind_dir_deg"]),
-            "temperature_c":  float(row["temperature_c"]),
-            "rainfall_mm":    float(row.get("rainfall_mm", 0.0)),
-            "datetime":       row["datetime"],
-        }
+        return self._records[step]
 
     def __len__(self):
         return len(self.df)

@@ -151,6 +151,7 @@ class SimulationEngine:
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         days_since_flowering: Optional[int] = None,
         initial_rainfall_history: Optional[List[float]] = None,
+        stage_grid: Optional[np.ndarray] = None,
     ):
         self.grid = grid.copy()  # work on a copy to preserve the original
         self.weather = weather
@@ -158,6 +159,18 @@ class SimulationEngine:
         self.threshold = threshold
         self.gates = gates or [CecidFlyGate(), FruitFlyGate()]
         self.orchard_stage = orchard_stage
+
+        # Per-cell stage grid (mixed phenology). Shape must match the orchard
+        # grid. When None, the scalar `orchard_stage` applies uniformly.
+        if stage_grid is not None:
+            if stage_grid.shape != self.grid.state.shape:
+                raise ValueError(
+                    f"stage_grid shape {stage_grid.shape} does not match grid "
+                    f"shape {self.grid.state.shape}"
+                )
+            self.stage_grid = stage_grid.astype(np.int32, copy=True)
+        else:
+            self.stage_grid = None
         
         # Days since flowering (for sugar index calculation)
         if days_since_flowering is None:
@@ -217,19 +230,34 @@ class SimulationEngine:
             )
 
             # — accumulate dispersal from all gates —
-            # Engine passes contextual information; gates make biological decisions
+            # Engine passes contextual information; gates make biological decisions.
+            # With a per-cell stage grid, each gate filters source cells by its own
+            # REQUIRED_STAGE so mixed phenology is honoured spatially.
             for gate in self.gates:
-                gate.compute_dispersal(
-                    self.grid,
-                    hour=w["hour"],
-                    wind_speed_ms=w["wind_speed_ms"],
-                    wind_dir_deg=w["wind_dir_deg"],
-                    temperature_c=w["temperature_c"],
-                    rainfall_mm=current_rainfall,
-                    rainfall_history=self.rainfall_history,
-                    orchard_stage=self.orchard_stage,
-                    sugar_index=self.sugar_index,
-                )
+                if self.stage_grid is not None and gate.REQUIRED_STAGE is not None:
+                    gate.compute_dispersal_per_cell(
+                        self.grid,
+                        stage_grid=self.stage_grid,
+                        hour=w["hour"],
+                        wind_speed_ms=w["wind_speed_ms"],
+                        wind_dir_deg=w["wind_dir_deg"],
+                        temperature_c=w["temperature_c"],
+                        rainfall_mm=current_rainfall,
+                        rainfall_history=self.rainfall_history,
+                        sugar_index=self.sugar_index,
+                    )
+                else:
+                    gate.compute_dispersal(
+                        self.grid,
+                        hour=w["hour"],
+                        wind_speed_ms=w["wind_speed_ms"],
+                        wind_dir_deg=w["wind_dir_deg"],
+                        temperature_c=w["temperature_c"],
+                        rainfall_mm=current_rainfall,
+                        rainfall_history=self.rainfall_history,
+                        orchard_stage=self.orchard_stage,
+                        sugar_index=self.sugar_index,
+                    )
 
             # — state transition —
             if self.transition_mode == "stochastic":
@@ -262,6 +290,68 @@ class SimulationEngine:
         result.grid = self.grid
         return result
 
+    def run_final_state(self, n_steps: Optional[int] = None) -> OrchardGrid:
+        """
+        Execute the simulation without recording per-timestep snapshots.
+
+        Monte Carlo validation only needs the final infested grid. This method
+        preserves the same timestep and transition logic as ``run()`` while
+        avoiding full state/risk copies on every hour of every ensemble member.
+        """
+        if n_steps is None:
+            n_steps = min(N_TIMESTEPS, len(self.weather))
+
+        for step in range(n_steps):
+            w = self.weather.at(step)
+
+            # Get current rainfall and update rolling history
+            current_rainfall = w.get("rainfall_mm", 0.0)
+            self.rainfall_history.append(current_rainfall)
+
+            # Update sugar index (increases slightly each day of simulation)
+            # 1 day = 24 hours, so increment by growth rate / 24 per hour
+            self.sugar_index = min(
+                FRUIT_FLY_SUGAR_INDEX_MAX,
+                self.sugar_index + (FRUIT_FLY_SUGAR_INDEX_GROWTH / 24.0)
+            )
+
+            for gate in self.gates:
+                if self.stage_grid is not None and gate.REQUIRED_STAGE is not None:
+                    gate.compute_dispersal_per_cell(
+                        self.grid,
+                        stage_grid=self.stage_grid,
+                        hour=w["hour"],
+                        wind_speed_ms=w["wind_speed_ms"],
+                        wind_dir_deg=w["wind_dir_deg"],
+                        temperature_c=w["temperature_c"],
+                        rainfall_mm=current_rainfall,
+                        rainfall_history=self.rainfall_history,
+                        sugar_index=self.sugar_index,
+                    )
+                else:
+                    gate.compute_dispersal(
+                        self.grid,
+                        hour=w["hour"],
+                        wind_speed_ms=w["wind_speed_ms"],
+                        wind_dir_deg=w["wind_dir_deg"],
+                        temperature_c=w["temperature_c"],
+                        rainfall_mm=current_rainfall,
+                        rainfall_history=self.rainfall_history,
+                        orchard_stage=self.orchard_stage,
+                        sugar_index=self.sugar_index,
+                    )
+
+            if self.transition_mode == "stochastic":
+                self.grid.stochastic_transition()
+            else:
+                self.grid.transition_infested(self.threshold)
+
+            self.grid.reset_risk()
+            if not self.grid.susceptible_mask.any():
+                break
+
+        return self.grid
+
     # ── Monte Carlo ensemble ────────────────────────────────────
     @staticmethod
     def monte_carlo(
@@ -273,6 +363,7 @@ class SimulationEngine:
         gates=None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         days_since_flowering: Optional[int] = None,
+        progress: bool = True,
     ) -> np.ndarray:
         """
         Run the simulation *n_runs* times and return the **mean risk**
@@ -295,7 +386,11 @@ class SimulationEngine:
 
         risk_sum = np.zeros((grid.rows, grid.cols), dtype=np.float64)
 
-        for run_i in tqdm(range(n_runs), desc="Monte Carlo runs"):
+        iterator = range(n_runs)
+        if progress:
+            iterator = tqdm(iterator, desc="Monte Carlo runs")
+
+        for run_i in iterator:
             np.random.seed(seed + run_i)
             engine = SimulationEngine(
                 grid, weather,
@@ -304,8 +399,8 @@ class SimulationEngine:
                 orchard_stage=orchard_stage,
                 days_since_flowering=days_since_flowering,
             )
-            res = engine.run(n_steps=n_steps, progress=False)
+            final_grid = engine.run_final_state(n_steps=n_steps)
             # record final risk = fraction of cells infested
-            risk_sum += (res.grid.state == CellState.INFESTED).astype(float)  # type: ignore[union-attr]
+            risk_sum += (final_grid.state == CellState.INFESTED).astype(float)
 
         return risk_sum / n_runs

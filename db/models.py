@@ -306,7 +306,11 @@ class SimulationRun(Base):
 # ═══════════════════════════════════════════════
 
 class InfestationRecord(Base):
-    """Pest infestation events during simulation runs."""
+    """Pest infestation events.
+
+    ``simulation_id`` is nullable so field observations can be stored as
+    ground-truth records independently from simulation output.
+    """
     __tablename__ = "infestation_record"
 
     infestation_id: Mapped[int] = mapped_column(
@@ -322,10 +326,10 @@ class InfestationRecord(Base):
         ForeignKey("pest.pest_id", ondelete="CASCADE"),
         nullable=False,
     )
-    simulation_id: Mapped[int] = mapped_column(
+    simulation_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey("simulation_run.simulation_id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     record_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     infected_status: Mapped[bool] = mapped_column(Boolean, default=False)

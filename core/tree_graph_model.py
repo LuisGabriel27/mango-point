@@ -126,7 +126,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -246,7 +246,7 @@ class TreeGraph:
 
     # ── graph construction ───────────────────────────────────────
     def _build(self) -> None:
-        """Build adjacency list.  Uses scipy.spatial.KDTree when available."""
+        """Build adjacency list. Uses scipy KDTree or a local spatial hash."""
         if not self.nodes:
             return
 
@@ -260,10 +260,10 @@ class TreeGraph:
                 r=self.max_dist, output_type="ndarray"
             )
         except ImportError:
-            logger.warning(
-                "scipy not available — falling back to O(n²) graph build"
+            logger.debug(
+                "scipy not available; using spatial-hash graph build fallback"
             )
-            raw_pairs = self._brute_force_pairs(coords)
+            raw_pairs = self._spatial_hash_pairs(coords, self.max_dist)
 
         for i_raw, j_raw in raw_pairs:
             i, j = int(i_raw), int(j_raw)
@@ -274,7 +274,7 @@ class TreeGraph:
             if d_ij < 1e-9:
                 continue  # coincident trees — skip degenerate edge
             if d_ij > self.max_dist:
-                continue  # outside range (brute-force fallback emits all pairs)
+                continue  # defensive guard for alternate pair providers
 
             r_sum = ni.crown_radius + nj.crown_radius
             g_ij = max(d_ij - r_sum, 0.0)
@@ -294,17 +294,54 @@ class TreeGraph:
         )
 
     @staticmethod
-    def _brute_force_pairs(coords: np.ndarray) -> np.ndarray:
-        """O(n²) fallback when scipy is unavailable."""
+    def _spatial_hash_pairs(coords: np.ndarray, max_dist: float) -> np.ndarray:
+        """
+        Return candidate pairs within ``max_dist`` without requiring scipy.
+
+        Points are bucketed into square cells whose side length equals the
+        search radius. Any two points within the radius must be in the same or
+        one of the eight adjacent buckets, so sparse orchards avoid the old
+        all-pairs scan when scipy is unavailable.
+        """
+        if len(coords) < 2 or max_dist <= 0.0 or not math.isfinite(max_dist):
+            return np.empty((0, 2), dtype=np.intp)
+
+        cell_size = float(max_dist)
+        max_dist_sq = max_dist * max_dist
+        buckets: Dict[Tuple[int, int], List[int]] = {}
+        cell_keys: Dict[int, Tuple[int, int]] = {}
+
+        for idx, (x_raw, y_raw) in enumerate(coords):
+            x, y = float(x_raw), float(y_raw)
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+
+            key = (
+                math.floor(x / cell_size),
+                math.floor(y / cell_size),
+            )
+            buckets.setdefault(key, []).append(idx)
+            cell_keys[idx] = key
+
         pairs: List[Tuple[int, int]] = []
-        n = len(coords)
-        for a in range(n):
-            for b in range(a + 1, n):
-                d = math.sqrt(
-                    (coords[a, 0] - coords[b, 0]) ** 2
-                    + (coords[a, 1] - coords[b, 1]) ** 2
-                )
-                pairs.append((a, b))  # distance check done inside _build
+        for a, key in cell_keys.items():
+            ax, ay = float(coords[a, 0]), float(coords[a, 1])
+            cell_x, cell_y = key
+
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbour_key = (cell_x + dx, cell_y + dy)
+                    for b in buckets.get(neighbour_key, []):
+                        if b <= a:
+                            continue
+
+                        bx, by = float(coords[b, 0]), float(coords[b, 1])
+                        delta_x = bx - ax
+                        delta_y = by - ay
+                        dist_sq = delta_x * delta_x + delta_y * delta_y
+                        if 0.0 < dist_sq <= max_dist_sq:
+                            pairs.append((a, b))
+
         return np.array(pairs, dtype=np.intp) if pairs else np.empty((0, 2), dtype=np.intp)
 
     # ── queries ──────────────────────────────────────────────────
@@ -579,6 +616,7 @@ class TreeGraphEngine:
         neighbor_threat: float = 0.0,
         neighbor_direction: Optional[str] = None,
         initial_rainfall_history: Optional[List[float]] = None,
+        stage_per_tree: Optional[List[OrchardStage]] = None,
     ) -> None:
         # Deep-copy node states so original graph is preserved
         from collections import deque
@@ -610,6 +648,19 @@ class TreeGraphEngine:
         from core.biological_rules import CecidFlyGate, FruitFlyGate
         self.gates = gates or [CecidFlyGate(), FruitFlyGate()]
         self.orchard_stage = orchard_stage
+
+        # Per-tree stage list (mixed phenology). When provided, each gate
+        # filters source trees by its own REQUIRED_STAGE so dispersal only
+        # originates from trees whose per-tree stage matches.
+        if stage_per_tree is not None:
+            if len(stage_per_tree) != len(self.graph.nodes):
+                raise ValueError(
+                    f"stage_per_tree length {len(stage_per_tree)} does not match "
+                    f"graph node count {len(self.graph.nodes)}"
+                )
+            self.stage_per_tree: Optional[List[int]] = [int(s) for s in stage_per_tree]
+        else:
+            self.stage_per_tree = None
 
         days = days_since_flowering or FRUIT_FLY_DEFAULT_DAYS_FLOWERING
         self.sugar_index: float = min(
@@ -701,13 +752,21 @@ class TreeGraphEngine:
             # biological_rules.py), so both modes use identical trigger logic.
             from core.biological_rules import CecidFlyGate, FruitFlyGate
             for gate in self.gates:
+                # When per-tree stages are set, the stage slot of is_open becomes
+                # a no-op (we feed it gate.REQUIRED_STAGE) so only environmental
+                # triggers gate the step; per-tree stage filters source trees.
+                stage_for_gate = (
+                    gate.REQUIRED_STAGE
+                    if self.stage_per_tree is not None and gate.REQUIRED_STAGE is not None
+                    else self.orchard_stage
+                )
                 if not gate.is_open(
                     hour=hour,
                     wind_speed_ms=wind_speed,
                     temperature_c=temperature,
                     rainfall_mm=current_rain,
                     rainfall_history=self.rainfall_history,
-                    orchard_stage=self.orchard_stage,
+                    orchard_stage=stage_for_gate,
                     sugar_index=self.sugar_index,
                 ):
                     continue
@@ -815,8 +874,15 @@ class TreeGraphEngine:
         union-of-independent-probabilities on node.risk.
         """
         modifier = cecid_spread_modifier(wind_speed_ms, self.rainfall_history)
+        required_stage_int = int(OrchardStage.FRUITLET)
 
         for src_idx in self.graph.infested_indices():
+            # Per-tree phenology: only FRUITLET trees can emit Cecid Fly dispersal.
+            if (
+                self.stage_per_tree is not None
+                and self.stage_per_tree[src_idx] != required_stage_int
+            ):
+                continue
             for edge in self.graph.neighbours(src_idx):
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
@@ -862,7 +928,15 @@ class TreeGraphEngine:
             else 1.0
         )
 
+        required_stage_int = int(OrchardStage.MATURE)
+
         for src_idx in self.graph.infested_indices():
+            # Per-tree phenology: only MATURE trees can emit Fruit Fly dispersal.
+            if (
+                self.stage_per_tree is not None
+                and self.stage_per_tree[src_idx] != required_stage_int
+            ):
+                continue
             for edge in self.graph.neighbours(src_idx):
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
@@ -893,6 +967,23 @@ class TreeGraphEngine:
 # ─────────────────────────────────────────────
 # Utility: build graph from lon/lat coordinates
 # ─────────────────────────────────────────────
+def _first_numeric_property(props: Dict[str, Any], names: Tuple[str, ...]) -> Optional[float]:
+    """Return the first present numeric property, ignoring blanks and invalid values."""
+    for name in names:
+        if name not in props:
+            continue
+        value = props[name]
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def build_tree_graph_from_lonlat(
     features: List[Dict],
     origin_lon: float,
@@ -916,9 +1007,9 @@ def build_tree_graph_from_lonlat(
     bagged_ids          : set of tree IDs to mark as BAGGED
 
     Crown radius resolution (in priority order):
-        1. ``crown_radius_m``   property on the GeoJSON feature
+        1. ``crown_radius_m`` / ``crown_radius`` explicit radius properties
         2. ``crown_diameter_m`` property ÷ 2
-        3. ``crown_radius``     property (unitless, assumed metres)
+        3. ``Crown_Width`` / ``crown_size`` canopy width properties divided by 2
         4. *default_crown_radius* constant
     """
     bagged_set = set(bagged_ids or [])
@@ -941,13 +1032,27 @@ def build_tree_graph_from_lonlat(
             or len(nodes)
         )
 
-        # Crown radius resolution
-        if "crown_radius_m" in props and props["crown_radius_m"] is not None:
-            crown_r = float(props["crown_radius_m"])
-        elif "crown_diameter_m" in props and props["crown_diameter_m"] is not None:
-            crown_r = float(props["crown_diameter_m"]) / 2.0
-        elif "crown_radius" in props and props["crown_radius"] is not None:
-            crown_r = float(props["crown_radius"])
+        radius_value = _first_numeric_property(
+            props,
+            ("crown_radius_m", "crown_radius"),
+        )
+        width_value = _first_numeric_property(
+            props,
+            (
+                "crown_diameter_m",
+                "crown_diameter",
+                "crown_width_m",
+                "crown_width",
+                "Crown_Width",
+                "crown_size_m",
+                "crown_size",
+            ),
+        )
+
+        if radius_value is not None:
+            crown_r = radius_value
+        elif width_value is not None:
+            crown_r = width_value / 2.0
         else:
             crown_r = default_crown_radius
 

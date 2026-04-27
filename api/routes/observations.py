@@ -93,7 +93,7 @@ async def submit_observation(
         record = InfestationRecord(
             tree_id=tree.tree_id,
             pest_id=pest.pest_id,
-            simulation_id=0,  # 0 indicates ground-truth observation, not from simulation
+            simulation_id=None,
             record_date=observation.timestamp,
             infected_status=True,
             infestation_level=observation.severity * 100 if observation.severity else None,
@@ -152,7 +152,11 @@ async def list_observations(
     db: AsyncSession = Depends(get_db),
 ):
     """List observations with optional filters."""
-    query = select(InfestationRecord).order_by(InfestationRecord.record_date.desc())
+    query = (
+        select(InfestationRecord)
+        .where(InfestationRecord.simulation_id.is_(None))
+        .order_by(InfestationRecord.record_date.desc())
+    )
     
     if tree_id:
         query = query.where(InfestationRecord.tree_id == int(tree_id))
@@ -216,7 +220,10 @@ async def get_observation(
 ):
     """Get a specific observation by ID."""
     result = await db.execute(
-        select(InfestationRecord).where(InfestationRecord.infestation_id == observation_id)
+        select(InfestationRecord).where(
+            InfestationRecord.infestation_id == observation_id,
+            InfestationRecord.simulation_id.is_(None),
+        )
     )
     obs = result.scalar_one_or_none()
     
@@ -256,7 +263,10 @@ async def delete_observation(
 ):
     """Delete an observation."""
     result = await db.execute(
-        select(InfestationRecord).where(InfestationRecord.infestation_id == observation_id)
+        select(InfestationRecord).where(
+            InfestationRecord.infestation_id == observation_id,
+            InfestationRecord.simulation_id.is_(None),
+        )
     )
     obs = result.scalar_one_or_none()
     

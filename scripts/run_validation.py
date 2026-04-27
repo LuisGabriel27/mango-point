@@ -48,6 +48,7 @@ Output Files
 import argparse
 import logging
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -72,6 +73,50 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+
+UNICODE_PROGRESS_CHARS = ("\u2588", "\u2591")
+ASCII_PROGRESS_CHARS = ("#", "-")
+
+
+def _stream_supports_text(stream, text: str) -> bool:
+    """Return whether a stream can encode the given text safely."""
+    encoding = getattr(stream, "encoding", None) or sys.getdefaultencoding()
+    try:
+        text.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def _progress_chars(stream=None) -> tuple[str, str]:
+    """Choose progress-bar characters that will not crash the console."""
+    stream = stream or sys.stdout
+    if _stream_supports_text(stream, "".join(UNICODE_PROGRESS_CHARS)):
+        return UNICODE_PROGRESS_CHARS
+    return ASCII_PROGRESS_CHARS
+
+
+def _format_progress_bar(
+    current: int,
+    total: int,
+    bar_len: int = 30,
+    stream=None,
+) -> str:
+    """Format a console-safe progress bar."""
+    if total <= 0:
+        filled = 0
+        pct = 0.0
+        total = 0
+        current = 0
+    else:
+        current = max(0, min(current, total))
+        pct = current / total * 100
+        filled = int(bar_len * current / total)
+
+    fill_char, empty_char = _progress_chars(stream)
+    bar = fill_char * filled + empty_char * (bar_len - filled)
+    return f"\r  Progress: [{bar}] {current}/{total} ({pct:.0f}%)"
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +151,45 @@ Examples:
         type=int,
         default=None,
         help="Maximum number of validation cases to run"
+    )
+    parser.add_argument(
+        "--historical-weather-csv",
+        type=str,
+        default=None,
+        help=(
+            "Optional hourly weather CSV with datetime, temperature_c, "
+            "wind_speed_ms, wind_dir_deg, and rainfall_mm columns"
+        )
+    )
+    parser.add_argument(
+        "--split-year",
+        type=int,
+        default=None,
+        help=(
+            "Use years before this as calibration and this year or later as "
+            "testing"
+        )
+    )
+    parser.add_argument(
+        "--test-years",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated years reserved for testing; all other selected "
+            "years become calibration"
+        )
+    )
+    parser.add_argument(
+        "--bootstrap",
+        type=int,
+        default=500,
+        help="Bootstrap resamples for confidence intervals (default: 500; use 0 to disable)"
+    )
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.95,
+        help="Confidence level for bootstrap intervals (default: 0.95)"
     )
     
     # Simulation options
@@ -180,6 +264,30 @@ Examples:
     )
     
     return parser.parse_args()
+
+
+def _parse_years(value: str | None) -> list[int] | None:
+    """Parse comma-separated years from CLI arguments."""
+    if not value:
+        return None
+    return [int(year.strip()) for year in value.split(",") if year.strip()]
+
+
+def _split_metadata(args: argparse.Namespace, test_years: list[int] | None) -> dict:
+    """Build split metadata for reports."""
+    if test_years:
+        return {
+            "strategy": "explicit_test_years",
+            "test_years": test_years,
+            "calibration_years": "all_selected_years_not_in_test_years",
+        }
+    if args.split_year is not None:
+        return {
+            "strategy": "split_year",
+            "calibration": f"year < {args.split_year}",
+            "testing": f"year >= {args.split_year}",
+        }
+    return {"strategy": "evaluation_only"}
 
 
 def print_data_summary() -> None:
@@ -258,9 +366,8 @@ def run_validation(args: argparse.Namespace) -> None:
         pest_types = [args.pest_type]
     
     # Parse years
-    years = None
-    if args.years:
-        years = [int(y.strip()) for y in args.years.split(",")]
+    years = _parse_years(args.years)
+    test_years = _parse_years(args.test_years)
     
     print("\n" + "=" * 60)
     print("MANGOPOINT MODEL VALIDATION")
@@ -274,10 +381,20 @@ def run_validation(args: argparse.Namespace) -> None:
     print(f"  Monte Carlo runs: {args.monte_carlo}")
     print(f"  Grid size: {args.grid_size}x{args.grid_size}")
     print(f"  Random seed: {args.seed}")
+    print(f"  Historical weather CSV: {args.historical_weather_csv or 'not provided'}")
+    print(f"  Validation split: {_split_metadata(args, test_years)['strategy']}")
+    print(f"  Bootstrap CI resamples: {args.bootstrap}")
     print("\n" + "-" * 60)
     
     # Create and run validation
-    runner = ValidationRunner(seed=args.seed)
+    runner = ValidationRunner(
+        seed=args.seed,
+        historical_weather_path=(
+            Path(args.historical_weather_csv)
+            if args.historical_weather_csv
+            else None
+        ),
+    )
     
     logger.info("Loading historical data...")
     runner.data_loader.load()
@@ -288,19 +405,27 @@ def run_validation(args: argparse.Namespace) -> None:
         pest_types=pest_types,
         years=years,
     )
+    split_groups = runner.assign_case_splits(
+        cases,
+        split_year=args.split_year,
+        test_years=test_years,
+    )
     print(f"Generated {len(cases)} validation cases")
+    if args.split_year is not None or test_years:
+        split_counts = ", ".join(
+            f"{split}: {len(split_cases)}"
+            for split, split_cases in sorted(split_groups.items())
+        )
+        print(f"Split counts: {split_counts}")
     
     logger.info(f"Running validation ({len(cases)} cases)...")
     print("\nRunning simulations (this may take several minutes)...")
     
     def progress_callback(current, total):
-        pct = current / total * 100
-        bar_len = 30
-        filled = int(bar_len * current / total)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"\r  Progress: [{bar}] {current}/{total} ({pct:.0f}%)", end="", flush=True)
+        print(_format_progress_bar(current, total), end="", flush=True)
     
     results = runner.run_validation(
+        cases=cases,
         hours=args.hours,
         monte_carlo_runs=args.monte_carlo,
         grid_size=args.grid_size,
@@ -310,11 +435,34 @@ def run_validation(args: argparse.Namespace) -> None:
     print()  # New line after progress bar
     
     # Compute metrics
-    metrics = runner.compute_metrics()
+    metrics = runner.compute_metrics(
+        bootstrap_iterations=args.bootstrap,
+        confidence=args.confidence,
+        seed=args.seed,
+    )
     
     # Print summary
     print("\n" + "-" * 60)
     print(metrics.summary_string())
+
+    split_metrics = {}
+    if args.split_year is not None or test_years:
+        split_metrics = runner.compute_split_metrics(
+            bootstrap_iterations=args.bootstrap,
+            confidence=args.confidence,
+            seed=args.seed,
+        )
+        print("\n" + "-" * 60)
+        print("CALIBRATION / TESTING SPLIT")
+        print("-" * 60)
+        for split_name, split_metric in sorted(split_metrics.items()):
+            print(
+                f"{split_name.title()}: "
+                f"{split_metric.total_tests} cases, "
+                f"accuracy {split_metric.overall_accuracy_pct:.1f}%, "
+                f"F1 {split_metric.classification.f1_score:.3f}, "
+                f"MAE {split_metric.regression.mae:.3f}"
+            )
     
     # Trend analysis (if requested or by default)
     if args.show_trend_analysis or not args.no_export:
@@ -353,10 +501,39 @@ def run_validation(args: argparse.Namespace) -> None:
         output_dir = args.output_dir or "outputs/validation"
         print(f"\n" + "-" * 60)
         print(f"Exporting reports to: {output_dir}")
+        weather_sources = Counter(
+            result.weather_stats.get("source", "unknown")
+            for result in results
+        )
+        report_metadata = {
+            "split": _split_metadata(args, test_years),
+            "split_metrics": {
+                split_name: split_metric.to_dict()
+                for split_name, split_metric in split_metrics.items()
+            },
+            "weather": {
+                "historical_weather_csv": args.historical_weather_csv,
+                "source_counts": dict(weather_sources),
+            },
+            "bootstrap": {
+                "iterations": args.bootstrap,
+                "confidence": args.confidence,
+            },
+            "science_notes": [
+                (
+                    "Use --historical-weather-csv to replace synthetic seasonal "
+                    "profiles with observed hourly weather when available."
+                ),
+                (
+                    "Calibration/testing split metrics are only meaningful when "
+                    "--split-year or --test-years is supplied."
+                ),
+            ],
+        }
         
         if args.legacy_format:
             # Legacy format using ValidationReportGenerator
-            report_gen = ValidationReportGenerator(results, metrics)
+            report_gen = ValidationReportGenerator(results, metrics, report_metadata)
             files = report_gen.export_all(output_dir)
         else:
             # New comprehensive reports using ComparisonReportGenerator
@@ -364,6 +541,7 @@ def run_validation(args: argparse.Namespace) -> None:
                 validation_results=results,
                 validation_metrics=metrics,
                 historical_loader=runner.data_loader,
+                metadata=report_metadata,
             )
             files = report_gen.export_all(output_dir)
         
@@ -387,9 +565,7 @@ def main():
     else:
         pest_types = [args.pest_type]
     
-    years = None
-    if args.years:
-        years = [int(y.strip()) for y in args.years.split(",")]
+    years = _parse_years(args.years)
     
     # Handle different modes
     if args.data_summary:

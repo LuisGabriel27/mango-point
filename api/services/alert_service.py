@@ -133,16 +133,8 @@ class AlertService:
             if tid and tid != "":
                 affected_tree_ids.append(str(tid))
         
-        # Determine severity based on risk level and number of affected cells
         n_affected = len(affected_cells)
-        if max_risk >= 0.95 or n_affected > 50:
-            severity = AlertSeverityEnum.CRITICAL
-        elif max_risk >= 0.85 or n_affected > 20:
-            severity = AlertSeverityEnum.HIGH
-        elif max_risk >= 0.75 or n_affected > 10:
-            severity = AlertSeverityEnum.MEDIUM
-        else:
-            severity = AlertSeverityEnum.LOW
+        severity = self._classify_severity(max_risk, n_affected)
         
         # Create alert
         alert = AlertCreate(
@@ -171,6 +163,128 @@ class AlertService:
         )
         
         return alerts
+
+    def check_tree_feature_alerts(
+        self,
+        features: Sequence[Dict[str, Any]],
+        orchard_id: str,
+        simulation_run_id: Optional[str] = None,
+    ) -> List[AlertCreate]:
+        """
+        Check point-based tree simulation output for alert conditions.
+
+        Tree-graph simulations emit GeoJSON Point features rather than row/col
+        grid cells. An alert is triggered when a susceptible tree point is at or
+        above the configured risk threshold.
+        """
+        affected_tree_ids: List[str] = []
+        affected_lons: List[float] = []
+        affected_lats: List[float] = []
+        affected_risks: List[float] = []
+
+        susceptible_states = {"unbagged", "susceptible", "healthy"}
+
+        for feature in features:
+            props = feature.get("properties", {}) or {}
+
+            try:
+                risk = float(props.get("risk", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+
+            if risk < self.risk_threshold:
+                continue
+
+            state = str(props.get("state", "")).strip().lower()
+            if state not in susceptible_states:
+                continue
+
+            tree_id = self._feature_tree_id(props)
+            if tree_id is not None:
+                affected_tree_ids.append(tree_id)
+
+            lon_lat = self._point_coordinates(feature)
+            if lon_lat is not None:
+                lon, lat = lon_lat
+                affected_lons.append(lon)
+                affected_lats.append(lat)
+
+            affected_risks.append(risk)
+
+        if not affected_risks:
+            return []
+
+        max_risk = max(affected_risks)
+        n_affected = len(affected_risks)
+        severity = self._classify_severity(max_risk, n_affected)
+
+        centroid_lon = sum(affected_lons) / len(affected_lons) if affected_lons else None
+        centroid_lat = sum(affected_lats) / len(affected_lats) if affected_lats else None
+
+        alert = AlertCreate(
+            alert_id=f"alert_{uuid.uuid4().hex[:12]}",
+            simulation_run_id=simulation_run_id,
+            severity=severity,
+            risk_value=max_risk,
+            affected_cells=[],
+            affected_tree_ids=affected_tree_ids,
+            orchard_id=orchard_id,
+            zone_name=f"Tree zone with {n_affected} high-risk trees",
+            message=self._generate_alert_message(
+                severity=severity,
+                n_affected=n_affected,
+                max_risk=max_risk,
+                orchard_id=orchard_id,
+            ),
+            centroid_lon=centroid_lon,
+            centroid_lat=centroid_lat,
+        )
+
+        logger.warning(
+            f"Tree alert generated: {severity.value} risk ({max_risk:.2f}) "
+            f"affecting {n_affected} tree points in {orchard_id}"
+        )
+
+        return [alert]
+
+    def _classify_severity(
+        self,
+        max_risk: float,
+        n_affected: int,
+    ) -> AlertSeverityEnum:
+        """Classify alert severity from peak risk and affected tree count."""
+        if max_risk >= 0.95 or n_affected > 50:
+            return AlertSeverityEnum.CRITICAL
+        if max_risk >= 0.85 or n_affected > 20:
+            return AlertSeverityEnum.HIGH
+        if max_risk >= 0.75 or n_affected > 10:
+            return AlertSeverityEnum.MEDIUM
+        return AlertSeverityEnum.LOW
+
+    @staticmethod
+    def _feature_tree_id(props: Dict[str, Any]) -> Optional[str]:
+        """Extract a stable tree identifier from common property names."""
+        for key in ("tree_id", "Tree_ID", "id", "fid"):
+            value = props.get(key)
+            if value is not None and value != "":
+                return str(value)
+        return None
+
+    @staticmethod
+    def _point_coordinates(feature: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        """Return ``(lon, lat)`` for a GeoJSON Point feature if available."""
+        geometry = feature.get("geometry", {}) or {}
+        if geometry.get("type") != "Point":
+            return None
+
+        coordinates = geometry.get("coordinates", [])
+        if not isinstance(coordinates, (list, tuple)) or len(coordinates) < 2:
+            return None
+
+        try:
+            return float(coordinates[0]), float(coordinates[1])
+        except (TypeError, ValueError):
+            return None
     
     def _generate_alert_message(
         self,

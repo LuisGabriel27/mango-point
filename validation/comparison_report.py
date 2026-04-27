@@ -92,6 +92,7 @@ class ComparisonReportGenerator:
         validation_results: List["ValidationResult"],
         validation_metrics: "ValidationMetrics",
         historical_loader: Optional["HistoricalDataLoader"] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the report generator.
@@ -104,10 +105,13 @@ class ComparisonReportGenerator:
             Computed validation metrics
         historical_loader : HistoricalDataLoader, optional
             Loader containing historical BPI data
+        metadata : dict, optional
+            Additional run metadata such as split strategy and weather source.
         """
         self.results = validation_results
         self.metrics = validation_metrics
         self.historical_loader = historical_loader
+        self.metadata = metadata or {}
         
         # Lazy-load trend analyzer
         self._trend_analyzer = None
@@ -218,6 +222,21 @@ class ComparisonReportGenerator:
             f"    Specificity:      {self.metrics.classification.specificity:.3f}",
             "",
         ])
+
+        if self.metrics.confidence_intervals:
+            lines.extend([
+                "  Bootstrap Confidence Intervals:",
+            ])
+            for metric_name in ("overall_accuracy_pct", "precision", "recall", "f1_score"):
+                interval = self.metrics.confidence_intervals.get(metric_name)
+                if not interval:
+                    continue
+                label = metric_name.replace("_", " ").title()
+                lines.append(
+                    f"    {label}: {interval['lower']:.3f} to "
+                    f"{interval['upper']:.3f} ({interval['confidence']:.0%})"
+                )
+            lines.append("")
         
         # Confusion matrix
         cm = self.metrics.classification.confusion_matrix
@@ -350,7 +369,8 @@ class ComparisonReportGenerator:
             "",
             "Simulation Configuration:",
             "  - Monte Carlo ensemble: 30 runs per scenario",
-            "  - Weather: Seasonally-calibrated synthetic scenarios",
+            f"  - Weather: {self._weather_methodology_note()}",
+            f"  - Validation split: {self._split_methodology_note()}",
             "  - Grid: 20x20 cells (0.25 hectares)",
             "  - Duration: 48 hours per validation case",
             "",
@@ -369,6 +389,11 @@ class ComparisonReportGenerator:
             "  Recall (Sensitivity):",
             "    High recall (>0.8) is critical for early warning systems",
             "    Prioritized over precision for pest management applications",
+            "",
+            "Validation Limits:",
+            "  - BPI pest observations are monthly aggregates, not tree-level forecasts.",
+            "  - Synthetic weather validates plausibility more than true forecasting accuracy.",
+            "  - Holdout split metrics do not auto-fit or recalibrate model parameters.",
             "",
             "=" * 75,
             "END OF REPORT",
@@ -397,6 +422,7 @@ class ComparisonReportGenerator:
                 "pest_type": result.case.pest_type,
                 "orchard_stage": result.case.orchard_stage,
                 "season": result.case.season,
+                "split": result.case.split,
                 "actual_value": result.case.actual_value,
                 "actual_level": result.case.actual_level,
                 "predicted_risk": result.predicted_risk,
@@ -405,6 +431,7 @@ class ComparisonReportGenerator:
                 "error": result.error,
                 "peak_risk": result.peak_risk,
                 "simulation_time_s": result.simulation_time_s,
+                "weather_source": result.weather_stats.get("source", "unknown"),
             })
         
         return sorted(table, key=lambda x: (x["year"], x["month"]))
@@ -492,6 +519,42 @@ class ComparisonReportGenerator:
         
         years = [r.case.year for r in self.results]
         return f"{min(years)}-{max(years)}"
+
+    def _weather_methodology_note(self) -> str:
+        """Describe weather source used in this validation run."""
+        weather_meta = self.metadata.get("weather", {})
+        source_counts = weather_meta.get("source_counts", {})
+        if source_counts:
+            parts = [
+                f"{source} ({count} cases)"
+                for source, count in sorted(source_counts.items())
+            ]
+            source_text = ", ".join(parts)
+        else:
+            source_text = "source not recorded"
+
+        if weather_meta.get("historical_weather_csv"):
+            return (
+                "hourly historical CSV where sufficient rows exist; "
+                f"otherwise seasonal synthetic profiles. Sources: {source_text}"
+            )
+        return (
+            "seasonally calibrated synthetic profiles; no hourly historical "
+            f"weather CSV supplied. Sources: {source_text}"
+        )
+
+    def _split_methodology_note(self) -> str:
+        """Describe calibration/testing split strategy."""
+        split_meta = self.metadata.get("split", {})
+        strategy = split_meta.get("strategy", "evaluation_only")
+        if strategy == "explicit_test_years":
+            return f"explicit test years {split_meta.get('test_years', [])}"
+        if strategy == "split_year":
+            return (
+                f"{split_meta.get('calibration', 'calibration')} / "
+                f"{split_meta.get('testing', 'testing')}"
+            )
+        return "no holdout split requested"
     
     # ── Export Methods ──────────────────────────────────────────
     
@@ -561,6 +624,18 @@ class ComparisonReportGenerator:
                 "metric": metric_name,
                 "value": getattr(self.metrics.regression, metric_name),
             })
+
+        for metric_name, interval in self.metrics.confidence_intervals.items():
+            rows.append({
+                "category": "confidence_interval",
+                "metric": f"{metric_name}_lower",
+                "value": interval["lower"],
+            })
+            rows.append({
+                "category": "confidence_interval",
+                "metric": f"{metric_name}_upper",
+                "value": interval["upper"],
+            })
         
         # Trend analysis
         for pest_type, comparison in trend_comparisons.items():
@@ -604,6 +679,7 @@ class ComparisonReportGenerator:
                 "generated_at": self._generated_at.isoformat(),
                 "data_period": self._get_data_period(),
                 "total_cases": len(self.results),
+                "run_metadata": self.metadata,
             },
             "validation_metrics": self.metrics.to_dict(),
             "trend_comparisons": {

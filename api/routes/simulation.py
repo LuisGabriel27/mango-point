@@ -6,7 +6,7 @@ POST /run-simulation endpoint for pest risk simulations.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,58 @@ from utils.datetime_utils import format_rfc3339
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
+
+
+def _tag_weather_source(
+    weather_data: Optional[List[Dict[str, Any]]],
+    source: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return weather entries tagged with their source for persistence."""
+    if weather_data is None:
+        return None
+    return [
+        {**entry, "source": source} if isinstance(entry, dict) else entry
+        for entry in weather_data
+    ]
+
+
+def _weather_source_from_data(
+    weather_data: Optional[List[Dict[str, Any]]],
+    default: str = "synthetic",
+) -> str:
+    """Infer a weather source from tagged hourly weather entries."""
+    if not weather_data:
+        return "synthetic"
+
+    sources = {
+        str(entry.get("source"))
+        for entry in weather_data
+        if isinstance(entry, dict) and entry.get("source")
+    }
+    if len(sources) == 1:
+        return next(iter(sources))
+    if len(sources) > 1:
+        return "mixed"
+    return default
+
+
+def _infer_weather_source(
+    request: SimulationRequest,
+    weather_data: Optional[List[Dict[str, Any]]],
+    explicit_source: Optional[str] = None,
+) -> str:
+    """Determine the persisted weather_source value for a simulation run."""
+    if explicit_source:
+        return explicit_source
+
+    if (
+        request.manual_weather_series
+        or request.manual_weather_blocks
+        or request.manual_weather
+    ):
+        return "manual"
+
+    return _weather_source_from_data(weather_data, default="open-meteo")
 
 
 @router.post(
@@ -88,7 +140,8 @@ async def run_simulation(
 
         manual_series = build_weather_series(request)
         if manual_series is not None:
-            weather_data = manual_series
+            weather_source = "manual"
+            weather_data = _tag_weather_source(manual_series, weather_source)
             logger.info("Using manual weather override for simulation")
         else:
             weather_data = await weather_service.get_forecast(
@@ -96,6 +149,7 @@ async def run_simulation(
                 lon=lon,
                 hours=request.hours,
             )
+            weather_source = _weather_source_from_data(weather_data, default="open-meteo")
 
         # Run simulation
         result = await simulation_service.run_simulation(
@@ -123,6 +177,7 @@ async def run_simulation(
             result=result,
             request=request,
             weather_data=weather_data,
+            weather_source=weather_source,
         )
         
         # Check for alerts (background task)
@@ -151,7 +206,8 @@ def _build_manual_weather(overrides: dict, hours: int) -> list:
 async def save_simulation_run(
     result: SimulationResponse,
     request: SimulationRequest,
-    weather_data: list,
+    weather_data: Optional[List[Dict[str, Any]]],
+    weather_source: Optional[str] = None,
 ) -> None:
     """Background task to persist simulation run."""
     try:
@@ -172,7 +228,7 @@ async def save_simulation_run(
                 hours=request.hours,
                 random_seed=result.random_seed,
                 risk_threshold=result.risk_threshold,
-                weather_source="open-meteo" if weather_data else "synthetic",
+                weather_source=_infer_weather_source(request, weather_data, weather_source),
                 weather_data=weather_data,
                 output_geojson=result.risk_geojson,
                 peak_risk=result.peak_risk,
@@ -208,9 +264,28 @@ async def check_alerts(
         if not features:
             return
         
-        # tree_graph mode returns Point features without row/col — skip alert check
-        if not all("row" in f.get("properties", {}) for f in features):
-            logger.debug("Skipping alert check: features have no row/col (tree_graph mode)")
+        # tree_graph mode returns Point features without row/col.
+        if not all(
+            "row" in f.get("properties", {}) and "col" in f.get("properties", {})
+            for f in features
+        ):
+            alerts = alert_service.check_tree_feature_alerts(
+                features=features,
+                orchard_id=orchard_id,
+                simulation_run_id=result.run_id,
+            )
+            if alerts:
+                try:
+                    async with async_session_maker() as db:
+                        for alert_data in alerts:
+                            await alert_service.create_alert(db, alert_data, send_notifications=True)
+                        await db.commit()
+                        logger.info(f"Created {len(alerts)} tree alerts in database for simulation {result.run_id}")
+                except Exception as db_err:
+                    logger.warning(f"Database unavailable, storing tree alerts in memory: {db_err}")
+                    for alert_data in alerts:
+                        alert_service.store_alert_in_memory(alert_data)
+                    logger.info(f"Stored {len(alerts)} tree alerts in memory for simulation {result.run_id}")
             return
 
         # Determine grid dimensions

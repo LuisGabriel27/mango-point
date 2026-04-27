@@ -18,8 +18,9 @@ Supports two types of evaluation:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Sequence
+from typing import Any, List, Dict, Tuple, Optional, Sequence
 import math
+import random
 
 
 @dataclass
@@ -215,6 +216,7 @@ class ValidationMetrics:
     # Breakdown by pest type
     fruit_fly_metrics: Optional[ClassificationMetrics] = None
     cecid_fly_metrics: Optional[ClassificationMetrics] = None
+    confidence_intervals: Dict[str, Dict[str, float]] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, any]:
         """Convert to dictionary for serialization."""
@@ -230,6 +232,8 @@ class ValidationMetrics:
             result["fruit_fly_metrics"] = self.fruit_fly_metrics.to_dict()
         if self.cecid_fly_metrics:
             result["cecid_fly_metrics"] = self.cecid_fly_metrics.to_dict()
+        if self.confidence_intervals:
+            result["confidence_intervals"] = self.confidence_intervals
         return result
     
     def summary_string(self) -> str:
@@ -255,6 +259,26 @@ class ValidationMetrics:
             f"  R²:                 {self.regression.r_squared:.3f}",
             "=" * 60,
         ]
+        if self.confidence_intervals:
+            lines.insert(-1, "")
+            lines.insert(-1, "Bootstrap Confidence Intervals:")
+            for metric_name in (
+                "overall_accuracy_pct",
+                "precision",
+                "recall",
+                "f1_score",
+                "mae",
+                "rmse",
+            ):
+                interval = self.confidence_intervals.get(metric_name)
+                if not interval:
+                    continue
+                label = metric_name.replace("_", " ").title()
+                lines.insert(
+                    -1,
+                    f"  {label}: {interval['lower']:.3f} to {interval['upper']:.3f} "
+                    f"({interval['confidence']:.0%})",
+                )
         return "\n".join(lines)
 
 
@@ -495,6 +519,89 @@ def compute_full_metrics(
         fruit_fly_metrics=fruit_fly_metrics,
         cecid_fly_metrics=cecid_fly_metrics,
     )
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    """Compute a percentile with linear interpolation."""
+    if not values:
+        return 0.0
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+
+    position = (len(ordered) - 1) * percentile
+    lower_idx = math.floor(position)
+    upper_idx = math.ceil(position)
+
+    if lower_idx == upper_idx:
+        return float(ordered[int(position)])
+
+    lower = ordered[lower_idx]
+    upper = ordered[upper_idx]
+    fraction = position - lower_idx
+    return float(lower + (upper - lower) * fraction)
+
+
+def bootstrap_confidence_intervals(
+    results: List[Dict[str, Any]],
+    n_iterations: int = 500,
+    confidence: float = 0.95,
+    seed: int = 42,
+    positive_class: str = "High",
+) -> Dict[str, Dict[str, float]]:
+    """
+    Estimate confidence intervals for validation metrics by bootstrapping cases.
+
+    The resampling unit is a validation case, so intervals represent uncertainty
+    from the available historical observations rather than model process noise.
+    """
+    if not results or n_iterations <= 0:
+        return {}
+
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be between 0 and 1")
+
+    rng = random.Random(seed)
+    n = len(results)
+    samples: Dict[str, List[float]] = {
+        "overall_accuracy_pct": [],
+        "precision": [],
+        "recall": [],
+        "f1_score": [],
+        "specificity": [],
+        "mae": [],
+        "rmse": [],
+        "r_squared": [],
+    }
+
+    for _ in range(n_iterations):
+        resampled = [results[rng.randrange(n)] for _ in range(n)]
+        metrics = compute_full_metrics(resampled, positive_class=positive_class)
+        samples["overall_accuracy_pct"].append(metrics.overall_accuracy_pct)
+        samples["precision"].append(metrics.classification.precision)
+        samples["recall"].append(metrics.classification.recall)
+        samples["f1_score"].append(metrics.classification.f1_score)
+        samples["specificity"].append(metrics.classification.specificity)
+        samples["mae"].append(metrics.regression.mae)
+        samples["rmse"].append(metrics.regression.rmse)
+        samples["r_squared"].append(metrics.regression.r_squared)
+
+    alpha = 1.0 - confidence
+    lower_q = alpha / 2.0
+    upper_q = 1.0 - lower_q
+
+    intervals: Dict[str, Dict[str, float]] = {}
+    for metric_name, values in samples.items():
+        intervals[metric_name] = {
+            "mean": sum(values) / len(values),
+            "lower": _percentile(values, lower_q),
+            "upper": _percentile(values, upper_q),
+            "confidence": confidence,
+            "n_bootstrap": float(n_iterations),
+        }
+
+    return intervals
 
 
 def risk_score_to_level(

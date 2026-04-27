@@ -89,6 +89,7 @@ class ValidationReportGenerator:
             f"Incorrect Predictions:     {self.metrics.incorrect_predictions}",
             f"Overall Accuracy:          {self.metrics.overall_accuracy_pct:.1f}%",
             "",
+            *self._confidence_interval_lines(),
             "-" * 70,
             "CLASSIFICATION METRICS",
             "-" * 70,
@@ -183,13 +184,53 @@ class ValidationReportGenerator:
             "   - LOW: < 8, MEDIUM: 8-20, HIGH: > 20 flies/trap/day",
             "3. Cecid Fly metric: Infestation percentage",
             "   - LOW: < 5%, MEDIUM: 5-15%, HIGH: > 15%",
-            "4. Simulations run with seasonally-calibrated weather scenarios",
-            "5. Monte Carlo ensemble used for risk estimation (30 runs)",
+            f"4. Weather source: {self._weather_note()}",
+            "5. Monte Carlo ensemble used for risk estimation",
+            "6. Confidence intervals use case-level bootstrap resampling",
             "",
             "=" * 70,
         ])
         
         return "\n".join(lines)
+
+    def _confidence_interval_lines(self) -> List[str]:
+        """Format bootstrap confidence intervals for text reports."""
+        if not self.metrics.confidence_intervals:
+            return []
+
+        lines = [
+            "Bootstrap Confidence Intervals:",
+        ]
+        for metric_name in ("overall_accuracy_pct", "precision", "recall", "f1_score"):
+            interval = self.metrics.confidence_intervals.get(metric_name)
+            if not interval:
+                continue
+            label = metric_name.replace("_", " ").title()
+            lines.append(
+                f"  {label}: {interval['lower']:.3f} to "
+                f"{interval['upper']:.3f} ({interval['confidence']:.0%})"
+            )
+        lines.append("")
+        return lines
+
+    def _weather_note(self) -> str:
+        """Describe weather inputs from report metadata."""
+        weather = self.metadata.get("weather", {})
+        source_counts = weather.get("source_counts", {})
+        if source_counts:
+            source_text = ", ".join(
+                f"{source} ({count} cases)"
+                for source, count in sorted(source_counts.items())
+            )
+        else:
+            source_text = "not recorded"
+
+        if weather.get("historical_weather_csv"):
+            return (
+                "historical hourly CSV where available; seasonal synthetic "
+                f"profile fallback. Sources: {source_text}"
+            )
+        return f"seasonal synthetic profiles. Sources: {source_text}"
     
     def _generate_interpretation(self) -> str:
         """Generate interpretation text based on metrics."""
@@ -268,7 +309,7 @@ class ValidationReportGenerator:
         list[dict]
             Summary rows
         """
-        return [
+        rows = [
             {"metric": "total_tests", "value": self.metrics.total_tests},
             {"metric": "correct_predictions", "value": self.metrics.correct_predictions},
             {"metric": "incorrect_predictions", "value": self.metrics.incorrect_predictions},
@@ -281,6 +322,16 @@ class ValidationReportGenerator:
             {"metric": "rmse", "value": f"{self.metrics.regression.rmse:.4f}"},
             {"metric": "r_squared", "value": f"{self.metrics.regression.r_squared:.4f}"},
         ]
+        for metric_name, interval in self.metrics.confidence_intervals.items():
+            rows.append({
+                "metric": f"{metric_name}_ci_lower",
+                "value": f"{interval['lower']:.4f}",
+            })
+            rows.append({
+                "metric": f"{metric_name}_ci_upper",
+                "value": f"{interval['upper']:.4f}",
+            })
+        return rows
     
     def to_json_data(self) -> Dict[str, Any]:
         """
@@ -302,6 +353,7 @@ class ValidationReportGenerator:
             },
             "classification_metrics": self.metrics.classification.to_dict(),
             "regression_metrics": self.metrics.regression.to_dict(),
+            "validation_metrics": self.metrics.to_dict(),
             "results": [r.to_dict() for r in self.results],
         }
     
@@ -504,6 +556,7 @@ def export_validation_json(
         },
         "classification": metrics.classification.to_dict(),
         "regression": metrics.regression.to_dict(),
+        "validation_metrics": metrics.to_dict(),
         "results": [r.to_dict() for r in results],
     }
     

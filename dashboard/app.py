@@ -2181,7 +2181,8 @@ def make_sim_controls():
             dbc.Alert(
                 [icon("info-circle", "me-1"),
                  " Tree Graph uses crown-to-crown distances. Supply ",
-                 html.Code("crown_radius_m"), " in GeoJSON properties, or set a global fallback."],
+                 html.Code("crown_radius_m"), ", ", html.Code("Crown_Width"),
+                 ", or ", html.Code("crown_size"), " in GeoJSON properties, or set a global fallback."],
                 color="info", className="py-1 px-2 mt-1 mb-0", style={"fontSize": "0.78rem"},
             ),
             id="sim-mode-tg-hint",
@@ -2221,6 +2222,90 @@ def make_sim_controls():
         html.Small(
             "Fruitlet activates Cecid Fly · Mature activates Fruit Fly",
             className="text-muted d-block mb-2",
+        ),
+
+        # ── QUADRANT PHENOLOGY (mixed stages per orchard block) ────
+        dbc.Checklist(
+            id="orchard-stage-per-quadrant",
+            options=[{
+                "label": " Use different stages per orchard quadrant (NW / NE / SW / SE)",
+                "value": "on",
+            }],
+            value=[],
+            switch=True,
+            className="mb-1",
+        ),
+        dbc.Collapse(
+            html.Div([
+                html.Small(
+                    "Each quadrant has a dominant stage; 70% of trees follow it, "
+                    "20% an adjacent stage, 10% the opposite. Preserves spatial "
+                    "meaning (\"the NW block is flowering\") while giving a realistic mix.",
+                    className="text-muted d-block mb-2",
+                ),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("NW", className="small fw-medium mb-1"),
+                        dbc.Select(
+                            id="quadrant-stage-nw",
+                            options=[
+                                {"label": "🌿 Dormant",   "value": "dormant"},
+                                {"label": "🌸 Flowering", "value": "flowering"},
+                                {"label": "🫛 Fruitlet",  "value": "fruitlet"},
+                                {"label": "🥭 Mature",    "value": "mature"},
+                            ],
+                            value="flowering",
+                            size="sm",
+                        ),
+                    ], md=6, xs=6),
+                    dbc.Col([
+                        dbc.Label("NE", className="small fw-medium mb-1"),
+                        dbc.Select(
+                            id="quadrant-stage-ne",
+                            options=[
+                                {"label": "🌿 Dormant",   "value": "dormant"},
+                                {"label": "🌸 Flowering", "value": "flowering"},
+                                {"label": "🫛 Fruitlet",  "value": "fruitlet"},
+                                {"label": "🥭 Mature",    "value": "mature"},
+                            ],
+                            value="fruitlet",
+                            size="sm",
+                        ),
+                    ], md=6, xs=6),
+                ], className="g-2 mb-1"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("SW", className="small fw-medium mb-1"),
+                        dbc.Select(
+                            id="quadrant-stage-sw",
+                            options=[
+                                {"label": "🌿 Dormant",   "value": "dormant"},
+                                {"label": "🌸 Flowering", "value": "flowering"},
+                                {"label": "🫛 Fruitlet",  "value": "fruitlet"},
+                                {"label": "🥭 Mature",    "value": "mature"},
+                            ],
+                            value="mature",
+                            size="sm",
+                        ),
+                    ], md=6, xs=6),
+                    dbc.Col([
+                        dbc.Label("SE", className="small fw-medium mb-1"),
+                        dbc.Select(
+                            id="quadrant-stage-se",
+                            options=[
+                                {"label": "🌿 Dormant",   "value": "dormant"},
+                                {"label": "🌸 Flowering", "value": "flowering"},
+                                {"label": "🫛 Fruitlet",  "value": "fruitlet"},
+                                {"label": "🥭 Mature",    "value": "mature"},
+                            ],
+                            value="dormant",
+                            size="sm",
+                        ),
+                    ], md=6, xs=6),
+                ], className="g-2 mb-2"),
+            ]),
+            id="quadrant-phenology-collapse",
+            is_open=False,
         ),
 
         dbc.Label([icon("calendar-event", "me-1"), " Days Since Flowering"],
@@ -3910,6 +3995,15 @@ def toggle_sim_mode_hint(mode):
 
 
 @app.callback(
+    Output("quadrant-phenology-collapse", "is_open"),
+    Input("orchard-stage-per-quadrant", "value"),
+    prevent_initial_call=False,
+)
+def toggle_quadrant_phenology(switch_value):
+    return bool(switch_value)
+
+
+@app.callback(
     Output("impact-assumptions-collapse", "is_open"),
     Input("impact-collapse-toggle", "n_clicks"),
     State("impact-assumptions-collapse", "is_open"),
@@ -4314,6 +4408,11 @@ def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
         State("weather-prefix-rain-total", "value"),
         State("weather-debug-gates", "value"),
         State("weather-start-hour", "value"),
+        State("orchard-stage-per-quadrant", "value"),
+        State("quadrant-stage-nw", "value"),
+        State("quadrant-stage-ne", "value"),
+        State("quadrant-stage-sw", "value"),
+        State("quadrant-stage-se", "value"),
     ],
     prevent_initial_call=True,
 )
@@ -4339,6 +4438,11 @@ def run_simulation(
     prefix_rain_total,
     debug_gates,
     start_hour,
+    quadrant_mode,
+    quadrant_nw,
+    quadrant_ne,
+    quadrant_sw,
+    quadrant_se,
 ):
     hours = int(hours_str)
     show_grid_overlay = bool(grid_overlay_enabled)
@@ -4364,6 +4468,20 @@ def run_simulation(
     }
     if neighbor_direction and float(neighbor_threat or 0) > 0:
         body["neighbor_direction"] = neighbor_direction
+
+    # Per-quadrant phenology — only attached when the switch is on and the four
+    # dropdowns are populated. Backend falls back to scalar `orchard_stage` when
+    # `quadrant_stages` is absent, so this is an additive signal.
+    if quadrant_mode and all(
+        v in ("dormant", "flowering", "fruitlet", "mature")
+        for v in (quadrant_nw, quadrant_ne, quadrant_sw, quadrant_se)
+    ):
+        body["quadrant_stages"] = {
+            "nw": quadrant_nw,
+            "ne": quadrant_ne,
+            "sw": quadrant_sw,
+            "se": quadrant_se,
+        }
 
     # Manual weather override — only added when the toggle is ON
     if weather_override_enabled:
@@ -5576,9 +5694,23 @@ def update_monitoring_tab(_, sim_data, assumptions_data, auth_session):
             fig_trend = EMPTY_FIG
 
         # 6) Phenology Distribution
-        stage = meta.get("orchard_stage", "mature")
+        # When the backend returns a per-stage breakdown (quadrant-based or a
+        # 100%-single-stage fallback when quadrant_stages was not supplied),
+        # use it directly. Older responses without `stage_breakdown` still work
+        # via the scalar-stage fallback below.
         all_stages = ["dormant", "flowering", "fruitlet", "mature"]
-        pheno_data = [{"stage": s, "count": (total_trees if s == stage else 0)} for s in all_stages]
+        stage_breakdown = meta.get("stage_breakdown")
+        if isinstance(stage_breakdown, dict) and stage_breakdown:
+            pheno_data = [
+                {"stage": s, "count": int(stage_breakdown.get(s, 0))}
+                for s in all_stages
+            ]
+        else:
+            stage = meta.get("orchard_stage", "mature")
+            pheno_data = [
+                {"stage": s, "count": (total_trees if s == stage else 0)}
+                for s in all_stages
+            ]
         fig_pheno = _build_phenology_figure(pheno_data)
         if not fig_pheno.data:
             fig_pheno = EMPTY_FIG

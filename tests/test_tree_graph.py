@@ -218,6 +218,69 @@ class TestTreeGraph:
         g = _two_tree_graph(distance_m=25.0, max_dist=10.0)
         assert g.edge_count() == 0
 
+    def test_spatial_hash_pairs_match_distance_filter(self):
+        """The no-scipy fallback must emit only pairs within max_dist."""
+        coords = np.array([
+            [0.0, 0.0],
+            [3.0, 4.0],
+            [6.0, 0.0],
+            [20.0, 0.0],
+            [-2.0, -1.0],
+            [50.0, 50.0],
+            [51.0, 54.0],
+        ])
+        max_dist = 5.0
+
+        expected = set()
+        for a in range(len(coords)):
+            for b in range(a + 1, len(coords)):
+                dx = coords[b, 0] - coords[a, 0]
+                dy = coords[b, 1] - coords[a, 1]
+                dist = math.sqrt(dx * dx + dy * dy)
+                if 0.0 < dist <= max_dist:
+                    expected.add((a, b))
+
+        actual = {
+            tuple(pair)
+            for pair in TreeGraph._spatial_hash_pairs(coords, max_dist).tolist()
+        }
+
+        assert actual == expected
+
+    def test_spatial_hash_pairs_do_not_emit_far_sparse_pairs(self):
+        """Sparse orchards should not degrade to all-pairs fallback output."""
+        coords = np.array([[i * 100.0, 0.0] for i in range(100)])
+
+        pairs = TreeGraph._spatial_hash_pairs(coords, max_dist=5.0)
+
+        assert pairs.shape == (0, 2)
+
+    def test_graph_build_uses_spatial_hash_when_scipy_unavailable(self, monkeypatch):
+        """Graph construction remains correct when scipy cannot be imported."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def block_scipy(name, *args, **kwargs):
+            if name == "scipy.spatial":
+                raise ImportError("forced missing scipy")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", block_scipy)
+
+        nodes = [
+            TreeNode(0, "A", 0, 0, 0.0, 0.0, 2.0),
+            TreeNode(1, "B", 0, 0, 3.0, 4.0, 2.0),
+            TreeNode(2, "C", 0, 0, 6.0, 0.0, 2.0),
+            TreeNode(3, "D", 0, 0, 25.0, 0.0, 2.0),
+        ]
+
+        g = TreeGraph(nodes, max_dist=5.0)
+
+        assert g.edge_count() == 2
+        assert {edge.dst for edge in g.neighbours(0)} == {1}
+        assert {edge.dst for edge in g.neighbours(1)} == {0, 2}
+
     def test_edge_geometry_gap(self):
         """Edge g_ij should equal max(d - r_i - r_j, 0)."""
         r = 2.0
@@ -304,6 +367,65 @@ class TestTreeGraph:
             m_lon=111_132.0,
         )
         assert g.nodes[0].crown_radius == 3.0
+
+    def test_crown_width_property_from_dummy_geojson(self):
+        """Crown_Width is a canopy width/diameter and should become radius."""
+        features = [
+            {
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {"Tree_ID": "T1", "Crown_Width": 10.18},
+            },
+        ]
+        g = build_tree_graph_from_lonlat(
+            features=features,
+            origin_lon=0.0,
+            origin_lat=0.0,
+            m_lat=111_132.0,
+            m_lon=111_132.0,
+            default_crown_radius=1.0,
+        )
+        assert g.nodes[0].crown_radius == 5.09
+
+    def test_crown_size_property_from_tree_geojson(self):
+        """crown_size is treated as canopy width/diameter and halved."""
+        features = [
+            {
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {"tree_id": 1, "crown_size": "17.82"},
+            },
+        ]
+        g = build_tree_graph_from_lonlat(
+            features=features,
+            origin_lon=0.0,
+            origin_lat=0.0,
+            m_lat=111_132.0,
+            m_lon=111_132.0,
+            default_crown_radius=1.0,
+        )
+        assert g.nodes[0].crown_radius == 8.91
+
+    def test_explicit_crown_radius_wins_over_width_fields(self):
+        """Radius fields are already radii, so they override width-style fields."""
+        features = [
+            {
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {
+                    "Tree_ID": "T1",
+                    "crown_radius_m": 4.0,
+                    "Crown_Width": 20.0,
+                    "crown_size": 30.0,
+                },
+            },
+        ]
+        g = build_tree_graph_from_lonlat(
+            features=features,
+            origin_lon=0.0,
+            origin_lat=0.0,
+            m_lat=111_132.0,
+            m_lon=111_132.0,
+            default_crown_radius=1.0,
+        )
+        assert g.nodes[0].crown_radius == 4.0
 
     def test_zero_crown_radius_not_error(self):
         """Trees with zero crown radius must not raise exceptions."""

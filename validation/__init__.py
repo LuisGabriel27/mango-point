@@ -70,6 +70,7 @@ from .metrics import (
     compute_classification_metrics,
     compute_regression_metrics,
     compute_full_metrics,
+    bootstrap_confidence_intervals,
     risk_score_to_level,
     normalize_pest_value_to_risk,
 )
@@ -124,6 +125,7 @@ __all__ = [
     "compute_classification_metrics",
     "compute_regression_metrics",
     "compute_full_metrics",
+    "bootstrap_confidence_intervals",
     "risk_score_to_level",
     "normalize_pest_value_to_risk",
     # Validation runner

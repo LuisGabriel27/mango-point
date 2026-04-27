@@ -28,8 +28,10 @@ Usage
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 
 import numpy as np
@@ -43,6 +45,7 @@ from .historical_data import (
 from .weather_scenarios import HistoricalWeatherGenerator
 from .metrics import (
     ValidationMetrics,
+    bootstrap_confidence_intervals,
     compute_full_metrics,
     risk_score_to_level,
     normalize_pest_value_to_risk,
@@ -89,6 +92,7 @@ class ValidationCase:
     
     # Optional metadata
     season: str = ""
+    split: str = "evaluation"
     source_record: Optional[HistoricalRecord] = field(default=None, repr=False)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -104,6 +108,7 @@ class ValidationCase:
             "actual_level": self.actual_level,
             "weather_scenario": self.weather_scenario,
             "season": self.season,
+            "split": self.split,
         }
 
 
@@ -163,6 +168,8 @@ class ValidationResult:
             "simulation_time_s": self.simulation_time_s,
             "peak_risk": self.peak_risk,
             "n_infested": self.n_infested,
+            "weather_source": self.weather_stats.get("source", "unknown"),
+            "weather_fallback_reason": self.weather_stats.get("fallback_reason"),
         }
     
     def to_metrics_dict(self) -> Dict[str, Any]:
@@ -178,6 +185,7 @@ class ValidationResult:
             "predicted_value": self.predicted_risk,
             "pest_type": self.case.pest_type,
             "match": self.match,
+            "split": self.case.split,
         }
 
 
@@ -223,6 +231,7 @@ class ValidationRunner:
         self,
         data_path: Optional[Path] = None,
         seed: int = 42,
+        historical_weather_path: Optional[Path] = None,
     ):
         """
         Initialize the validation runner.
@@ -233,9 +242,15 @@ class ValidationRunner:
             Custom path to historical data CSV
         seed : int
             Random seed for reproducibility
+        historical_weather_path : Path, optional
+            Optional hourly historical weather CSV used before synthetic
+            seasonal weather profiles.
         """
         self.data_loader = HistoricalDataLoader(data_path)
-        self.weather_generator = HistoricalWeatherGenerator(seed=seed)
+        self.weather_generator = HistoricalWeatherGenerator(
+            seed=seed,
+            historical_weather_path=historical_weather_path,
+        )
         self.seed = seed
         self.results: List[ValidationResult] = []
         self._cases: List[ValidationCase] = []
@@ -367,6 +382,34 @@ class ValidationRunner:
         self._cases = cases
         logger.info(f"Generated {len(cases)} validation cases")
         return cases
+
+    def assign_case_splits(
+        self,
+        cases: Optional[List[ValidationCase]] = None,
+        split_year: Optional[int] = None,
+        test_years: Optional[List[int]] = None,
+    ) -> Dict[str, List[ValidationCase]]:
+        """
+        Assign validation cases to calibration/testing splits.
+
+        If no split is requested, cases remain in the neutral ``evaluation``
+        split for backwards-compatible validation runs.
+        """
+        cases = cases if cases is not None else self._cases
+        test_year_set = set(test_years or [])
+
+        grouped: Dict[str, List[ValidationCase]] = {}
+        for case in cases:
+            if test_year_set:
+                case.split = "testing" if case.year in test_year_set else "calibration"
+            elif split_year is not None:
+                case.split = "calibration" if case.year < split_year else "testing"
+            else:
+                case.split = "evaluation"
+
+            grouped.setdefault(case.split, []).append(case)
+
+        return grouped
     
     def _map_stage_to_enum(self, stage_str: str):
         """Map stage string to OrchardStage enum."""
@@ -428,7 +471,8 @@ class ValidationRunner:
         grid.plant_trees(tree_mask, self._CellState.UNBAGGED)
         
         # Seed initial infestation (1-3 random cells)
-        np.random.seed(self.seed + hash(case.case_id) % 10000)
+        case_seed = int(hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:8], 16)
+        np.random.seed(self.seed + case_seed % 10000)
         n_seeds = np.random.randint(1, 4)
         seed_positions = [
             (np.random.randint(0, grid_size), np.random.randint(0, grid_size))
@@ -466,6 +510,7 @@ class ValidationRunner:
                 gates=gates,
                 orchard_stage=orchard_stage,
                 days_since_flowering=days_since_flowering,
+                progress=False,
             )
             
             # Compute summary statistics
@@ -630,9 +675,26 @@ class ValidationRunner:
             grid_size=grid_size,
         )
     
-    def compute_metrics(self) -> ValidationMetrics:
+    def compute_metrics(
+        self,
+        split: Optional[str] = None,
+        bootstrap_iterations: int = 0,
+        confidence: float = 0.95,
+        seed: Optional[int] = None,
+    ) -> ValidationMetrics:
         """
         Compute validation metrics from results.
+
+        Parameters
+        ----------
+        split : str, optional
+            If provided, compute metrics only for results in this split.
+        bootstrap_iterations : int
+            Number of bootstrap resamples for confidence intervals.
+        confidence : float
+            Confidence level for bootstrap intervals.
+        seed : int, optional
+            Random seed for bootstrap resampling.
         
         Returns
         -------
@@ -645,11 +707,46 @@ class ValidationRunner:
                 "Call run_validation() first."
             )
         
+        selected_results = [
+            result for result in self.results
+            if split is None or result.case.split == split
+        ]
+        if not selected_results:
+            raise ValueError(f"No validation results available for split: {split}")
+
         # Convert results to metrics format
-        metrics_data = [r.to_metrics_dict() for r in self.results]
-        
-        self._metrics = compute_full_metrics(metrics_data)
-        return self._metrics
+        metrics_data = [r.to_metrics_dict() for r in selected_results]
+
+        metrics = compute_full_metrics(metrics_data)
+        if bootstrap_iterations > 0:
+            metrics.confidence_intervals = bootstrap_confidence_intervals(
+                metrics_data,
+                n_iterations=bootstrap_iterations,
+                confidence=confidence,
+                seed=self.seed if seed is None else seed,
+            )
+
+        if split is None:
+            self._metrics = metrics
+        return metrics
+
+    def compute_split_metrics(
+        self,
+        bootstrap_iterations: int = 0,
+        confidence: float = 0.95,
+        seed: Optional[int] = None,
+    ) -> Dict[str, ValidationMetrics]:
+        """Compute metrics for each split present in the validation results."""
+        split_names = sorted({result.case.split for result in self.results})
+        return {
+            split: self.compute_metrics(
+                split=split,
+                bootstrap_iterations=bootstrap_iterations,
+                confidence=confidence,
+                seed=seed,
+            )
+            for split in split_names
+        }
     
     def get_summary(self) -> Dict[str, Any]:
         """

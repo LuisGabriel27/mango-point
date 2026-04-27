@@ -77,6 +77,23 @@ class SimulationService:
                 logger.error(f"Failed to import simulation modules: {e}")
                 raise
 
+    def _quadrant_stages_to_dict(self, quadrant_stages) -> Optional[Dict[str, str]]:
+        """
+        Normalise a QuadrantStages pydantic model (or None) into a
+        plain {'nw','ne','sw','se' -> stage_string} dict for downstream
+        phenology utilities. Returns None when no quadrant_stages was supplied,
+        which signals "fall back to the scalar orchard_stage".
+        """
+        if quadrant_stages is None:
+            return None
+        resolved: Dict[str, str] = {}
+        for label in ("nw", "ne", "sw", "se"):
+            raw = getattr(quadrant_stages, label, None)
+            if raw is None:
+                return None
+            resolved[label] = raw.value if hasattr(raw, "value") else str(raw)
+        return resolved
+
     def _pest_is_active_for_stage(self, pest_type: PestTypeEnum, orchard_stage: str) -> bool:
         """Return whether the selected pest can biologically activate at the given stage."""
         stage = (orchard_stage or "").lower()
@@ -176,6 +193,9 @@ class SimulationService:
         orchard_stage_str = getattr(request, 'orchard_stage', 'mature')
         if hasattr(orchard_stage_str, 'value'):
             orchard_stage_str = orchard_stage_str.value
+        quadrant_stages_dict = self._quadrant_stages_to_dict(
+            getattr(request, 'quadrant_stages', None)
+        )
         days_since_flowering = getattr(request, 'days_since_flowering', 60) or 60
         neighbor_threat = getattr(request, 'neighbor_threat', 0.0) or 0.0
         neighbor_direction = getattr(request, 'neighbor_direction', None)
@@ -207,6 +227,7 @@ class SimulationService:
                 days_since_flowering=days_since_flowering,
                 neighbor_threat=neighbor_threat,
                 neighbor_direction=neighbor_direction,
+                quadrant_stages_dict=quadrant_stages_dict,
             )
 
         try:
@@ -266,6 +287,28 @@ class SimulationService:
                 else:
                     grid.set_neighbor_threat_uniform(neighbor_threat)
             
+            # Resolve per-cell phenology (quadrant → stage grid). When
+            # `quadrant_stages_dict` is absent, every cell inherits the scalar
+            # stage so behaviour is identical to pre-phenology runs.
+            from core.phenology_zones import (
+                assign_stages_for_grid,
+                uniform_stage_grid,
+                stage_breakdown_from_grid,
+            )
+            if quadrant_stages_dict is not None:
+                stage_grid = assign_stages_for_grid(
+                    grid.rows, grid.cols,
+                    quadrant_stages=quadrant_stages_dict,
+                    seed=random_seed,
+                    fallback=orchard_stage,
+                )
+            else:
+                stage_grid = uniform_stage_grid(grid.rows, grid.cols, orchard_stage)
+
+            # Breakdown counts real trees only (non-empty cells).
+            tree_mask = grid.state != int(self._cell_state.EMPTY)
+            stage_breakdown = stage_breakdown_from_grid(stage_grid, mask=tree_mask)
+
             # Run simulation with phenology parameters
             assert self._engine_class is not None, "Modules not loaded"
             initial_rain_history = getattr(request, "manual_weather_prefix_rain", None)
@@ -277,6 +320,7 @@ class SimulationService:
                 orchard_stage=orchard_stage,
                 days_since_flowering=days_since_flowering,
                 initial_rainfall_history=initial_rain_history,
+                stage_grid=stage_grid,
             )
             
             result = engine.run(n_steps=request.hours, progress=False)
@@ -327,8 +371,10 @@ class SimulationService:
                 neighbor_threat=neighbor_threat,
                 simulation_mode="grid",
                 neighbor_direction=neighbor_direction,
+                stage_breakdown=stage_breakdown,
+                quadrant_stages=quadrant_stages_dict,
             )
-            
+
             logger.info(
                 f"Simulation {run_id} completed in {duration:.2f}s: "
                 f"peak_risk={peak_risk:.2f}, cells_at_risk={cells_at_risk}, seed={random_seed}"
@@ -658,6 +704,7 @@ class SimulationService:
         days_since_flowering: int,
         neighbor_threat: float,
         neighbor_direction: Optional[str] = None,
+        quadrant_stages_dict: Optional[Dict[str, str]] = None,
     ) -> SimulationResponse:
         """Execute the crown-aware tree-graph simulation."""
         self._load_modules()
@@ -786,6 +833,29 @@ class SimulationService:
         }
         orchard_stage = stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
 
+        # ── per-tree phenology (quadrant-based mixed stages) ──────
+        # Using the already-computed lon/lat extents from the tree features as
+        # the quadrant bounding box keeps spatial identifiability consistent
+        # across grid and tree_graph modes.
+        from core.phenology_zones import (
+            assign_stages_for_points,
+            stage_breakdown,
+        )
+        bbox = (min(lons), min(lats), max(lons), max(lats))
+        tree_coords = list(zip(lons, lats))
+        if quadrant_stages_dict is not None:
+            stage_per_tree = assign_stages_for_points(
+                tree_coords=tree_coords,
+                quadrant_stages=quadrant_stages_dict,
+                bbox=bbox,
+                seed=random_seed,
+                fallback=orchard_stage,
+            )
+        else:
+            stage_per_tree = [orchard_stage] * len(graph.nodes)
+
+        stage_counts = stage_breakdown(stage_per_tree)
+
         # ── run engine ────────────────────────────────────────────
         engine = TreeGraphEngine(
             graph=graph,
@@ -802,6 +872,7 @@ class SimulationService:
             neighbor_threat=neighbor_threat,
             neighbor_direction=neighbor_direction,
             initial_rainfall_history=getattr(request, "manual_weather_prefix_rain", None),
+            stage_per_tree=stage_per_tree if quadrant_stages_dict is not None else None,
         )
         result = engine.run(n_steps=request.hours, progress=False)
 
@@ -856,6 +927,8 @@ class SimulationService:
             tg_wind_bias=wind_bias,
             tg_max_neighbor_dist_m=max_dist,
             tg_default_crown_radius_m=crown_fallback,
+            stage_breakdown=stage_counts,
+            quadrant_stages=quadrant_stages_dict,
         )
 
         logger.info(

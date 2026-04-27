@@ -259,6 +259,7 @@ class WeatherService:
                 "temperature_c":  float(temps[i])  if i < len(temps) else 28.0,
                 "humidity":       float(humidities[i]) if i < len(humidities) else 70.0,
                 "rainfall_mm":    float(precip[i]) if i < len(precip) else 0.0,
+                "source":         "open-meteo",
             })
 
         logger.info(
@@ -325,6 +326,7 @@ class WeatherService:
                 "temperature_c": float(temp),
                 "humidity": float(humidity),
                 "rainfall_mm": rainfall,
+                "source": "synthetic",
             })
         
         return forecasts

@@ -47,7 +47,7 @@ class SimulationModeEnum(str, Enum):
 
     grid       — 2-D cellular automata on a regular 5 m grid (baseline).
     tree_graph — Crown-aware, tree-to-tree hazard model using a spatial graph.
-                 Requires crown_radius_m per tree (or the global fallback).
+                 Uses per-tree crown radius/width fields when present, or the global fallback.
     """
     GRID       = "grid"
     TREE_GRAPH = "tree_graph"
@@ -114,6 +114,24 @@ class ManualWeatherEntry(BaseModel):
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall in mm for this hour.")
 
 
+class QuadrantStages(BaseModel):
+    """Dominant phenological stage per 2×2 quadrant of the orchard bounding box.
+
+    Quadrants are computed at request time from the orchard's lon/lat extents:
+    ``nw`` = north-west, ``ne`` = north-east, ``sw`` = south-west, ``se`` = south-east.
+
+    Within each quadrant, trees are assigned their quadrant's dominant stage with
+    probability 0.7, an adjacent stage (±1 in the phenological cycle) with
+    probability 0.2, and the opposite stage with probability 0.1. This yields a
+    realistic mixed-stage distribution while preserving spatial identifiability
+    ("the NW block is a flowering zone").
+    """
+    nw: OrchardStageEnum = Field(..., description="Dominant stage for the NW quadrant.")
+    ne: OrchardStageEnum = Field(..., description="Dominant stage for the NE quadrant.")
+    sw: OrchardStageEnum = Field(..., description="Dominant stage for the SW quadrant.")
+    se: OrchardStageEnum = Field(..., description="Dominant stage for the SE quadrant.")
+
+
 class ManualWeatherBlock(BaseModel):
     """
     A contiguous block of hours sharing the same weather profile.
@@ -164,7 +182,17 @@ class SimulationRequest(BaseModel):
     orchard_stage: OrchardStageEnum = Field(
         default=OrchardStageEnum.MATURE,
         description="Current phenological stage of the orchard. Controls which pest gates can activate: "
-                    "DORMANT/FLOWERING=no activity, FRUITLET=Cecid Fly, MATURE=Fruit Fly"
+                    "DORMANT/FLOWERING=no activity, FRUITLET=Cecid Fly, MATURE=Fruit Fly. "
+                    "Used as the fallback when `quadrant_stages` is not provided."
+    )
+    quadrant_stages: Optional[QuadrantStages] = Field(
+        default=None,
+        description="Per-quadrant phenology. When provided, replaces the scalar `orchard_stage` "
+                    "by assigning each tree a stage based on which 2×2 quadrant of the orchard "
+                    "bounding box it falls in. Within each quadrant the stage is mixed 70/20/10 "
+                    "(dominant / adjacent / opposite) for realistic variation while preserving "
+                    "spatial identifiability. When absent, all trees inherit `orchard_stage` "
+                    "(backward compatible)."
     )
     days_since_flowering: Optional[int] = Field(
         default=60,
@@ -214,7 +242,7 @@ class SimulationRequest(BaseModel):
         default=None,
         ge=0.0,
         description="(tree_graph mode) Fallback crown radius (m) applied to any tree that "
-                    f"does not supply crown_radius_m in its GeoJSON properties. "
+                    f"does not supply crown_radius_m, Crown_Width, or crown_size in its GeoJSON properties. "
                     f"Defaults to TG_DEFAULT_CROWN_RADIUS_M = {TG_DEFAULT_CROWN_RADIUS_M} m.",
     )
 
@@ -375,6 +403,12 @@ class SimulationMetadata(BaseModel):
     tg_wind_bias: Optional[float] = None
     tg_max_neighbor_dist_m: Optional[float] = None
     tg_default_crown_radius_m: Optional[float] = None
+
+    # Per-quadrant phenology breakdown (present when quadrant_stages was supplied
+    # or always as a 100%-single-stage object when it wasn't). Keys: dormant,
+    # flowering, fruitlet, mature. Feeds the dashboard phenology donut.
+    stage_breakdown: Optional[Dict[str, int]] = None
+    quadrant_stages: Optional[Dict[str, str]] = None
 
 
 class SimulationResponse(BaseModel):

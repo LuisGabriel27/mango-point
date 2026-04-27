@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 
@@ -154,7 +155,11 @@ class HistoricalWeatherGenerator:
         weather_ts = generator.create_weather_timeseries(2023, 5, 48)
     """
     
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(
+        self,
+        seed: Optional[int] = None,
+        historical_weather_path: Optional[str | Path] = None,
+    ):
         """
         Initialize the weather generator.
         
@@ -162,14 +167,162 @@ class HistoricalWeatherGenerator:
         ----------
         seed : int, optional
             Random seed for reproducibility
+        historical_weather_path : str or Path, optional
+            Hourly historical weather CSV. When rows are available for a
+            validation case's year/month, they are used before synthetic
+            seasonal profiles.
         """
         self.seed = seed
         self._rng = np.random.default_rng(seed)
+        self.historical_weather_path = (
+            Path(historical_weather_path) if historical_weather_path else None
+        )
+        self._historical_weather = self._load_historical_weather()
     
     def reset_seed(self, seed: int) -> None:
         """Reset the random number generator with a new seed."""
         self.seed = seed
         self._rng = np.random.default_rng(seed)
+
+    @staticmethod
+    def _normalize_column_name(name: str) -> str:
+        """Normalize CSV column names for flexible matching."""
+        normalized = name.strip().lower()
+        for char in (" ", "-", "/", "."):
+            normalized = normalized.replace(char, "_")
+        return normalized
+
+    @classmethod
+    def _find_column(
+        cls,
+        columns_by_key: Dict[str, str],
+        aliases: tuple[str, ...],
+    ) -> Optional[str]:
+        """Find a CSV column by normalized alias."""
+        normalized_aliases = {cls._normalize_column_name(alias) for alias in aliases}
+        for alias in normalized_aliases:
+            if alias in columns_by_key:
+                return columns_by_key[alias]
+        return None
+
+    def _load_historical_weather(self) -> Optional[pd.DataFrame]:
+        """Load and normalize optional hourly historical weather CSV data."""
+        if self.historical_weather_path is None:
+            return None
+
+        if not self.historical_weather_path.exists():
+            raise FileNotFoundError(
+                f"Historical weather CSV not found: {self.historical_weather_path}"
+            )
+
+        raw = pd.read_csv(self.historical_weather_path)
+        columns_by_key = {
+            self._normalize_column_name(column): column
+            for column in raw.columns
+        }
+
+        datetime_col = self._find_column(
+            columns_by_key,
+            ("datetime", "date_time", "timestamp", "time", "date"),
+        )
+        temp_col = self._find_column(
+            columns_by_key,
+            ("temperature_c", "temp_c", "temperature", "temperature_2m"),
+        )
+        wind_speed_col = self._find_column(
+            columns_by_key,
+            ("wind_speed_ms", "wind_speed_m_s", "wind_speed", "wind_speed_10m"),
+        )
+        wind_dir_col = self._find_column(
+            columns_by_key,
+            (
+                "wind_dir_deg",
+                "wind_direction_deg",
+                "wind_direction",
+                "wind_direction_10m",
+            ),
+        )
+        rainfall_col = self._find_column(
+            columns_by_key,
+            ("rainfall_mm", "rain_mm", "precipitation_mm", "precipitation"),
+        )
+        humidity_col = self._find_column(
+            columns_by_key,
+            ("humidity_pct", "relative_humidity", "relative_humidity_2m"),
+        )
+
+        required = {
+            "datetime": datetime_col,
+            "temperature_c": temp_col,
+            "wind_speed_ms": wind_speed_col,
+            "wind_dir_deg": wind_dir_col,
+        }
+        missing = [name for name, column in required.items() if column is None]
+        if missing:
+            missing_text = ", ".join(missing)
+            raise ValueError(
+                "Historical weather CSV is missing required column(s): "
+                f"{missing_text}"
+            )
+
+        df = pd.DataFrame({
+            "datetime": pd.to_datetime(raw[datetime_col], errors="coerce"),
+            "temperature_c": pd.to_numeric(raw[temp_col], errors="coerce"),
+            "wind_speed_ms": pd.to_numeric(raw[wind_speed_col], errors="coerce"),
+            "wind_dir_deg": pd.to_numeric(raw[wind_dir_col], errors="coerce") % 360,
+            "rainfall_mm": (
+                pd.to_numeric(raw[rainfall_col], errors="coerce").fillna(0.0)
+                if rainfall_col
+                else 0.0
+            ),
+        })
+
+        if humidity_col:
+            df["humidity_pct"] = pd.to_numeric(raw[humidity_col], errors="coerce")
+
+        df = df.dropna(
+            subset=["datetime", "temperature_c", "wind_speed_ms", "wind_dir_deg"]
+        )
+        df["rainfall_mm"] = df["rainfall_mm"].clip(lower=0.0)
+        df["wind_speed_ms"] = df["wind_speed_ms"].clip(lower=0.0)
+        df = df.sort_values("datetime").reset_index(drop=True)
+
+        if df.empty:
+            raise ValueError("Historical weather CSV contains no usable weather rows")
+
+        return df
+
+    def _generate_from_historical(
+        self,
+        year: int,
+        month: int,
+        hours: int,
+        scenario: str,
+    ) -> Optional[pd.DataFrame]:
+        """Return historical weather for a case when enough rows are available."""
+        if self._historical_weather is None:
+            return None
+
+        data = self._historical_weather
+        month_rows = data[
+            (data["datetime"].dt.year == year)
+            & (data["datetime"].dt.month == month)
+        ]
+        if len(month_rows) < hours:
+            return None
+
+        preferred_start = datetime(year, month, 15, 6, 0)
+        from_preferred = month_rows[month_rows["datetime"] >= preferred_start]
+        if len(from_preferred) >= hours:
+            selected = from_preferred.head(hours).copy()
+        else:
+            selected = month_rows.head(hours).copy()
+
+        selected.attrs["source"] = "historical_weather_csv"
+        selected.attrs["scenario"] = scenario
+        selected.attrs["historical_weather_path"] = str(self.historical_weather_path)
+        selected.attrs["weather_rows_available"] = int(len(month_rows))
+        return selected.reset_index(drop=True)
     
     def get_profile(self, month: int) -> SeasonalWeatherProfile:
         """
@@ -221,6 +374,20 @@ class HistoricalWeatherGenerator:
             datetime, wind_speed_ms, wind_dir_deg, temperature_c, rainfall_mm
         """
         profile = self.get_profile(month)
+
+        fallback_reason = None
+        if self._historical_weather is not None:
+            historical = self._generate_from_historical(
+                year=year,
+                month=month,
+                hours=hours,
+                scenario=scenario,
+            )
+            if historical is not None:
+                return historical
+            fallback_reason = (
+                "historical_weather_csv_has_insufficient_rows_for_case_month"
+            )
         
         # Create datetime array starting from 6:00 AM on the 15th
         start = datetime(year, month, 15, 6, 0)
@@ -304,6 +471,12 @@ class HistoricalWeatherGenerator:
             "rainfall_mm": rainfall,
             "humidity_pct": humidity,  # Extra column for reference
         })
+        df.attrs["source"] = "seasonal_profile_synthetic"
+        df.attrs["scenario"] = scenario
+        if self.historical_weather_path:
+            df.attrs["historical_weather_path"] = str(self.historical_weather_path)
+        if fallback_reason:
+            df.attrs["fallback_reason"] = fallback_reason
         
         return df
     
@@ -435,7 +608,7 @@ class HistoricalWeatherGenerator:
         dict
             Summary statistics
         """
-        return {
+        stats = {
             "hours": len(df),
             "temp_min_c": float(df["temperature_c"].min()),
             "temp_max_c": float(df["temperature_c"].max()),
@@ -446,6 +619,18 @@ class HistoricalWeatherGenerator:
             "wind_mean_ms": float(df["wind_speed_ms"].mean()),
             "wind_max_ms": float(df["wind_speed_ms"].max()),
         }
+        stats.update({
+            "source": df.attrs.get("source", "unknown"),
+            "scenario": df.attrs.get("scenario", "unknown"),
+        })
+        for key in (
+            "historical_weather_path",
+            "weather_rows_available",
+            "fallback_reason",
+        ):
+            if key in df.attrs:
+                stats[key] = df.attrs[key]
+        return stats
 
 
 def create_weather_for_validation_case(

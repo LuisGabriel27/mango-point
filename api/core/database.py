@@ -99,6 +99,12 @@ async def init_db():
         # Enable PostGIS extension
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         await conn.run_sync(Base.metadata.create_all)
+        # Backward-compatible migration for older installs: field
+        # observations are ground truth and do not belong to a simulation run.
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS infestation_record "
+            "ALTER COLUMN simulation_id DROP NOT NULL;"
+        ))
     logger.info("Database initialized successfully")
 
 

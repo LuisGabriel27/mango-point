@@ -16,6 +16,8 @@ from ..models.schemas import (
     AlertResponse,
     AlertListResponse,
     AlertAcknowledge,
+    AlertActionStatusEnum,
+    AlertActionUpdate,
     AlertStatusEnum,
     AlertSeverityEnum,
 )
@@ -28,6 +30,97 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
 
 
+def _memory_alert_to_response(alert: dict) -> AlertResponse:
+    """Convert an in-memory fallback alert to API response shape."""
+    return AlertResponse(
+        alert_id=alert["alert_id"],
+        triggered_at=alert["triggered_at"],
+        severity=(
+            AlertSeverityEnum(alert["severity"])
+            if alert["severity"] in ["low", "medium", "high", "critical"]
+            else AlertSeverityEnum.HIGH
+        ),
+        status=(
+            AlertStatusEnum(alert["status"])
+            if alert["status"] in ["active", "acknowledged", "resolved"]
+            else AlertStatusEnum.ACTIVE
+        ),
+        risk_value=alert["risk_value"] or 0.0,
+        affected_cells=alert["affected_cells"] or [],
+        affected_tree_ids=alert["affected_tree_ids"] or [],
+        orchard_id=alert["orchard_id"],
+        zone_name=alert["zone_name"],
+        message=alert["message"] or "",
+        email_sent=alert["email_sent"] or False,
+        sms_sent=alert["sms_sent"] or False,
+        centroid_lon=alert.get("centroid_lon"),
+        centroid_lat=alert.get("centroid_lat"),
+        acknowledged_by=alert["acknowledged_by"],
+        acknowledged_at=alert["acknowledged_at"],
+        resolved_at=alert["resolved_at"],
+        recommended_actions=alert.get("recommended_actions") or [],
+        action_status=(
+            AlertActionStatusEnum(alert.get("action_status", "pending"))
+            if alert.get("action_status", "pending") in [
+                "pending", "assigned", "in_progress", "completed", "dismissed"
+            ]
+            else AlertActionStatusEnum.PENDING
+        ),
+        action_assigned_to=alert.get("action_assigned_to"),
+        action_notes=alert.get("action_notes"),
+        action_due_at=alert.get("action_due_at"),
+        action_completed_at=alert.get("action_completed_at"),
+    )
+
+
+def _db_alert_to_response(alert) -> AlertResponse:
+    """Convert a database alert row to API response shape."""
+    severity_map = {
+        "low": AlertSeverityEnum.LOW,
+        "medium": AlertSeverityEnum.MEDIUM,
+        "high": AlertSeverityEnum.HIGH,
+        "critical": AlertSeverityEnum.CRITICAL,
+    }
+
+    status_map = {
+        AlertStatus.ACTIVE: AlertStatusEnum.ACTIVE,
+        AlertStatus.ACKNOWLEDGED: AlertStatusEnum.ACKNOWLEDGED,
+        AlertStatus.RESOLVED: AlertStatusEnum.RESOLVED,
+    }
+
+    action_status_value = alert.action_status or "pending"
+    try:
+        action_status = AlertActionStatusEnum(action_status_value)
+    except ValueError:
+        action_status = AlertActionStatusEnum.PENDING
+
+    return AlertResponse(
+        alert_id=alert.alert_id,
+        triggered_at=format_rfc3339(alert.triggered_at) if alert.triggered_at else "",
+        severity=severity_map.get(alert.severity.value, AlertSeverityEnum.HIGH) if alert.severity else AlertSeverityEnum.HIGH,
+        status=status_map.get(alert.status, AlertStatusEnum.ACTIVE) if alert.status else AlertStatusEnum.ACTIVE,
+        risk_value=alert.risk_value or 0.0,
+        affected_cells=alert.affected_cells or [],
+        affected_tree_ids=alert.affected_tree_ids or [],
+        orchard_id=alert.orchard_id,
+        zone_name=alert.zone_name,
+        message=alert.message or "",
+        email_sent=alert.email_sent or False,
+        sms_sent=alert.sms_sent or False,
+        centroid_lon=alert.centroid_lon,
+        centroid_lat=alert.centroid_lat,
+        acknowledged_by=alert.acknowledged_by,
+        acknowledged_at=format_rfc3339(alert.acknowledged_at) if alert.acknowledged_at else None,
+        resolved_at=format_rfc3339(alert.resolved_at) if alert.resolved_at else None,
+        recommended_actions=alert.recommended_actions or [],
+        action_status=action_status,
+        action_assigned_to=alert.action_assigned_to,
+        action_notes=alert.action_notes,
+        action_due_at=format_rfc3339(alert.action_due_at) if alert.action_due_at else None,
+        action_completed_at=format_rfc3339(alert.action_completed_at) if alert.action_completed_at else None,
+    )
+
+
 @router.get(
     "",
     response_model=AlertListResponse,
@@ -37,6 +130,7 @@ router = APIRouter(prefix="/alerts", tags=["Alerts"])
     
     **Alert triggers:**
     - Risk > 0.75 in any unbagged zone
+    - Pest biological gate opens under forecast weather and orchard stage
     
     **Severity levels:**
     - **Critical**: Risk ≥ 95% or > 50 affected cells
@@ -54,6 +148,10 @@ async def get_alerts(
     status: Optional[AlertStatusEnum] = Query(
         None,
         description="Filter by alert status",
+    ),
+    orchard_id: Optional[str] = Query(
+        None,
+        description="Filter by orchard ID",
     ),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -75,43 +173,35 @@ async def get_alerts(
         alerts, total, active_count = await alert_service.get_alerts(
             db=db,
             status=db_status,
+            orchard_id=orchard_id,
             limit=limit,
             offset=offset,
         )
         
-        # Convert to response format
-        severity_map = {
-            "low": AlertSeverityEnum.LOW,
-            "medium": AlertSeverityEnum.MEDIUM,
-            "high": AlertSeverityEnum.HIGH,
-            "critical": AlertSeverityEnum.CRITICAL,
-        }
-        
-        status_map_reverse = {
-            AlertStatus.ACTIVE: AlertStatusEnum.ACTIVE,
-            AlertStatus.ACKNOWLEDGED: AlertStatusEnum.ACKNOWLEDGED,
-            AlertStatus.RESOLVED: AlertStatusEnum.RESOLVED,
-        }
-        
-        alert_responses = []
-        for a in alerts:
-            alert_responses.append(AlertResponse(
-                alert_id=a.alert_id,
-                triggered_at=format_rfc3339(a.triggered_at) if a.triggered_at else "",
-                severity=severity_map.get(a.severity.value, AlertSeverityEnum.HIGH) if a.severity else AlertSeverityEnum.HIGH,
-                status=status_map_reverse.get(a.status, AlertStatusEnum.ACTIVE) if a.status else AlertStatusEnum.ACTIVE,
-                risk_value=a.risk_value or 0.0,
-                affected_cells=a.affected_cells or [],
-                affected_tree_ids=a.affected_tree_ids or [],
-                orchard_id=a.orchard_id,
-                zone_name=a.zone_name,
-                message=a.message or "",
-                email_sent=a.email_sent or False,
-                sms_sent=a.sms_sent or False,
-                acknowledged_by=a.acknowledged_by,
-                acknowledged_at=format_rfc3339(a.acknowledged_at) if a.acknowledged_at else None,
-                resolved_at=format_rfc3339(a.resolved_at) if a.resolved_at else None,
-            ))
+        alert_responses = [_db_alert_to_response(a) for a in alerts]
+
+        seen_alert_ids = {alert.alert_id for alert in alert_responses}
+        status_filter = status.value if status else None
+        memory_alerts, _, _ = alert_service.get_memory_alerts(
+            status=status_filter,
+            orchard_id=orchard_id,
+        )
+        all_memory_alerts, _, _ = alert_service.get_memory_alerts(
+            orchard_id=orchard_id,
+        )
+        unique_memory_alerts = [
+            alert for alert in memory_alerts
+            if alert["alert_id"] not in seen_alert_ids
+        ]
+        alert_responses.extend(
+            _memory_alert_to_response(alert)
+            for alert in unique_memory_alerts
+        )
+        total += len(unique_memory_alerts)
+        active_count += len([
+            alert for alert in all_memory_alerts
+            if alert["status"] == "active" and alert["alert_id"] not in seen_alert_ids
+        ])
         
         return AlertListResponse(
             total=total,
@@ -123,28 +213,13 @@ async def get_alerts(
         logger.warning(f"Could not retrieve alerts from database: {e}")
         # Fall back to in-memory alerts when database is not available
         memory_alerts, total, active_count = alert_service.get_memory_alerts(
-            status=status.value if status else None
+            status=status.value if status else None,
+            orchard_id=orchard_id,
         )
         
         alert_responses = []
         for a in memory_alerts:
-            alert_responses.append(AlertResponse(
-                alert_id=a["alert_id"],
-                triggered_at=a["triggered_at"],
-                severity=AlertSeverityEnum(a["severity"]) if a["severity"] in ["low", "medium", "high", "critical"] else AlertSeverityEnum.HIGH,
-                status=AlertStatusEnum(a["status"]) if a["status"] in ["active", "acknowledged", "resolved"] else AlertStatusEnum.ACTIVE,
-                risk_value=a["risk_value"] or 0.0,
-                affected_cells=a["affected_cells"] or [],
-                affected_tree_ids=a["affected_tree_ids"] or [],
-                orchard_id=a["orchard_id"],
-                zone_name=a["zone_name"],
-                message=a["message"] or "",
-                email_sent=a["email_sent"] or False,
-                sms_sent=a["sms_sent"] or False,
-                acknowledged_by=a["acknowledged_by"],
-                acknowledged_at=a["acknowledged_at"],
-                resolved_at=a["resolved_at"],
-            ))
+            alert_responses.append(_memory_alert_to_response(a))
         
         return AlertListResponse(
             total=total,
@@ -173,38 +248,13 @@ async def get_alert(
     alert = result.scalar_one_or_none()
     
     if not alert:
+        memory_alerts, _, _ = alert_service.get_memory_alerts()
+        for memory_alert in memory_alerts:
+            if memory_alert["alert_id"] == alert_id:
+                return _memory_alert_to_response(memory_alert)
         raise HTTPException(status_code=404, detail="Alert not found")
     
-    severity_map = {
-        "low": AlertSeverityEnum.LOW,
-        "medium": AlertSeverityEnum.MEDIUM,
-        "high": AlertSeverityEnum.HIGH,
-        "critical": AlertSeverityEnum.CRITICAL,
-    }
-    
-    status_map = {
-        AlertStatus.ACTIVE: AlertStatusEnum.ACTIVE,
-        AlertStatus.ACKNOWLEDGED: AlertStatusEnum.ACKNOWLEDGED,
-        AlertStatus.RESOLVED: AlertStatusEnum.RESOLVED,
-    }
-    
-    return AlertResponse(
-        alert_id=alert.alert_id,
-        triggered_at=format_rfc3339(alert.triggered_at) if alert.triggered_at else "",
-        severity=severity_map.get(alert.severity.value, AlertSeverityEnum.HIGH) if alert.severity else AlertSeverityEnum.HIGH,
-        status=status_map.get(alert.status, AlertStatusEnum.ACTIVE) if alert.status else AlertStatusEnum.ACTIVE,
-        risk_value=alert.risk_value or 0.0,
-        affected_cells=alert.affected_cells or [],
-        affected_tree_ids=alert.affected_tree_ids or [],
-        orchard_id=alert.orchard_id,
-        zone_name=alert.zone_name,
-        message=alert.message or "",
-        email_sent=alert.email_sent or False,
-        sms_sent=alert.sms_sent or False,
-        acknowledged_by=alert.acknowledged_by,
-        acknowledged_at=format_rfc3339(alert.acknowledged_at) if alert.acknowledged_at else None,
-        resolved_at=format_rfc3339(alert.resolved_at) if alert.resolved_at else None,
-    )
+    return _db_alert_to_response(alert)
 
 
 @router.post(
@@ -228,6 +278,17 @@ async def acknowledge_alert(
         )
         
         if not alert:
+            memory_alert = alert_service.update_memory_alert(
+                alert_id,
+                status="acknowledged",
+                acknowledged_by=ack.acknowledged_by,
+                acknowledged_at=format_rfc3339(utcnow_naive()),
+                action_assigned_to=ack.acknowledged_by,
+                action_status="assigned",
+                action_notes=ack.notes,
+            )
+            if memory_alert:
+                return _memory_alert_to_response(memory_alert)
             raise HTTPException(status_code=404, detail="Alert not found")
         
         await db.commit()
@@ -265,6 +326,17 @@ async def resolve_alert(
         )
         
         if not alert:
+            now = format_rfc3339(utcnow_naive())
+            memory_alert = alert_service.update_memory_alert(
+                alert_id,
+                status="resolved",
+                resolved_at=now,
+                action_status="completed",
+                action_completed_at=now,
+                action_notes=resolution_notes,
+            )
+            if memory_alert:
+                return _memory_alert_to_response(memory_alert)
             raise HTTPException(status_code=404, detail="Alert not found")
         
         await db.commit()
@@ -279,6 +351,72 @@ async def resolve_alert(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to resolve alert: {str(e)}",
+        )
+
+
+@router.post(
+    "/{alert_id}/action",
+    response_model=AlertResponse,
+    summary="Update alert action workflow",
+    description="Assign or update the field response work for an alert.",
+)
+async def update_alert_action(
+    alert_id: str,
+    action: AlertActionUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> AlertResponse:
+    """Update alert action assignment/status/notes."""
+    try:
+        alert = await alert_service.update_alert_action(
+            db=db,
+            alert_id=alert_id,
+            action_status=action.action_status,
+            assigned_to=action.assigned_to,
+            notes=action.notes,
+            due_at=action.due_at,
+            completed_at=action.completed_at,
+        )
+
+        if not alert:
+            completed_at = action.completed_at or (
+                utcnow_naive()
+                if action.action_status == AlertActionStatusEnum.COMPLETED
+                else None
+            )
+            memory_alert = alert_service.update_memory_alert(
+                alert_id,
+                action_status=(
+                    action.action_status.value
+                    if action.action_status
+                    else None
+                ),
+                action_assigned_to=action.assigned_to,
+                action_notes=action.notes,
+                action_due_at=(
+                    format_rfc3339(action.due_at)
+                    if action.due_at
+                    else None
+                ),
+                action_completed_at=(
+                    format_rfc3339(completed_at)
+                    if completed_at
+                    else None
+                ),
+            )
+            if memory_alert:
+                return _memory_alert_to_response(memory_alert)
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+        await db.commit()
+        return await get_alert(alert_id, db)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update alert action: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update alert action: {str(e)}",
         )
 
 

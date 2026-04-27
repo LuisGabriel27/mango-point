@@ -53,6 +53,20 @@ class SimulationModeEnum(str, Enum):
     TREE_GRAPH = "tree_graph"
 
 
+class TreatmentTypeEnum(str, Enum):
+    """Treatment scenario type for forecast what-if modelling."""
+    PROTECTIVE_SPRAY = "protective_spray"
+    TARGETED_SPRAY = "targeted_spray"
+    SANITATION = "sanitation"
+    COMBINED = "combined"
+
+
+class TreatmentCoverageEnum(str, Enum):
+    """Spatial coverage of a treatment application."""
+    WHOLE_ORCHARD = "whole_orchard"
+    TARGETED = "targeted"
+
+
 class AlertSeverityEnum(str, Enum):
     """Alert severity levels."""
     LOW = "low"
@@ -66,6 +80,15 @@ class AlertStatusEnum(str, Enum):
     ACTIVE = "active"
     ACKNOWLEDGED = "acknowledged"
     RESOLVED = "resolved"
+
+
+class AlertActionStatusEnum(str, Enum):
+    """Operational action workflow status for an alert."""
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    DISMISSED = "dismissed"
 
 
 # ═══════════════════════════════════════════════
@@ -83,6 +106,122 @@ class GeoJSONFeatureCollection(BaseModel):
     """GeoJSON FeatureCollection schema."""
     type: str = "FeatureCollection"
     features: List[GeoJSONFeature]
+
+
+class OrchardCreate(BaseModel):
+    """Request schema for creating a managed orchard."""
+    name: str = Field(..., min_length=1, max_length=200)
+    orchard_id: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Stable public orchard identifier. If omitted, one is generated from the name.",
+    )
+    owner_name: Optional[str] = Field(default=None, max_length=200)
+    location: Optional[str] = Field(default=None, max_length=500)
+    area_size: Optional[float] = Field(default=None, ge=0.0)
+    tree_count: Optional[int] = Field(default=None, ge=0)
+    geojson: Optional[Dict[str, Any]] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    is_active: bool = Field(default=True)
+    monitoring_enabled: bool = Field(default=True)
+    orchard_stage: OrchardStageEnum = Field(default=OrchardStageEnum.MATURE)
+    days_since_flowering: int = Field(default=60, ge=0, le=180)
+    monitored_pest_types: List[PestTypeEnum] = Field(
+        default_factory=lambda: [PestTypeEnum.CECID, PestTypeEnum.FRUITFLY]
+    )
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+
+class OrchardUpdate(BaseModel):
+    """Request schema for updating a managed orchard."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    orchard_id: Optional[str] = Field(default=None, max_length=100)
+    owner_name: Optional[str] = Field(default=None, max_length=200)
+    location: Optional[str] = Field(default=None, max_length=500)
+    area_size: Optional[float] = Field(default=None, ge=0.0)
+    tree_count: Optional[int] = Field(default=None, ge=0)
+    geojson: Optional[Dict[str, Any]] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    is_active: Optional[bool] = Field(default=None)
+    monitoring_enabled: Optional[bool] = Field(default=None)
+    orchard_stage: Optional[OrchardStageEnum] = Field(default=None)
+    days_since_flowering: Optional[int] = Field(default=None, ge=0, le=180)
+    monitored_pest_types: Optional[List[PestTypeEnum]] = Field(default=None)
+
+    @field_validator("name")
+    @classmethod
+    def optional_name_must_not_be_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+
+class OrchardResponse(BaseModel):
+    """Response schema for orchard metadata."""
+    database_id: int
+    orchard_id: str
+    name: str
+    owner_name: Optional[str] = None
+    location: Optional[str] = None
+    area_size: Optional[float] = None
+    tree_count: int
+    geojson: Optional[Dict[str, Any]] = None
+    centroid_lon: Optional[float] = None
+    centroid_lat: Optional[float] = None
+    description: Optional[str] = None
+    is_active: bool
+    monitoring_enabled: bool
+    orchard_stage: OrchardStageEnum
+    days_since_flowering: int
+    monitored_pest_types: List[PestTypeEnum]
+    last_monitoring_scan_at: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class OrchardListResponse(BaseModel):
+    """Response schema for listing orchards."""
+    total: int
+    orchards: List[OrchardResponse]
+
+
+class TreatmentApplication(BaseModel):
+    """A field treatment scenario applied at the start of a simulation."""
+    treatment_type: TreatmentTypeEnum = Field(default=TreatmentTypeEnum.TARGETED_SPRAY)
+    coverage: TreatmentCoverageEnum = Field(default=TreatmentCoverageEnum.TARGETED)
+    target_tree_ids: List[str] = Field(default_factory=list)
+    target_cells: List[Dict[str, int]] = Field(default_factory=list)
+    efficacy: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description="Fractional reduction in treated-tree susceptibility.",
+    )
+    source_reduction: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional fractional reduction in treated infested-tree infectiousness.",
+    )
+    label: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("target_cells")
+    @classmethod
+    def target_cells_need_row_col(cls, value: List[Dict[str, int]]) -> List[Dict[str, int]]:
+        for cell in value:
+            if "row" not in cell or "col" not in cell:
+                raise ValueError("Each target cell must include row and col")
+        return value
 
 
 # ═══════════════════════════════════════════════
@@ -162,6 +301,12 @@ class ManualWeatherBlock(BaseModel):
 class SimulationRequest(BaseModel):
     """Request schema for POST /run-simulation."""
     pest_type: PestTypeEnum = Field(..., description="Type of pest to simulate")
+    orchard_id: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Stable orchard identifier for multi-orchard deployments. "
+                    "If omitted, the API derives one from orchard_geojson properties.",
+    )
     orchard_geojson: Dict[str, Any] = Field(..., description="GeoJSON FeatureCollection of tree points or orchard boundary polygon")
     bagged_tree_ids: List[str] = Field(default=[], description="List of tree IDs that are bagged")
     hours: int = Field(default=48, ge=1, le=168, description="Simulation duration in hours")
@@ -224,6 +369,12 @@ class SimulationRequest(BaseModel):
     )
 
     # ── simulation mode ──────────────────────────────────────────
+    treatment_applications: List[TreatmentApplication] = Field(
+        default_factory=list,
+        description="Treatment scenarios applied at simulation start. These reduce treated-tree "
+                    "susceptibility and, optionally, infectiousness. No pesticide product or dose is implied.",
+    )
+
     simulation_mode: SimulationModeEnum = Field(
         default=SimulationModeEnum.GRID,
         description="Spatial spread model: 'grid' (default, cellular automata) or "
@@ -393,6 +544,11 @@ class SimulationMetadata(BaseModel):
     # Mode selector — present in every response for explicit A/B comparison
     simulation_mode: str = "grid"
     neighbor_direction: Optional[str] = None
+    initial_seed_strategy: Optional[str] = None
+    initial_seed_count: int = 0
+    initial_seed_cells: Optional[List[Dict[str, int]]] = None
+    initial_seed_tree_ids: Optional[List[str]] = None
+    treatment_summary: Optional[Dict[str, Any]] = None
 
     # tree_graph-specific parameters (None when mode = grid)
     tg_n_trees: Optional[int] = None
@@ -560,6 +716,12 @@ class AlertCreate(BaseModel):
     message: str
     centroid_lon: Optional[float]
     centroid_lat: Optional[float]
+    recommended_actions: List[str] = Field(default_factory=list)
+    action_status: AlertActionStatusEnum = AlertActionStatusEnum.PENDING
+    action_assigned_to: Optional[str] = None
+    action_notes: Optional[str] = None
+    action_due_at: Optional[datetime] = None
+    action_completed_at: Optional[datetime] = None
 
 
 class AlertResponse(BaseModel):
@@ -576,9 +738,17 @@ class AlertResponse(BaseModel):
     message: str
     email_sent: bool
     sms_sent: bool
+    centroid_lon: Optional[float] = None
+    centroid_lat: Optional[float] = None
     acknowledged_by: Optional[str]
     acknowledged_at: Optional[str]
     resolved_at: Optional[str]
+    recommended_actions: List[str] = Field(default_factory=list)
+    action_status: AlertActionStatusEnum = AlertActionStatusEnum.PENDING
+    action_assigned_to: Optional[str] = None
+    action_notes: Optional[str] = None
+    action_due_at: Optional[str] = None
+    action_completed_at: Optional[str] = None
 
 
 class AlertListResponse(BaseModel):
@@ -592,6 +762,15 @@ class AlertAcknowledge(BaseModel):
     """Request schema for acknowledging an alert."""
     acknowledged_by: str
     notes: Optional[str] = None
+
+
+class AlertActionUpdate(BaseModel):
+    """Request schema for updating alert response work."""
+    action_status: Optional[AlertActionStatusEnum] = None
+    assigned_to: Optional[str] = Field(default=None, max_length=100)
+    notes: Optional[str] = None
+    due_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 # ═══════════════════════════════════════════════

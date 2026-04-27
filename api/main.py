@@ -11,10 +11,11 @@ Endpoints:
     GET  /alerts              - Get risk alerts
 """
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import asyncpg
 from fastapi import Depends, FastAPI, Request
@@ -34,7 +35,8 @@ from api.core.database import (
     is_database_unavailable,
 )
 from api.core.security import AuthConfigurationError, get_current_active_user
-from api.routes import auth, alerts, evaluation, monitoring, observations, simulation, validation, weather
+from api.routes import auth, alerts, evaluation, monitoring, observations, orchards, simulation, validation, weather
+from api.services.alert_monitoring_service import alert_monitoring_service
 from api.services.auth_service import auth_service
 
 # Configure logging
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting MangoPoint API...")
+    alert_monitoring_task = None
     try:
         import db.models  # noqa: F401  — register all ORM models with Base
         import db.models  # noqa: F401  — register all ORM models with Base
@@ -65,17 +68,30 @@ async def lifespan(app: FastAPI):
             logger.warning("Default admin provisioning skipped: %s", exc)
         except Exception as exc:
             logger.warning("Default admin provisioning failed: %s", exc)
+
+        if settings.ALERT_MONITORING_ENABLED:
+            alert_monitoring_task = asyncio.create_task(
+                alert_monitoring_service.run_scheduler()
+            )
+            logger.info("Scheduled orchard alert monitoring enabled")
     except Exception as e:
         logger.warning(f"Database initialization skipped (may not be configured): {e}")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down MangoPoint API...")
+
     try:
-        await close_db()
-    except Exception as e:
-        logger.warning(f"Database close error: {e}")
+        yield
+    finally:
+        if alert_monitoring_task:
+            alert_monitoring_service.stop()
+            alert_monitoring_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await alert_monitoring_task
+
+        # Shutdown
+        logger.info("Shutting down MangoPoint API...")
+        try:
+            await close_db()
+        except Exception as e:
+            logger.warning(f"Database close error: {e}")
 
 
 # Create FastAPI application
@@ -148,6 +164,7 @@ app.include_router(auth.router)
 # Public routes remain limited to auth, health, root, and the generated docs.
 protected_router_dependencies = [Depends(get_current_active_user)]
 app.include_router(simulation.router, dependencies=protected_router_dependencies)
+app.include_router(orchards.router, dependencies=protected_router_dependencies)
 app.include_router(weather.router, dependencies=protected_router_dependencies)
 app.include_router(observations.router, dependencies=protected_router_dependencies)
 app.include_router(evaluation.router, dependencies=protected_router_dependencies)

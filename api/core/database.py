@@ -105,6 +105,38 @@ async def init_db():
             "ALTER TABLE IF EXISTS infestation_record "
             "ALTER COLUMN simulation_id DROP NOT NULL;"
         ))
+        # Backward-compatible migration for multi-orchard support. create_all()
+        # creates these columns on fresh installs, while older local databases
+        # need idempotent ALTER statements.
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS orchard_uid VARCHAR(100);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS owner_name VARCHAR(200);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS geojson JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS centroid_lon DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS centroid_lat DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS description TEXT;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS monitoring_enabled BOOLEAN NOT NULL DEFAULT TRUE;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS orchard_stage VARCHAR(50) NOT NULL DEFAULT 'mature';"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS days_since_flowering INTEGER NOT NULL DEFAULT 60;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS monitored_pest_types JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS last_monitoring_scan_at TIMESTAMP;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();"))
+        await conn.execute(text(
+            "UPDATE orchard SET orchard_uid = 'orchard-' || orchard_id "
+            "WHERE orchard_uid IS NULL OR orchard_uid = '';"
+        ))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ALTER COLUMN orchard_uid SET NOT NULL;"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS treatment_applications JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS recommended_actions JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_status VARCHAR(50) NOT NULL DEFAULT 'pending';"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_assigned_to VARCHAR(100);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_notes TEXT;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_due_at TIMESTAMP;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_completed_at TIMESTAMP;"))
     logger.info("Database initialized successfully")
 
 

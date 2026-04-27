@@ -194,6 +194,9 @@ class TreeNode:
     crown_radius: float
     state: int = TreeState.SUSCEPTIBLE
     risk: float = 0.0
+    treatment_susceptibility_factor: float = 1.0
+    treatment_source_factor: float = 1.0
+    treatment_active: bool = False
 
 
 @dataclass
@@ -632,6 +635,9 @@ class TreeGraphEngine:
                 crown_radius=n.crown_radius,
                 state=n.state,
                 risk=n.risk,
+                treatment_susceptibility_factor=n.treatment_susceptibility_factor,
+                treatment_source_factor=n.treatment_source_factor,
+                treatment_active=n.treatment_active,
             )
             for n in graph.nodes
         ]
@@ -818,6 +824,7 @@ class TreeGraphEngine:
         _spread_fruitfly which add biological modifiers on top of P_geom.
         """
         for src_idx in self.graph.infested_indices():
+            src = self.graph.nodes[src_idx]
             for edge in self.graph.neighbours(src_idx):
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
@@ -835,6 +842,9 @@ class TreeGraphEngine:
 
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE
+                prob *= src.treatment_source_factor
+                prob *= dst.treatment_susceptibility_factor
+                prob = max(0.0, min(1.0, prob))
 
                 # Union of independent probabilities (same as grid model)
                 dst.risk = 1.0 - (1.0 - dst.risk) * (1.0 - prob)
@@ -877,6 +887,7 @@ class TreeGraphEngine:
         required_stage_int = int(OrchardStage.FRUITLET)
 
         for src_idx in self.graph.infested_indices():
+            src = self.graph.nodes[src_idx]
             # Per-tree phenology: only FRUITLET trees can emit Cecid Fly dispersal.
             if (
                 self.stage_per_tree is not None
@@ -896,6 +907,8 @@ class TreeGraphEngine:
 
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE
+                prob *= src.treatment_source_factor
+                prob *= dst.treatment_susceptibility_factor
 
                 prob = max(0.0, min(1.0, prob))
                 dst.risk = 1.0 - (1.0 - dst.risk) * (1.0 - prob)
@@ -931,6 +944,7 @@ class TreeGraphEngine:
         required_stage_int = int(OrchardStage.MATURE)
 
         for src_idx in self.graph.infested_indices():
+            src = self.graph.nodes[src_idx]
             # Per-tree phenology: only MATURE trees can emit Fruit Fly dispersal.
             if (
                 self.stage_per_tree is not None
@@ -947,6 +961,7 @@ class TreeGraphEngine:
                     lambda0=self.lambda0, alpha=self.alpha,
                     beta=self.beta, wind_bias=self.wind_bias, dt=TG_DT,
                 ) * modifier
+                prob *= src.treatment_source_factor
 
                 # Additive neighbor threat boost (same formula as grid model)
                 dst_threat = (
@@ -959,6 +974,7 @@ class TreeGraphEngine:
 
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE
+                prob *= dst.treatment_susceptibility_factor
 
                 prob = max(0.0, min(1.0, prob))
                 dst.risk = 1.0 - (1.0 - dst.risk) * (1.0 - prob)

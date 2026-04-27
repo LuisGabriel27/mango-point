@@ -6,6 +6,7 @@ Provides outputs in GeoJSON format for the REST API.
 """
 
 import logging
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +111,90 @@ class SimulationService:
         source_statuses = {"infected", "infested"}
         return any(str(status).lower() in source_statuses for status in tree_overrides.values())
 
+    @staticmethod
+    def _empty_seed_result(strategy: str) -> Dict[str, Any]:
+        """Create a consistent metadata object for initial seed selection."""
+        return {
+            "strategy": strategy,
+            "cells": [],
+            "tree_ids": [],
+            "count": 0,
+        }
+
+    @staticmethod
+    def _neighbor_seed_count(neighbor_threat: float, n_candidates: int) -> int:
+        """Scale directional external-source seeds with neighbour pressure."""
+        if n_candidates <= 0 or neighbor_threat <= 0:
+            return 0
+        if neighbor_threat >= 0.75:
+            desired = 3
+        elif neighbor_threat >= 0.40:
+            desired = 2
+        else:
+            desired = 1
+        return min(desired, n_candidates)
+
+    @staticmethod
+    def _direction_bearing(neighbor_direction: Optional[str]) -> Optional[float]:
+        if not neighbor_direction:
+            return None
+        from core.config import DIRECTION_BEARING_MAP
+        return DIRECTION_BEARING_MAP.get(str(neighbor_direction).strip().upper())
+
+    def _rank_grid_seed_candidates(
+        self,
+        grid,
+        cells: List[Tuple[int, int]],
+        neighbor_direction: Optional[str],
+    ) -> List[Tuple[int, int]]:
+        """Rank grid cells by closeness to the orchard edge facing a neighbour."""
+        bearing_deg = self._direction_bearing(neighbor_direction)
+        if bearing_deg is None:
+            return list(cells)
+
+        bearing_rad = math.radians(bearing_deg)
+        u_row = -math.cos(bearing_rad)
+        u_col = math.sin(bearing_rad)
+        center_r = (grid.rows - 1) / 2.0
+        center_c = (grid.cols - 1) / 2.0
+
+        def sort_key(cell: Tuple[int, int]) -> Tuple[float, float, int, int]:
+            row, col = int(cell[0]), int(cell[1])
+            rel_r = row - center_r
+            rel_c = col - center_c
+            projection = rel_r * u_row + rel_c * u_col
+            cross_track = rel_r * (-u_col) + rel_c * u_row
+            return (-projection, abs(cross_track), row, col)
+
+        return sorted(cells, key=sort_key)
+
+    def _rank_tree_seed_candidates(
+        self,
+        nodes: List[Any],
+        neighbor_direction: Optional[str],
+    ) -> List[Any]:
+        """Rank tree-graph nodes by closeness to the neighbour-facing edge."""
+        bearing_deg = self._direction_bearing(neighbor_direction)
+        if bearing_deg is None:
+            return list(nodes)
+
+        bearing_rad = math.radians(bearing_deg)
+        u_x = math.sin(bearing_rad)
+        u_y = math.cos(bearing_rad)
+        xs = [float(node.x) for node in nodes]
+        ys = [float(node.y) for node in nodes]
+        center_x = (min(xs) + max(xs)) / 2.0
+        center_y = (min(ys) + max(ys)) / 2.0
+
+        def sort_key(node) -> Tuple[float, float, int]:
+            rel_x = float(node.x) - center_x
+            rel_y = float(node.y) - center_y
+            projection = rel_x * u_x + rel_y * u_y
+            cross_track = rel_x * (-u_y) + rel_y * u_x
+            return (-projection, abs(cross_track), int(node.index))
+
+        return sorted(nodes, key=sort_key)
+
     def _seed_default_infestation(
         self,
         grid,
@@ -117,11 +202,13 @@ class SimulationService:
         orchard_stage: str,
         random_seed: int,
         tree_overrides: Optional[Dict[str, str]] = None,
-    ) -> int:
+        neighbor_threat: float = 0.0,
+        neighbor_direction: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Auto-seed infestation sources for demo runs when biologically appropriate.
 
-        Returns the number of seeded trees.
+        Returns seed metadata for response traceability.
         """
         if not self._pest_is_active_for_stage(pest_type, orchard_stage):
             logger.info(
@@ -129,29 +216,64 @@ class SimulationService:
                 pest_type.value,
                 orchard_stage,
             )
-            return 0
+            return self._empty_seed_result("none_inactive_stage")
 
         if self._has_manual_infestation_source(tree_overrides):
             logger.info("Skipping auto-seeding: manual infected tree overrides already provided")
-            return 0
+            return self._empty_seed_result("manual_tree_overrides")
 
         tree_cells = list(zip(*np.where(grid.susceptible_mask)))
         if not tree_cells:
             center_r, center_c = grid.rows // 2, grid.cols // 2
             grid.infest(center_r, center_c)
             logger.info("Auto-seeded fallback infestation at center cell (%s, %s)", center_r, center_c)
-            return 1
+            return {
+                "strategy": "fallback_center",
+                "cells": [{"row": int(center_r), "col": int(center_c)}],
+                "tree_ids": [],
+                "count": 1,
+            }
 
-        max_seeds = min(3, len(tree_cells))
-        rng = np.random.default_rng(random_seed)
-        n_seeds = int(rng.integers(1, max_seeds + 1))
-        chosen = rng.choice(len(tree_cells), size=n_seeds, replace=False)
-        for idx in np.atleast_1d(chosen):
-            sr, sc = tree_cells[int(idx)]
+        use_directional_seed = (
+            neighbor_threat > 0.0
+            and self._direction_bearing(neighbor_direction) is not None
+        )
+
+        if use_directional_seed:
+            ranked_cells = self._rank_grid_seed_candidates(
+                grid=grid,
+                cells=[(int(r), int(c)) for r, c in tree_cells],
+                neighbor_direction=neighbor_direction,
+            )
+            n_seeds = self._neighbor_seed_count(neighbor_threat, len(ranked_cells))
+            selected_cells = ranked_cells[:n_seeds]
+            strategy = f"neighbor_edge_{str(neighbor_direction).upper()}"
+        else:
+            max_seeds = min(3, len(tree_cells))
+            rng = np.random.default_rng(random_seed)
+            n_seeds = int(rng.integers(1, max_seeds + 1))
+            chosen = rng.choice(len(tree_cells), size=n_seeds, replace=False)
+            selected_cells = [
+                (int(tree_cells[int(idx)][0]), int(tree_cells[int(idx)][1]))
+                for idx in np.atleast_1d(chosen)
+            ]
+            strategy = "random_susceptible"
+
+        for sr, sc in selected_cells:
             grid.infest(sr, sc)
-            logger.info("Auto-seeded infestation at tree cell (%s, %s)", sr, sc)
+            logger.info(
+                "Auto-seeded infestation at tree cell (%s, %s) using %s",
+                sr,
+                sc,
+                strategy,
+            )
 
-        return n_seeds
+        return {
+            "strategy": strategy,
+            "cells": [{"row": int(r), "col": int(c)} for r, c in selected_cells],
+            "tree_ids": [],
+            "count": len(selected_cells),
+        }
     
     async def run_simulation(
         self,
@@ -242,20 +364,37 @@ class SimulationService:
             tree_overrides = getattr(request, 'tree_overrides', None)
             if tree_overrides:
                 self._apply_tree_overrides(grid, tree_overrides)
+
+            treatment_summary = self._apply_treatments_to_grid(
+                grid,
+                getattr(request, "treatment_applications", None),
+            )
             
+            seed_metadata = self._empty_seed_result("none")
+
             # Seed initial infestation
             if request.initial_infestation:
+                seeded_cells: List[Dict[str, int]] = []
                 for pos in request.initial_infestation:
                     r, c = pos.get("row", 0), pos.get("col", 0)
                     if 0 <= r < grid.rows and 0 <= c < grid.cols:
                         grid.infest(r, c)
+                        seeded_cells.append({"row": int(r), "col": int(c)})
+                seed_metadata = {
+                    "strategy": "manual_grid",
+                    "cells": seeded_cells,
+                    "tree_ids": [],
+                    "count": len(seeded_cells),
+                }
             else:
-                self._seed_default_infestation(
+                seed_metadata = self._seed_default_infestation(
                     grid=grid,
                     pest_type=request.pest_type,
                     orchard_stage=orchard_stage_str,
                     random_seed=random_seed,
                     tree_overrides=tree_overrides,
+                    neighbor_threat=neighbor_threat,
+                    neighbor_direction=neighbor_direction,
                 )
             
             # Create weather time series
@@ -371,6 +510,11 @@ class SimulationService:
                 neighbor_threat=neighbor_threat,
                 simulation_mode="grid",
                 neighbor_direction=neighbor_direction,
+                initial_seed_strategy=seed_metadata.get("strategy"),
+                initial_seed_count=int(seed_metadata.get("count") or 0),
+                initial_seed_cells=seed_metadata.get("cells") or [],
+                initial_seed_tree_ids=seed_metadata.get("tree_ids") or [],
+                treatment_summary=treatment_summary,
                 stage_breakdown=stage_breakdown,
                 quadrant_stages=quadrant_stages_dict,
             )
@@ -522,6 +666,166 @@ class SimulationService:
                     if new_status in status_map:
                         grid.state[r, c] = status_map[new_status]
                         logger.info(f"Tree {tree_id} at ({r},{c}) set to {new_status}")
+
+    @staticmethod
+    def _enum_value(value: Any) -> str:
+        return value.value if hasattr(value, "value") else str(value)
+
+    @staticmethod
+    def _treatment_field(treatment: Any, name: str, default: Any = None) -> Any:
+        if isinstance(treatment, dict):
+            return treatment.get(name, default)
+        return getattr(treatment, name, default)
+
+    def _treatment_to_dict(self, treatment: Any) -> Dict[str, Any]:
+        """Serialize a Pydantic treatment model or dict into plain JSON."""
+        if hasattr(treatment, "model_dump"):
+            data = treatment.model_dump(mode="json")
+        elif isinstance(treatment, dict):
+            data = dict(treatment)
+        else:
+            data = {}
+        for key in ("treatment_type", "coverage"):
+            if key in data and hasattr(data[key], "value"):
+                data[key] = data[key].value
+        return data
+
+    def _treatment_source_reduction(self, treatment: Any, efficacy: float) -> float:
+        raw = self._treatment_field(treatment, "source_reduction")
+        return float(efficacy if raw is None else raw)
+
+    def _apply_treatments_to_grid(self, grid, treatments: Optional[List[Any]]) -> Dict[str, Any]:
+        """Apply treatment scenarios to grid cells and return response metadata."""
+        summary = {
+            "application_count": 0,
+            "treated_tree_count": 0,
+            "applications": [],
+        }
+        if not treatments:
+            return summary
+
+        treated_any = np.zeros((grid.rows, grid.cols), dtype=bool)
+
+        for treatment in treatments:
+            coverage = self._enum_value(self._treatment_field(treatment, "coverage", "targeted"))
+            treatment_type = self._enum_value(self._treatment_field(treatment, "treatment_type", "targeted_spray"))
+            efficacy = float(self._treatment_field(treatment, "efficacy", 0.0) or 0.0)
+            efficacy = float(np.clip(efficacy, 0.0, 1.0))
+            source_reduction = float(np.clip(
+                self._treatment_source_reduction(treatment, efficacy),
+                0.0,
+                1.0,
+            ))
+
+            mask = np.zeros((grid.rows, grid.cols), dtype=bool)
+            if coverage == "whole_orchard":
+                mask = (grid.state != self._cell_state.EMPTY) & (grid.state != self._cell_state.DEAD)
+            else:
+                target_ids = set(str(v) for v in self._treatment_field(treatment, "target_tree_ids", []) or [])
+                for r in range(grid.rows):
+                    for c in range(grid.cols):
+                        if target_ids and str(grid.tree_ids[r, c]) in target_ids:
+                            mask[r, c] = True
+                for cell in self._treatment_field(treatment, "target_cells", []) or []:
+                    try:
+                        row, col = int(cell["row"]), int(cell["col"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if 0 <= row < grid.rows and 0 <= col < grid.cols:
+                        mask[row, col] = True
+
+            active_mask = (
+                mask
+                & (grid.state != self._cell_state.EMPTY)
+                & (grid.state != self._cell_state.DEAD)
+            )
+            before_count = int(active_mask.sum())
+            if before_count <= 0 or efficacy <= 0.0:
+                continue
+
+            grid.apply_treatment_mask(
+                mask=active_mask,
+                susceptibility_reduction=efficacy,
+                source_reduction=source_reduction,
+            )
+            treated_any |= active_mask
+            tree_ids = [
+                str(grid.tree_ids[r, c])
+                for r, c in zip(*np.where(active_mask))
+                if str(grid.tree_ids[r, c])
+            ]
+            summary["applications"].append({
+                "treatment_type": treatment_type,
+                "coverage": coverage,
+                "efficacy": efficacy,
+                "source_reduction": source_reduction,
+                "target_count": before_count,
+                "target_tree_ids": tree_ids[:50],
+            })
+
+        summary["application_count"] = len(summary["applications"])
+        summary["treated_tree_count"] = int(treated_any.sum())
+        return summary
+
+    def _apply_treatments_to_tree_graph(self, graph, treatments: Optional[List[Any]]) -> Dict[str, Any]:
+        """Apply treatment scenarios to tree-graph nodes and return metadata."""
+        from core.tree_graph_model import TreeState
+
+        summary = {
+            "application_count": 0,
+            "treated_tree_count": 0,
+            "applications": [],
+        }
+        if not treatments:
+            return summary
+
+        treated_ids = set()
+        node_by_id = {str(node.tree_id): node for node in graph.nodes}
+
+        for treatment in treatments:
+            coverage = self._enum_value(self._treatment_field(treatment, "coverage", "targeted"))
+            treatment_type = self._enum_value(self._treatment_field(treatment, "treatment_type", "targeted_spray"))
+            efficacy = float(np.clip(float(self._treatment_field(treatment, "efficacy", 0.0) or 0.0), 0.0, 1.0))
+            source_reduction = float(np.clip(
+                self._treatment_source_reduction(treatment, efficacy),
+                0.0,
+                1.0,
+            ))
+            if efficacy <= 0.0:
+                continue
+
+            if coverage == "whole_orchard":
+                targets = [
+                    node for node in graph.nodes
+                    if node.state != TreeState.DEAD
+                ]
+            else:
+                target_ids = [str(v) for v in self._treatment_field(treatment, "target_tree_ids", []) or []]
+                targets = [node_by_id[tree_id] for tree_id in target_ids if tree_id in node_by_id]
+
+            if not targets:
+                continue
+
+            sus_factor = 1.0 - efficacy
+            src_factor = 1.0 - source_reduction
+            for node in targets:
+                node.treatment_susceptibility_factor *= sus_factor
+                node.treatment_source_factor *= src_factor
+                node.treatment_active = True
+                treated_ids.add(str(node.tree_id))
+
+            summary["applications"].append({
+                "treatment_type": treatment_type,
+                "coverage": coverage,
+                "efficacy": efficacy,
+                "source_reduction": source_reduction,
+                "target_count": len(targets),
+                "target_tree_ids": [str(node.tree_id) for node in targets[:50]],
+            })
+
+        summary["application_count"] = len(summary["applications"])
+        summary["treated_tree_count"] = len(treated_ids)
+        return summary
     
     def _create_weather(
         self,
@@ -678,6 +982,13 @@ class SimulationService:
                         "risk": float(risk[r, c]),
                         "state": state_name,
                         "tree_id": str(grid.tree_ids[r, c]) if grid.tree_ids[r, c] else None,
+                        "treated": bool(getattr(grid, "treatment_active", np.zeros_like(state, dtype=bool))[r, c]),
+                        "treatment_susceptibility_factor": float(
+                            getattr(grid, "treatment_susceptibility_factor", np.ones_like(risk))[r, c]
+                        ),
+                        "treatment_source_factor": float(
+                            getattr(grid, "treatment_source_factor", np.ones_like(risk))[r, c]
+                        ),
                     },
                 }
                 features.append(feature)
@@ -799,26 +1110,46 @@ class SimulationService:
                         )
 
         # ── seed initial infestation ──────────────────────────────
+        treatment_summary = self._apply_treatments_to_tree_graph(
+            graph,
+            getattr(request, "treatment_applications", None),
+        )
+
+        seed_metadata = self._empty_seed_result("none")
         seed_ids = list(request.initial_infestation_tree_ids or [])
         if seed_ids:
             id_to_node = {n.tree_id: n for n in graph.nodes}
+            seeded_tree_ids: List[str] = []
             for tid in seed_ids:
                 if tid in id_to_node:
                     id_to_node[tid].state = TreeState.INFESTED
+                    seeded_tree_ids.append(str(tid))
                 else:
                     logger.warning(
                         "initial_infestation_tree_id %r not found in graph", tid
                     )
+            seed_metadata = {
+                "strategy": "manual_tree_ids",
+                "cells": [],
+                "tree_ids": seeded_tree_ids,
+                "count": len(seeded_tree_ids),
+            }
         else:
-            # Auto-seed: same logic as grid mode
-            n_seeded = self._seed_tree_graph_infestation(
+            # Auto-seed: neighbour-facing edge when available, random otherwise.
+            seed_metadata = self._seed_tree_graph_infestation(
                 graph=graph,
                 pest_type=request.pest_type,
                 orchard_stage=orchard_stage_str,
                 random_seed=random_seed,
                 tree_overrides=tree_overrides,
+                neighbor_threat=neighbor_threat,
+                neighbor_direction=neighbor_direction,
             )
-            logger.info("tree_graph auto-seeded %d infested tree(s)", n_seeded)
+            logger.info(
+                "tree_graph auto-seeded %d infested tree(s) using %s",
+                int(seed_metadata.get("count") or 0),
+                seed_metadata.get("strategy"),
+            )
 
         # ── weather & biological gates ────────────────────────────
         weather = self._create_weather(weather_data, request.hours)
@@ -919,6 +1250,11 @@ class SimulationService:
             neighbor_threat=neighbor_threat,
             simulation_mode="tree_graph",
             neighbor_direction=neighbor_direction,
+            initial_seed_strategy=seed_metadata.get("strategy"),
+            initial_seed_count=int(seed_metadata.get("count") or 0),
+            initial_seed_cells=seed_metadata.get("cells") or [],
+            initial_seed_tree_ids=seed_metadata.get("tree_ids") or [],
+            treatment_summary=treatment_summary,
             tg_n_trees=len(graph.nodes),
             tg_n_edges=graph.edge_count(),
             tg_lambda0=lambda0,
@@ -963,14 +1299,16 @@ class SimulationService:
         orchard_stage: str,
         random_seed: int,
         tree_overrides: Optional[Dict[str, str]],
-    ) -> int:
-        """Auto-seed infestation for tree_graph mode (mirrors grid behaviour)."""
+        neighbor_threat: float = 0.0,
+        neighbor_direction: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Auto-seed infestation for tree_graph mode with traceable source selection."""
         from core.tree_graph_model import TreeState
 
         if not self._pest_is_active_for_stage(pest_type, orchard_stage):
-            return 0
+            return self._empty_seed_result("none_inactive_stage")
         if self._has_manual_infestation_source(tree_overrides):
-            return 0
+            return self._empty_seed_result("manual_tree_overrides")
 
         susceptible = [
             n for n in graph.nodes if n.state == TreeState.SUSCEPTIBLE
@@ -979,16 +1317,44 @@ class SimulationService:
             # Fallback: infest first node if no susceptible trees
             if graph.nodes:
                 graph.nodes[0].state = TreeState.INFESTED
-                return 1
-            return 0
+                return {
+                    "strategy": "fallback_first_tree",
+                    "cells": [],
+                    "tree_ids": [str(graph.nodes[0].tree_id)],
+                    "count": 1,
+                }
+            return self._empty_seed_result("none_no_trees")
 
-        max_seeds = min(3, len(susceptible))
-        rng = np.random.default_rng(random_seed)
-        n_seeds = int(rng.integers(1, max_seeds + 1))
-        chosen = rng.choice(len(susceptible), size=n_seeds, replace=False)
-        for idx in np.atleast_1d(chosen):
-            susceptible[int(idx)].state = TreeState.INFESTED
-        return n_seeds
+        use_directional_seed = (
+            neighbor_threat > 0.0
+            and self._direction_bearing(neighbor_direction) is not None
+        )
+
+        if use_directional_seed:
+            ranked_nodes = self._rank_tree_seed_candidates(
+                nodes=susceptible,
+                neighbor_direction=neighbor_direction,
+            )
+            n_seeds = self._neighbor_seed_count(neighbor_threat, len(ranked_nodes))
+            selected_nodes = ranked_nodes[:n_seeds]
+            strategy = f"neighbor_edge_{str(neighbor_direction).upper()}"
+        else:
+            max_seeds = min(3, len(susceptible))
+            rng = np.random.default_rng(random_seed)
+            n_seeds = int(rng.integers(1, max_seeds + 1))
+            chosen = rng.choice(len(susceptible), size=n_seeds, replace=False)
+            selected_nodes = [susceptible[int(idx)] for idx in np.atleast_1d(chosen)]
+            strategy = "random_susceptible"
+
+        for node in selected_nodes:
+            node.state = TreeState.INFESTED
+
+        return {
+            "strategy": strategy,
+            "cells": [],
+            "tree_ids": [str(node.tree_id) for node in selected_nodes],
+            "count": len(selected_nodes),
+        }
 
     def _tg_result_to_time_series(
         self,
@@ -1072,6 +1438,13 @@ class SimulationService:
                     "state":         state_names.get(state_val, "unknown"),
                     "crown_radius_m": node.crown_radius,
                     "index":         idx,
+                    "treated":       bool(getattr(node, "treatment_active", False)),
+                    "treatment_susceptibility_factor": float(
+                        getattr(node, "treatment_susceptibility_factor", 1.0)
+                    ),
+                    "treatment_source_factor": float(
+                        getattr(node, "treatment_source_factor", 1.0)
+                    ),
                 },
             })
 

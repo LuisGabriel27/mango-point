@@ -128,11 +128,35 @@ EXECUTE FUNCTION set_updated_at_timestamp();
 
 CREATE TABLE IF NOT EXISTS orchard (
     orchard_id   SERIAL       PRIMARY KEY,
+    orchard_uid  VARCHAR(100) NOT NULL,
     name         VARCHAR(200) NOT NULL,
+    owner_name   VARCHAR(200),
     location     VARCHAR(500),
     area_size    NUMERIC(10, 2),
-    tree_count   INTEGER      DEFAULT 0
+    tree_count   INTEGER      DEFAULT 0,
+    geojson      JSONB,
+    centroid_lon DOUBLE PRECISION,
+    centroid_lat DOUBLE PRECISION,
+    description  TEXT,
+    is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
+    monitoring_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    orchard_stage VARCHAR(50) NOT NULL DEFAULT 'mature',
+    days_since_flowering INTEGER NOT NULL DEFAULT 60,
+    monitored_pest_types JSONB,
+    last_monitoring_scan_at TIMESTAMP,
+    created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);
+CREATE INDEX IF NOT EXISTS idx_orchard_active     ON orchard (is_active);
+CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);
+
+DROP TRIGGER IF EXISTS trg_orchard_set_updated_at ON orchard;
+CREATE TRIGGER trg_orchard_set_updated_at
+BEFORE UPDATE ON orchard
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at_timestamp();
 
 
 -- ────────────────────────────────────────────
@@ -179,6 +203,7 @@ CREATE TABLE IF NOT EXISTS simulation_run (
     orchard_id       VARCHAR(100),
     orchard_geojson  JSONB,
     bagged_tree_ids  JSONB,
+    treatment_applications JSONB,
     hours            INTEGER       DEFAULT 48,
 
     -- Reproducibility
@@ -296,6 +321,7 @@ CREATE TABLE IF NOT EXISTS alert (
     centroid_lat        DOUBLE PRECISION,
 
     message             TEXT,
+    recommended_actions JSONB,
 
     email_sent          BOOLEAN       DEFAULT FALSE,
     email_sent_at       TIMESTAMP,
@@ -305,7 +331,13 @@ CREATE TABLE IF NOT EXISTS alert (
     acknowledged_by     VARCHAR(100),
     acknowledged_at     TIMESTAMP,
     resolved_at         TIMESTAMP,
-    resolution_notes    TEXT
+    resolution_notes    TEXT,
+
+    action_status       VARCHAR(50)   NOT NULL DEFAULT 'pending',
+    action_assigned_to  VARCHAR(100),
+    action_notes        TEXT,
+    action_due_at       TIMESTAMP,
+    action_completed_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_alert_id       ON alert (alert_id);

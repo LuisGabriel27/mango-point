@@ -138,13 +138,38 @@ class Orchard(Base):
     orchard_id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True,
     )
+    orchard_uid: Mapped[str] = mapped_column(String(100), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     location: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     area_size: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     tree_count: Mapped[int] = mapped_column(Integer, default=0)
+    geojson: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    centroid_lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    centroid_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    monitoring_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    orchard_stage: Mapped[str] = mapped_column(String(50), nullable=False, default="mature")
+    days_since_flowering: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    monitored_pest_types: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    last_monitoring_scan_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow_naive,
+        onupdate=utcnow_naive,
+    )
 
     # Relationships
     trees: Mapped[List["Tree"]] = relationship("Tree", back_populates="orchard")
+
+    __table_args__ = (
+        Index("idx_orchard_uid", "orchard_uid", unique=True),
+        Index("idx_orchard_active", "is_active"),
+        Index("idx_orchard_monitoring_enabled", "monitoring_enabled"),
+    )
 
 
 # ═══════════════════════════════════════════════
@@ -248,6 +273,9 @@ class SimulationRun(Base):
         JSON, nullable=True,
     )
     bagged_tree_ids: Mapped[Optional[List[str]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    treatment_applications: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
         JSON, nullable=True,
     )
     hours: Mapped[int] = mapped_column(Integer, default=48)
@@ -464,6 +492,9 @@ class Alert(Base):
 
     # Message
     message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recommended_actions: Mapped[Optional[List[str]]] = mapped_column(
+        JSON, nullable=True,
+    )
 
     # Notification tracking
     email_sent: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -476,6 +507,11 @@ class Alert(Base):
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     resolution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    action_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    action_assigned_to: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    action_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    action_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    action_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     simulation_run: Mapped[Optional["SimulationRun"]] = relationship(

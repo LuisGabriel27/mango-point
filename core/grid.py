@@ -53,6 +53,9 @@ class OrchardGrid:
 
         # Risk accumulator  [0.0 … 1.0]
         self.risk: np.ndarray = np.zeros((rows, cols), dtype=np.float64)
+        self.treatment_susceptibility_factor: np.ndarray = np.ones((rows, cols), dtype=np.float64)
+        self.treatment_source_factor: np.ndarray = np.ones((rows, cols), dtype=np.float64)
+        self.treatment_active: np.ndarray = np.zeros((rows, cols), dtype=bool)
 
         # Neighbor threat layer  [0.0 … 1.0]
         # Represents external orchard pressure from adjacent unmanaged areas
@@ -255,6 +258,35 @@ class OrchardGrid:
         """Get neighbor threat level for a cell."""
         return float(self.neighbor_threat[row, col])
 
+    def apply_treatment_mask(
+        self,
+        mask: np.ndarray,
+        susceptibility_reduction: float,
+        source_reduction: float | None = None,
+    ) -> None:
+        """
+        Apply a treatment scenario to selected cells.
+
+        Reductions are fractions in [0, 1]. A 0.70 susceptibility reduction
+        leaves 30% of incoming risk. Source reduction controls how much a
+        treated infested tree's outbound pressure is reduced.
+        """
+        active_mask = mask & (self.state != CellState.EMPTY) & (self.state != CellState.DEAD)
+        if not active_mask.any():
+            return
+
+        sus_factor = 1.0 - float(np.clip(susceptibility_reduction, 0.0, 1.0))
+        src_reduction = susceptibility_reduction if source_reduction is None else source_reduction
+        src_factor = 1.0 - float(np.clip(src_reduction, 0.0, 1.0))
+
+        self.treatment_susceptibility_factor[active_mask] *= sus_factor
+        self.treatment_source_factor[active_mask] *= src_factor
+        self.treatment_active[active_mask] = True
+
+    def get_source_treatment_factor(self, row: int, col: int) -> float:
+        """Return the outbound spread multiplier for a source cell."""
+        return float(self.treatment_source_factor[row, col])
+
     # ── risk helpers ────────────────────────────────────────────
     def apply_dispersal_probability(
         self,
@@ -279,6 +311,9 @@ class OrchardGrid:
             effective_prob = prob * (1.0 - BAG_RESISTANCE)
         else:
             effective_prob = prob
+
+        effective_prob *= float(self.treatment_susceptibility_factor[target_row, target_col])
+        effective_prob = float(np.clip(effective_prob, 0.0, 1.0))
 
         # Union of independent probabilities: P = 1 - (1-P_old)(1-P_new)
         old = self.risk[target_row, target_col]
@@ -323,6 +358,9 @@ class OrchardGrid:
         g = OrchardGrid(self.rows, self.cols, self.cell_size_m)
         g.state = self.state.copy()
         g.risk = self.risk.copy()
+        g.treatment_susceptibility_factor = self.treatment_susceptibility_factor.copy()
+        g.treatment_source_factor = self.treatment_source_factor.copy()
+        g.treatment_active = self.treatment_active.copy()
         g.neighbor_threat = self.neighbor_threat.copy()
         g.tree_ids = self.tree_ids.copy()
         g.origin_lon = self.origin_lon

@@ -5,10 +5,14 @@ GET /monitoring/metrics — Aggregate monitoring dashboard metrics.
 """
 
 import logging
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..core.database import get_db
+from ..services.alert_monitoring_service import alert_monitoring_service
 from ..services.monitoring_service import monitoring_service
 
 logger = logging.getLogger(__name__)
@@ -58,3 +62,54 @@ async def get_monitoring_metrics(
             "computed_at": None,
             "error": str(e),
         }
+
+
+@router.get(
+    "/alerts/status",
+    summary="Get scheduled alert monitoring status",
+    description="Return scheduler configuration and the latest orchard alert scan summary.",
+)
+async def get_alert_monitoring_status():
+    """Return scheduled alert monitoring status."""
+    return alert_monitoring_service.status()
+
+
+@router.post(
+    "/alerts/scan",
+    summary="Run orchard alert scan",
+    description="""
+    Manually scan monitored orchards for biological gate alerts.
+
+    This uses each orchard's configured phenological stage, monitored pest
+    list, and centroid/GeoJSON location to fetch forecast weather and create
+    condition alerts when pest gates open.
+    """,
+)
+async def run_alert_monitoring_scan(
+    orchard_id: Optional[str] = Query(None, description="Optional orchard ID to scan."),
+    hours: int = Query(
+        settings.ALERT_MONITORING_FORECAST_HOURS,
+        ge=1,
+        le=168,
+        description="Forecast hours to evaluate.",
+    ),
+    send_notifications: bool = Query(
+        True,
+        description="Send configured email/SMS notifications for created alerts.",
+    ),
+    dedupe_hours: int = Query(
+        settings.ALERT_MONITORING_DEDUPE_HOURS,
+        ge=0,
+        le=168,
+        description="Suppress duplicate active alerts for this many hours.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run an immediate orchard-aware alert scan."""
+    return await alert_monitoring_service.scan_orchards(
+        db=db,
+        orchard_id=orchard_id,
+        hours=hours,
+        send_notifications=send_notifications,
+        dedupe_hours=dedupe_hours,
+    )

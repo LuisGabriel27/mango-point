@@ -308,6 +308,7 @@ class CecidFlyGate(DispersalGate):
         if rainfall_history is not None:
             accumulated = sum(rainfall_history)
             rain_factor = min(1.5, 1.0 + (accumulated - CECID_RAINFALL_THRESHOLD_MM) / 20.0)
+        source_factor = grid.get_source_treatment_factor(src_r, src_c)
         for dr, dc, dist in CECID_OFFSETS:
             tr, tc = src_r + dr, src_c + dc
             if not (0 <= tr < grid.rows and 0 <= tc < grid.cols):
@@ -317,6 +318,7 @@ class CecidFlyGate(DispersalGate):
 
             prob = CECID_BASE_DISPERSAL_PROB * (CECID_DISTANCE_DECAY ** (dist - 1))
             prob *= dispersal_factor * rain_factor
+            prob *= source_factor
 
             grid.apply_dispersal_probability(tr, tc, prob)
 
@@ -433,6 +435,7 @@ class FruitFlyGate(DispersalGate):
         sugar_factor = sugar_index / FRUIT_FLY_SUGAR_INDEX_MAX
         ripeness_factor = 0.5 + 1.0 * sugar_factor
         wind_neighbor_factor = grid.get_wind_neighbor_factor(wind_dir_deg)
+        source_factor = grid.get_source_treatment_factor(src_r, src_c)
         for dr, dc, dist, target_angle in FRUIT_FLY_OFFSETS:
             tr, tc = src_r + dr, src_c + dc
             if not (0 <= tr < grid.rows and 0 <= tc < grid.cols):
@@ -455,6 +458,7 @@ class FruitFlyGate(DispersalGate):
             # Sugar index factor: riper fruit = stronger attraction
             # Sugar index ranges from ~0.3 (just entering mature) to 1.0 (fully ripe)
             prob *= ripeness_factor  # ranges from 0.5x to 1.5x
+            prob *= source_factor
 
             # Neighbor threat factor: amplified when wind blows FROM the
             # direction of the neighbouring orchard (pests carried inward).
@@ -490,6 +494,7 @@ class FruitFlyGate(DispersalGate):
             if grid.state[src_r, src_c] != CellState.INFESTED:
                 continue
 
+            source_factor = grid.get_source_treatment_factor(src_r, src_c)
             prob = FRUIT_FLY_BASE_DISPERSAL_PROB * (FRUIT_FLY_DISTANCE_DECAY ** (dist - 1))
 
             ang_diff = _angular_diff(wind_dir_deg, target_angle)
@@ -498,6 +503,7 @@ class FruitFlyGate(DispersalGate):
 
             prob *= temp_factor
             prob *= ripeness_factor
+            prob *= source_factor
 
             neighbor_threat = grid.get_neighbor_threat(target_r, target_c)
             if neighbor_threat > 0.0:

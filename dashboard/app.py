@@ -39,6 +39,7 @@ from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
 
 # Decision Support Layer — post-processing for management recommendations
 from utils.decision_support import (
+    build_action_plan,
     compute_decision_metrics,
     classify_risk_zone,
     format_metrics_summary,
@@ -107,6 +108,167 @@ try:
         DEFAULT_ORCHARD = json.load(_f)
 except FileNotFoundError:
     DEFAULT_ORCHARD = {"type": "FeatureCollection", "features": []}
+
+ALL_ORCHARDS_VALUE = "__all_orchards__"
+DEFAULT_ORCHARD_ID = "default-orchard"
+
+
+def _geojson_centroid(geojson):
+    """Return rough (lon, lat) center from point features, then polygon vertices."""
+    if not isinstance(geojson, dict):
+        return None, None
+
+    point_coords = []
+    boundary_coords = []
+    for feat in geojson.get("features", []) or []:
+        geom = feat.get("geometry", {}) or {}
+        geom_type = geom.get("type")
+        coords = geom.get("coordinates")
+
+        try:
+            if geom_type == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                point_coords.append((float(coords[0]), float(coords[1])))
+            elif geom_type == "MultiPoint":
+                for coord in coords or []:
+                    if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+                        point_coords.append((float(coord[0]), float(coord[1])))
+            elif geom_type == "Polygon" and coords:
+                ring = coords[0] or []
+                if len(ring) > 1 and ring[0] == ring[-1]:
+                    ring = ring[:-1]
+                boundary_coords.extend((float(c[0]), float(c[1])) for c in ring if len(c) >= 2)
+            elif geom_type == "MultiPolygon":
+                for polygon in coords or []:
+                    ring = polygon[0] if polygon else []
+                    if len(ring) > 1 and ring[0] == ring[-1]:
+                        ring = ring[:-1]
+                    boundary_coords.extend((float(c[0]), float(c[1])) for c in ring if len(c) >= 2)
+        except (TypeError, ValueError, IndexError):
+            continue
+
+    coords = point_coords or boundary_coords
+    if not coords:
+        return None, None
+    return (
+        sum(c[0] for c in coords) / len(coords),
+        sum(c[1] for c in coords) / len(coords),
+    )
+
+
+def _count_geojson_trees(geojson):
+    if not isinstance(geojson, dict):
+        return 0
+    count = 0
+    for feat in geojson.get("features", []) or []:
+        geom = feat.get("geometry", {}) or {}
+        if geom.get("type") == "Point":
+            count += 1
+        elif geom.get("type") == "MultiPoint":
+            count += len(geom.get("coordinates") or [])
+    return count
+
+
+def _fallback_orchard_record():
+    lon, lat = _geojson_centroid(DEFAULT_ORCHARD)
+    return {
+        "orchard_id": DEFAULT_ORCHARD_ID,
+        "name": "Default Orchard",
+        "location": "Local sample data",
+        "tree_count": _count_geojson_trees(DEFAULT_ORCHARD),
+        "geojson": DEFAULT_ORCHARD,
+        "centroid_lon": lon if lon is not None else DEFAULT_LON,
+        "centroid_lat": lat if lat is not None else DEFAULT_LAT,
+        "is_active": True,
+        "is_default": True,
+    }
+
+
+def _fallback_orchards_payload(error=None):
+    return {
+        "orchards": [_fallback_orchard_record()],
+        "source": "local",
+        "error": error,
+        "loaded_at": format_rfc3339(utcnow_naive()),
+    }
+
+
+def _orchard_options(orchards_payload):
+    orchards = (orchards_payload or {}).get("orchards") or []
+    options = []
+    if len(orchards) > 1:
+        options.append({"label": "All registered orchards", "value": ALL_ORCHARDS_VALUE})
+    options.extend(
+        {
+            "label": orchard.get("name") or orchard.get("orchard_id") or "Unnamed orchard",
+            "value": orchard.get("orchard_id"),
+        }
+        for orchard in orchards
+        if orchard.get("orchard_id")
+    )
+    return options or [{"label": "Default Orchard", "value": DEFAULT_ORCHARD_ID}]
+
+
+def _selected_orchard_records(orchards_payload, selected_id):
+    orchards = (orchards_payload or {}).get("orchards") or []
+    if not orchards:
+        orchards = [_fallback_orchard_record()]
+    if selected_id == ALL_ORCHARDS_VALUE:
+        return orchards
+    for orchard in orchards:
+        if orchard.get("orchard_id") == selected_id:
+            return [orchard]
+    return [orchards[0]]
+
+
+def _geojson_for_orchard_selection(orchards_payload, selected_id):
+    records = _selected_orchard_records(orchards_payload, selected_id)
+    if len(records) == 1:
+        return records[0].get("geojson") or DEFAULT_ORCHARD
+
+    features = []
+    for orchard in records:
+        geojson = orchard.get("geojson") or {}
+        orchard_id = orchard.get("orchard_id")
+        orchard_name = orchard.get("name") or orchard_id
+        for feat in geojson.get("features", []) or []:
+            copied = dict(feat)
+            props = dict(copied.get("properties", {}) or {})
+            props.setdefault("orchard_id", orchard_id)
+            props.setdefault("orchard_name", orchard_name)
+            copied["properties"] = props
+            features.append(copied)
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _selected_orchard_context(orchards_payload, selected_id):
+    records = _selected_orchard_records(orchards_payload, selected_id)
+    if selected_id == ALL_ORCHARDS_VALUE and len(records) > 1:
+        return {
+            "orchard_id": ALL_ORCHARDS_VALUE,
+            "name": "All registered orchards",
+            "tree_count": sum(int(o.get("tree_count") or 0) for o in records),
+            "geojson": _geojson_for_orchard_selection(orchards_payload, selected_id),
+            "is_all": True,
+            "is_default": False,
+        }
+    record = records[0]
+    return {
+        **record,
+        "geojson": record.get("geojson") or DEFAULT_ORCHARD,
+        "is_all": False,
+    }
+
+
+def _orchard_coordinates(orchard_context):
+    lon = orchard_context.get("centroid_lon")
+    lat = orchard_context.get("centroid_lat")
+    if lon is not None and lat is not None:
+        return float(lon), float(lat)
+    lon, lat = _geojson_centroid(orchard_context.get("geojson"))
+    return (
+        float(lon) if lon is not None else DEFAULT_LON,
+        float(lat) if lat is not None else DEFAULT_LAT,
+    )
 
 SEVERITY_BADGE = {
     "critical": "danger",
@@ -1412,7 +1574,7 @@ def auth_error_message(response, fallback_message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Map figure builder
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def _build_map_layers(show_grid_overlay=False):
+def _build_map_layers(show_grid_overlay=False, show_ortho_overlay=True):
     """Compose map raster/image layers in draw order."""
     _ = show_grid_overlay
     layers = [
@@ -1424,7 +1586,7 @@ def _build_map_layers(show_grid_overlay=False):
         }
     ]
 
-    if ORTHO_OVERLAY:
+    if show_ortho_overlay and ORTHO_OVERLAY:
         layers.append(
             {
                 "sourcetype": "image",
@@ -1601,6 +1763,8 @@ def build_risk_map(
     show_heatmap_layer=False,
     tree_overrides=None,
     show_grid_overlay=False,
+    base_geojson=None,
+    show_ortho_overlay=True,
 ):
     """Build a Plotly Mapbox scatter plot coloured by risk, with optional density heatmap layer.
     
@@ -1717,23 +1881,32 @@ def build_risk_map(
                 showlegend=False,
             )
         )
-        if ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
+        if show_ortho_overlay and ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
             center_lat, center_lon, zoom = _compute_map_view(bounds=ORTHO_OVERLAY["bounds"])
         else:
             center_lat, center_lon, zoom = _compute_map_view(lons=lons, lats=lats)
     else:
-        if ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
+        base_geojson = base_geojson or DEFAULT_ORCHARD
+        if show_ortho_overlay and ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds"):
             center_lat, center_lon, zoom = _compute_map_view(bounds=ORTHO_OVERLAY["bounds"])
         else:
             center_lat, center_lon, zoom = DEFAULT_LAT, DEFAULT_LON, 17.6
+            base_lon, base_lat = _geojson_centroid(base_geojson)
+            if base_lon is not None and base_lat is not None:
+                center_lat, center_lon = base_lat, base_lon
 
         # Load tree locations from default orchard so the map always shows
         # real tree markers (and, critically, forces Plotly to render a
         # Mapbox map instead of a blank cartesian figure).
         tree_lons, tree_lats, tree_texts, tree_customdata, tree_colors = [], [], [], [], []
-        for feat in DEFAULT_ORCHARD.get("features", []):
+        for feat in base_geojson.get("features", []):
             p = feat.get("properties", {})
-            c = feat["geometry"]["coordinates"]
+            geom = feat.get("geometry", {}) or {}
+            if geom.get("type") != "Point":
+                continue
+            c = geom.get("coordinates", [])
+            if not isinstance(c, (list, tuple)) or len(c) < 2:
+                continue
             tree_id = _get_tree_id(p)
             crown_width = _get_tree_crown_width(p)
             elevation = _get_tree_elevation(p)
@@ -1762,7 +1935,7 @@ def build_risk_map(
             tree_colors.append(GIS_STATUS_COLORS.get(status, "#4caf50"))
             
         if tree_lons:
-            if not (ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds")):
+            if not (show_ortho_overlay and ORTHO_OVERLAY and ORTHO_OVERLAY.get("bounds")):
                 center_lat, center_lon, zoom = _compute_map_view(lons=tree_lons, lats=tree_lats)
             fig.add_trace(
                 go.Scattermap(
@@ -1785,14 +1958,14 @@ def build_risk_map(
             )
 
     if show_grid_overlay:
-        _add_grid_overlay_traces(fig, geojson=geojson)
+        _add_grid_overlay_traces(fig, geojson=geojson or base_geojson or DEFAULT_ORCHARD)
 
     # Alert markers
     if alerts:
         for a in alerts:
             clat = a.get("centroid_lat")
             clon = a.get("centroid_lon")
-            if clat and clon:
+            if clat is not None and clon is not None:
                 sev = a.get("severity", "medium")
                 cmap = {"critical": "red", "high": "orange", "medium": "gold", "low": "grey"}
                 fig.add_trace(
@@ -1805,7 +1978,10 @@ def build_risk_map(
                 )
 
     # --- satellite basemap under the orchard overlay and simulation traces ---
-    mapbox_layers = _build_map_layers(show_grid_overlay=show_grid_overlay)
+    mapbox_layers = _build_map_layers(
+        show_grid_overlay=show_grid_overlay,
+        show_ortho_overlay=show_ortho_overlay,
+    )
 
     fig.update_layout(
         map=dict(
@@ -1905,6 +2081,34 @@ def _card(
         className=card_cls,
         style=card_style,
     )
+
+
+def make_orchard_switcher_card():
+    body = [
+        dbc.Label([icon("map", "me-1"), " Active Orchard"], className="small fw-medium mb-1"),
+        dbc.Select(
+            id="orchard-selector",
+            options=_orchard_options(_fallback_orchards_payload()),
+            value=DEFAULT_ORCHARD_ID,
+            size="sm",
+            className="mb-2",
+        ),
+        html.Div(
+            [
+                dbc.Button(
+                    [icon("arrow-clockwise", "me-1"), "Refresh Orchards"],
+                    id="orchard-refresh-btn",
+                    color="light",
+                    size="sm",
+                    className="w-100",
+                    n_clicks=0,
+                ),
+            ],
+            className="mb-2",
+        ),
+        html.Div(id="orchard-context-summary"),
+    ]
+    return _card("pin-map", "Orchard View", body, collapsible=True, panel_id="orchard-view")
 
 
 def make_weather_card():
@@ -2356,6 +2560,47 @@ def make_sim_controls():
         ),
 
         # ── DURATION ───────────────────────────────────────────
+        _section_label("Treatment Scenario", "shield-plus"),
+        dbc.Switch(
+            id="treatment-enabled",
+            label=" Include orchard treatment in forecast",
+            value=False,
+            className="fw-medium mb-1",
+        ),
+        dbc.Collapse(
+            html.Div([
+                dbc.Label([icon("capsule", "me-1"), " Treatment type"],
+                          className="small fw-medium mb-1"),
+                dbc.Select(
+                    id="treatment-type",
+                    options=[
+                        {"label": "Protective spray", "value": "protective_spray"},
+                        {"label": "Targeted spray", "value": "targeted_spray"},
+                        {"label": "Sanitation", "value": "sanitation"},
+                        {"label": "Combined action", "value": "combined"},
+                    ],
+                    value="targeted_spray",
+                    size="sm",
+                    className="mb-2",
+                ),
+                dbc.Label([icon("activity", "me-1"), " Effectiveness"],
+                          className="small fw-medium mb-1"),
+                dcc.Slider(
+                    id="treatment-efficacy",
+                    min=0.0, max=0.95, step=0.05, value=0.65,
+                    marks={0: "0%", 0.5: "50%", 0.95: "95%"},
+                    tooltip={"placement": "bottom", "always_visible": False},
+                    className="mb-1",
+                ),
+                html.Small(
+                    "Whole-orchard scenario. Uses fractional risk reduction only; product choice and dosage stay outside the model.",
+                    className="text-muted d-block mb-0",
+                ),
+            ]),
+            id="treatment-collapse",
+            is_open=False,
+        ),
+
         _section_label("Forecast Duration", "clock-history"),
         dbc.Select(
             id="sim-hours",
@@ -2896,6 +3141,10 @@ def make_operations_map_page():
                         className="map-overlay-btn",
                         n_clicks=0,
                     ),
+                    html.Div(
+                        id="orchard-map-label",
+                        className="map-orchard-label",
+                    ),
                     dbc.Card(
                         dcc.Loading(
                             dcc.Graph(
@@ -3129,6 +3378,93 @@ def _stat_card(title, value_id, ico, color="light"):
     )
 
 
+def _action_priority_color(priority):
+    priority_key = str(priority or "").lower()
+    if priority_key == "urgent":
+        return "danger"
+    if priority_key == "high":
+        return "warning"
+    if priority_key == "medium":
+        return "info"
+    return "success"
+
+
+def _render_action_plan_items(items):
+    """Render decision-support action plan items inside the summary panel."""
+    if not items:
+        return dbc.Alert(
+            "No action plan generated for the latest map.",
+            color="secondary",
+            className="py-2 mb-0 small",
+        )
+
+    rendered = []
+    for item in items:
+        steps = getattr(item, "recommended_steps", []) or []
+        tree_ids = getattr(item, "tree_ids", []) or []
+        cells = getattr(item, "cells", []) or []
+        if tree_ids:
+            target_hint = f"Targets: {', '.join(tree_ids[:6])}"
+            if len(tree_ids) > 6:
+                target_hint += f" and {len(tree_ids) - 6} more"
+        elif cells:
+            first_cells = ", ".join(
+                f"r{cell['row']}c{cell['col']}" for cell in cells[:6]
+            )
+            target_hint = f"Targets: {first_cells}"
+            if len(cells) > 6:
+                target_hint += f" and {len(cells) - 6} more"
+        else:
+            target_hint = getattr(item, "scope_label", "")
+
+        rendered.append(
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.Span(getattr(item, "title", "Action"), className="fw-semibold"),
+                                    html.Small(
+                                        [
+                                            icon("clock", "me-1"),
+                                            getattr(item, "timing", ""),
+                                        ],
+                                        className="text-muted d-block",
+                                    ),
+                                ],
+                                className="flex-grow-1 pe-2",
+                            ),
+                            dbc.Badge(
+                                getattr(item, "priority", "Routine"),
+                                color=_action_priority_color(getattr(item, "priority", "")),
+                                pill=True,
+                                className="decision-action-priority",
+                            ),
+                        ],
+                        className="d-flex justify-content-between align-items-start gap-2",
+                    ),
+                    html.Small(
+                        [
+                            icon("geo-alt", "me-1"),
+                            getattr(item, "scope_label", ""),
+                            f" | Peak risk {getattr(item, 'max_risk', 0):.0%}",
+                        ],
+                        className="text-muted d-block mt-1",
+                    ),
+                    html.Ul(
+                        [html.Li(step) for step in steps[:3]],
+                        className="decision-action-steps small mb-1 mt-2",
+                    ),
+                    html.Small(target_hint, className="text-muted d-block"),
+                ],
+                className="decision-action-item py-2",
+            )
+        )
+
+    return html.Div(rendered, className="decision-action-list")
+
+
 def make_decision_support_panel():
     """
     Create the Decision Support Summary panel.
@@ -3173,7 +3509,7 @@ def make_decision_support_panel():
             html.Small([icon("layers", "me-1"), html.Strong(" Zone Classification")], className="d-block mb-2"),
             zone_indicator(1, "Zone 1: No Action", DECISION_ZONE_COLORS["zone_1"], "ds-zone1-pct"),
             zone_indicator(2, "Zone 2: Monitor", DECISION_ZONE_COLORS["zone_2"], "ds-zone2-pct"),
-            zone_indicator(3, "Zone 3: Spray Now", DECISION_ZONE_COLORS["zone_3"], "ds-zone3-pct"),
+            zone_indicator(3, "Zone 3: Targeted Action", DECISION_ZONE_COLORS["zone_3"], "ds-zone3-pct"),
         ], className="mb-3"),
         
         html.Hr(className="my-2"),
@@ -3201,6 +3537,13 @@ def make_decision_support_panel():
         
         # Summary message
         html.Div(id="ds-summary-message", className="mt-2"),
+
+        html.Hr(className="my-2"),
+
+        html.Div([
+            html.Small([icon("list-check", "me-1"), html.Strong(" Action Plan")], className="d-block mb-2"),
+            html.Div(id="ds-action-plan"),
+        ]),
         
         # Metadata
         html.Small([
@@ -3329,6 +3672,7 @@ app.layout = dbc.Container(
         ),
 
         # ── Hidden stores ──
+        dcc.Store(id="orchards-store", data=_fallback_orchards_payload()),
         dcc.Store(id="sim-data-store"),
         dcc.Store(id="active-alerts-store"),
         dcc.Store(id="is-playing", data=False),
@@ -3436,6 +3780,7 @@ app.layout = dbc.Container(
                                 dbc.Col(
                                     html.Div(
                                         [
+                                            make_orchard_switcher_card(),
                                             make_weather_card(),
                                             make_sim_controls(),
                                             make_playback_controls(),
@@ -3867,6 +4212,15 @@ def toggle_timevarying_panel(enabled):
 
 # ── 1d) Add row to weather blocks table ──
 @app.callback(
+    Output("treatment-collapse", "is_open"),
+    Input("treatment-enabled", "value"),
+    prevent_initial_call=False,
+)
+def toggle_treatment_panel(enabled):
+    return bool(enabled)
+
+
+@app.callback(
     Output("weather-blocks-table", "data", allow_duplicate=True),
     Input("weather-blocks-add-btn", "n_clicks"),
     State("weather-blocks-table", "data"),
@@ -4074,15 +4428,169 @@ def update_neighbor_wind_hint(direction, weather_override, manual_wind_dir):
 
 # ── 2) Weather polling — reads data["current"] (matches API response) ──
 @app.callback(
-    Output("weather-content", "children"),
-    Input("weather-timer", "n_intervals"),
-    State("auth-session-store", "data"),
+    [
+        Output("orchards-store", "data"),
+        Output("orchard-selector", "options"),
+        Output("orchard-selector", "value"),
+    ],
+    [
+        Input("auth-session-store", "data"),
+        Input("orchard-refresh-btn", "n_clicks"),
+    ],
+    State("orchard-selector", "value"),
 )
-def update_weather(_, auth_session):
+def load_orchards(auth_session, _refresh_clicks, current_value):
+    token = extract_access_token(auth_session)
+    response = api_get(
+        "/orchards",
+        token=token,
+        params={"active_only": True, "include_geojson": True, "limit": 100},
+        timeout=30,
+    )
+
+    if response.get("ok"):
+        data = response.get("data") or {}
+        orchards = data.get("orchards") or []
+        if orchards:
+            payload = {
+                "orchards": orchards,
+                "source": "api",
+                "error": None,
+                "loaded_at": format_rfc3339(utcnow_naive()),
+            }
+        else:
+            payload = _fallback_orchards_payload("No registered orchards found.")
+    else:
+        payload = _fallback_orchards_payload(response.get("error"))
+
+    options = _orchard_options(payload)
+    option_values = {opt["value"] for opt in options}
+    selected = current_value if current_value in option_values else options[0]["value"]
+    return payload, options, selected
+
+
+@app.callback(
+    [
+        Output("orchard-context-summary", "children"),
+        Output("orchard-map-label", "children"),
+    ],
+    [
+        Input("orchards-store", "data"),
+        Input("orchard-selector", "value"),
+    ],
+)
+def update_orchard_context_summary(orchards_payload, selected_orchard_id):
+    ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    tree_count = int(ctx.get("tree_count") or 0)
+    source = (orchards_payload or {}).get("source", "local")
+    error = (orchards_payload or {}).get("error")
+
+    summary = html.Div(
+        [
+            html.Div(
+                [
+                    html.Strong(ctx.get("name") or "Selected orchard", className="d-block"),
+                    html.Small(
+                        ctx.get("location") or ctx.get("orchard_id") or "",
+                        className="text-muted d-block",
+                    ),
+                ],
+                className="mb-1",
+            ),
+            html.Div(
+                [
+                    dbc.Badge([icon("tree-fill", "me-1"), f"{tree_count} trees"], color="success", pill=True, className="me-1"),
+                    dbc.Badge("API" if source == "api" else "Local", color="primary" if source == "api" else "secondary", pill=True),
+                ],
+                className="mb-1",
+            ),
+            html.Small(error, className="text-warning d-block") if error else None,
+        ]
+    )
+
+    map_label = [
+        icon("pin-map-fill", "me-1"),
+        html.Span(ctx.get("name") or "Selected orchard"),
+        html.Span(f" | {tree_count} trees", className="text-muted ms-1"),
+    ]
+    return summary, map_label
+
+
+@app.callback(
+    Output("risk-map", "figure", allow_duplicate=True),
+    [
+        Input("orchard-selector", "value"),
+        Input("orchards-store", "data"),
+    ],
+    [
+        State("grid-overlay-store", "data"),
+        State("sim-data-store", "data"),
+        State("active-alerts-store", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def update_map_for_selected_orchard(
+    selected_orchard_id,
+    orchards_payload,
+    grid_overlay_enabled,
+    sim_data,
+    active_alerts,
+):
+    ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    alerts = active_alerts if isinstance(active_alerts, list) else None
+    tree_overrides = sim_data.get("tree_overrides", {}) if isinstance(sim_data, dict) else {}
+    show_grid_overlay = bool(grid_overlay_enabled)
+    show_ortho = bool(ctx.get("is_default"))
+
+    if (
+        isinstance(sim_data, dict)
+        and sim_data.get("risk_geojson")
+        and sim_data.get("orchard_id") == ctx.get("orchard_id")
+        and not ctx.get("is_all")
+    ):
+        pest_type = str(sim_data.get("pest_type") or "").lower()
+        hours = sim_data.get("hours")
+        pest_label = "Cecid Fly" if pest_type == "cecid" else "Fruit Fly" if pest_type == "fruitfly" else "Pest"
+        title = f"{pest_label} - {hours}h Risk Forecast" if hours else "Pest Risk Heatmap"
+        return build_risk_map(
+            sim_data.get("risk_geojson"),
+            alerts=alerts,
+            title=title,
+            show_heatmap_layer=True,
+            tree_overrides=tree_overrides,
+            show_grid_overlay=show_grid_overlay,
+            base_geojson=ctx.get("geojson"),
+            show_ortho_overlay=show_ortho,
+        )
+
+    return build_risk_map(
+        alerts=alerts,
+        title=ctx.get("name") or "Orchard Map",
+        tree_overrides=tree_overrides,
+        show_grid_overlay=show_grid_overlay,
+        base_geojson=_geojson_for_orchard_selection(orchards_payload, selected_orchard_id),
+        show_ortho_overlay=show_ortho,
+    )
+
+
+@app.callback(
+    Output("weather-content", "children"),
+    [
+        Input("weather-timer", "n_intervals"),
+        Input("orchard-selector", "value"),
+    ],
+    [
+        State("orchards-store", "data"),
+        State("auth-session-store", "data"),
+    ],
+)
+def update_weather(_, selected_orchard_id, orchards_payload, auth_session):
+    orchard_ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    lon, lat = _orchard_coordinates(orchard_ctx)
     response = api_get(
         "/weather/live",
         token=extract_access_token(auth_session),
-        params={"lat": DEFAULT_LAT, "lon": DEFAULT_LON},
+        params={"lat": lat, "lon": lon},
     )
     if not response.get("ok"):
         return dbc.Alert(
@@ -4158,11 +4666,17 @@ def update_weather(_, auth_session):
         Output("navbar-alert-text", "children"),
         Output("active-alerts-store", "data"),
     ],
-    Input("alert-timer", "n_intervals"),
+    [
+        Input("alert-timer", "n_intervals"),
+        Input("orchard-selector", "value"),
+    ],
     State("auth-session-store", "data"),
 )
-def update_alerts(_, auth_session):
-    response = api_get("/alerts", token=extract_access_token(auth_session), params={"limit": 50})
+def update_alerts(_, selected_orchard_id, auth_session):
+    params = {"limit": 50}
+    if selected_orchard_id and selected_orchard_id != ALL_ORCHARDS_VALUE:
+        params["orchard_id"] = selected_orchard_id
+    response = api_get("/alerts", token=extract_access_token(auth_session), params=params)
     if not response.get("ok"):
         return (
             html.P([icon("check-circle", "me-1"), "No alerts available."], className="text-muted mb-0"),
@@ -4189,7 +4703,17 @@ def update_alerts(_, auth_session):
         sev = a.get("severity", "medium")
         status = a.get("status", "active")
         risk_val = a.get("risk_value", 0)
-        affected_trees = a.get("affected_cells", [])
+        zone_name = (a.get("zone_name") or "").lower()
+        is_condition_alert = "gate condition" in zone_name
+        affected_trees = a.get("affected_tree_ids") or a.get("affected_cells", [])
+        action_status = (a.get("action_status") or "pending").replace("_", " ").title()
+        recommended_actions = a.get("recommended_actions") or []
+        score_label = "Suitability" if is_condition_alert else "Risk"
+        affected_label = (
+            [icon("exclamation-triangle", "me-1"), "Biological gate condition"]
+            if is_condition_alert
+            else [icon("tree-fill", "me-1"), f"{len(affected_trees)} trees affected"]
+        )
         items.append(
             dbc.ListGroupItem(
                 [
@@ -4201,13 +4725,21 @@ def update_alerts(_, auth_session):
                                 color="success" if status == "active" else "dark",
                                 className="me-2",
                             ),
-                            html.Span(f"Risk: {risk_val:.0%}" if isinstance(risk_val, (int, float)) else "", className="fw-medium"),
+                            dbc.Badge(action_status, color="info", className="me-2"),
+                            html.Span(f"{score_label}: {risk_val:.0%}" if isinstance(risk_val, (int, float)) else "", className="fw-medium"),
                         ],
                         className="d-flex align-items-center",
                     ),
                     html.Small(a.get("message", ""), className="text-muted d-block mt-1"),
+                    html.Ul(
+                        [
+                            html.Li(action)
+                            for action in recommended_actions[:3]
+                        ],
+                        className="text-muted small mb-1 ps-3",
+                    ) if recommended_actions else None,
                     html.Small(
-                        [icon("tree-fill", "me-1"), f"{len(affected_trees)} trees affected"],
+                        affected_label,
                         className="text-muted",
                     ),
                 ],
@@ -4341,18 +4873,33 @@ def toggle_grid_overlay_state(n_clicks, current_state):
     Input("grid-overlay-store", "data"),
     State("sim-data-store", "data"),
     State("active-alerts-store", "data"),
+    State("orchards-store", "data"),
+    State("orchard-selector", "value"),
     prevent_initial_call=True,
 )
-def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
+def apply_grid_overlay_state(
+    grid_overlay_enabled,
+    sim_data,
+    active_alerts,
+    orchards_payload,
+    selected_orchard_id,
+):
     """Apply current grid-overlay state by rebuilding from the latest available map data."""
     show_grid_overlay = bool(grid_overlay_enabled)
     alerts = active_alerts if isinstance(active_alerts, list) else None
+    ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    show_ortho = bool(ctx.get("is_default"))
 
     tree_overrides = {}
     if isinstance(sim_data, dict):
         tree_overrides = sim_data.get("tree_overrides") or {}
 
-    if isinstance(sim_data, dict) and sim_data.get("risk_geojson"):
+    if (
+        isinstance(sim_data, dict)
+        and sim_data.get("risk_geojson")
+        and sim_data.get("orchard_id") == ctx.get("orchard_id")
+        and not ctx.get("is_all")
+    ):
         pest_type = str(sim_data.get("pest_type") or "").lower()
         hours = sim_data.get("hours")
         pest_label = "Cecid Fly" if pest_type == "cecid" else "Fruit Fly" if pest_type == "fruitfly" else "Pest"
@@ -4364,12 +4911,17 @@ def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
             show_heatmap_layer=True,
             tree_overrides=tree_overrides,
             show_grid_overlay=show_grid_overlay,
+            base_geojson=ctx.get("geojson"),
+            show_ortho_overlay=show_ortho,
         )
 
     return build_risk_map(
         alerts=alerts,
+        title=ctx.get("name") or "Orchard Map",
         tree_overrides=tree_overrides,
         show_grid_overlay=show_grid_overlay,
+        base_geojson=_geojson_for_orchard_selection(orchards_payload, selected_orchard_id),
+        show_ortho_overlay=show_ortho,
     )
 
 
@@ -4395,6 +4947,8 @@ def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
         State("neighbor-threat", "value"),
         State("grid-overlay-store", "data"),
         State("sim-data-store", "data"),  # For tree status overrides
+        State("orchards-store", "data"),
+        State("orchard-selector", "value"),
         State("auth-session-store", "data"),
         State("sim-mode", "value"),
         State("weather-override-toggle", "value"),
@@ -4413,6 +4967,9 @@ def apply_grid_overlay_state(grid_overlay_enabled, sim_data, active_alerts):
         State("quadrant-stage-ne", "value"),
         State("quadrant-stage-sw", "value"),
         State("quadrant-stage-se", "value"),
+        State("treatment-enabled", "value"),
+        State("treatment-type", "value"),
+        State("treatment-efficacy", "value"),
     ],
     prevent_initial_call=True,
 )
@@ -4425,6 +4982,8 @@ def run_simulation(
     neighbor_threat,
     grid_overlay_enabled,
     sim_data,
+    orchards_payload,
+    selected_orchard_id,
     auth_session,
     sim_mode,
     weather_override_enabled,
@@ -4443,6 +5002,9 @@ def run_simulation(
     quadrant_ne,
     quadrant_sw,
     quadrant_se,
+    treatment_enabled,
+    treatment_type,
+    treatment_efficacy,
 ):
     hours = int(hours_str)
     show_grid_overlay = bool(grid_overlay_enabled)
@@ -4454,10 +5016,23 @@ def run_simulation(
     if sim_data and isinstance(sim_data, dict):
         tree_overrides = sim_data.get("tree_overrides")
 
+    orchard_ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    if orchard_ctx.get("is_all"):
+        err = dbc.Alert(
+            [icon("exclamation-circle", "me-2"), "Choose one orchard before running a simulation."],
+            color="warning",
+            className="py-2",
+        )
+        return (no_update, err, no_update, no_update, no_update, no_update,
+                no_update, no_update, no_update)
+
+    selected_geojson = orchard_ctx.get("geojson") or DEFAULT_ORCHARD
+
     # Build request body with phenology parameters
     body = {
         "pest_type": pest_type,
-        "orchard_geojson": DEFAULT_ORCHARD,
+        "orchard_id": orchard_ctx.get("orchard_id"),
+        "orchard_geojson": selected_geojson,
         "hours": hours,
         "bagged_tree_ids": bagged_tree_ids,
         "risk_threshold": 0.7,
@@ -4468,6 +5043,16 @@ def run_simulation(
     }
     if neighbor_direction and float(neighbor_threat or 0) > 0:
         body["neighbor_direction"] = neighbor_direction
+
+    if treatment_enabled:
+        efficacy = _coerce_float(treatment_efficacy, 0.65, min_value=0.0, max_value=0.95)
+        body["treatment_applications"] = [{
+            "treatment_type": treatment_type or "targeted_spray",
+            "coverage": "whole_orchard",
+            "efficacy": efficacy,
+            "source_reduction": efficacy,
+            "label": "Dashboard treatment scenario",
+        }]
 
     # Per-quadrant phenology — only attached when the switch is on and the four
     # dropdowns are populated. Backend falls back to scalar `orchard_stage` when
@@ -4553,6 +5138,8 @@ def run_simulation(
                 no_update, no_update, no_update)
 
     resp = response.get("data") or {}
+    resp["orchard_id"] = orchard_ctx.get("orchard_id")
+    resp["orchard_name"] = orchard_ctx.get("name")
     # Extract response fields
     risk_geojson = resp.get("risk_geojson")
     peak = resp.get("peak_risk", 0)
@@ -4567,6 +5154,8 @@ def run_simulation(
         title=f"{pest_label} — {hours}h Risk Forecast",
         show_heatmap_layer=True,
         show_grid_overlay=show_grid_overlay,
+        base_geojson=selected_geojson,
+        show_ortho_overlay=bool(orchard_ctx.get("is_default")),
     )
 
     # Playback marks — use timestep (elapsed hours), NOT hour-of-day
@@ -4649,6 +5238,7 @@ def run_simulation(
                 html.Br(),
                 html.Small([
                     f"Mode: {mode_label} | ",
+                    f"Orchard: {orchard_ctx.get('name') or orchard_ctx.get('orchard_id')} | ",
                     f"Stage: {stage_display} | ",
                     f"Sugar Index: {sugar_idx:.2f} | " if sugar_idx else "",
                     f"Weather: {weather_label} | ",
@@ -4863,6 +5453,7 @@ def update_economic_assumptions_store(
         Output("ds-pesticide-reduction", "children"),
         Output("ds-money-saved", "children"),
         Output("ds-summary-message", "children"),
+        Output("ds-action-plan", "children"),
     ],
     Input("sim-data-store", "data"),
     Input("economic-assumptions-store", "data"),
@@ -4876,14 +5467,14 @@ def update_decision_support_summary(sim_data, assumptions_data):
     and produces management recommendations without modifying simulation data.
     """
     if not sim_data:
-        return "—", "—", "—", "—", "—", ""
+        return "—", "—", "—", "—", "—", "", ""
     
     # Extract risk GeoJSON from simulation response
     risk_geojson = sim_data.get("risk_geojson")
     if not risk_geojson:
         return "—", "—", "—", "—", "—", dbc.Alert(
             "No risk data available", color="secondary", className="py-1 small"
-        )
+        ), ""
     
     try:
         assumptions = _sanitize_economic_assumptions(assumptions_data)
@@ -4895,6 +5486,15 @@ def update_decision_support_summary(sim_data, assumptions_data):
             cell_area_ha=CELL_AREA_HECTARES,
         )
         formatted = format_metrics_summary(metrics)
+        metadata = sim_data.get("metadata") or {}
+        pest_type = sim_data.get("pest_type") or metadata.get("pest_type")
+        orchard_stage = metadata.get("orchard_stage") or sim_data.get("orchard_stage")
+        action_plan = build_action_plan(
+            risk_geojson,
+            pest_type=pest_type,
+            orchard_stage=orchard_stage,
+        )
+        action_plan_view = _render_action_plan_items(action_plan)
         
         # Zone percentages with tree counts
         zone1_text = f"{formatted['safe_percentage']} ({formatted['safe_cells']} trees)"
@@ -4907,13 +5507,13 @@ def update_decision_support_summary(sim_data, assumptions_data):
                 icon("exclamation-triangle-fill", "me-2"),
                 html.Strong("High Alert: "),
                 f"{metrics.spray_percentage:.0%} of farm requires immediate action. "
-                "Deploy spray teams to critical zones."
+                "Prioritize field confirmation and targeted control."
             ], color="danger", className="py-2 mb-0 small")
         elif metrics.spray_percentage >= 0.2:
             summary_msg = dbc.Alert([
                 icon("shield-exclamation", "me-2"),
                 html.Strong("Moderate Risk: "),
-                f"Only {metrics.spray_percentage:.0%} requires spraying. "
+                f"Only {metrics.spray_percentage:.0%} requires targeted action. "
                 f"Precision targeting saves {formatted['pesticide_reduction']} pesticide."
             ], color="warning", className="py-2 mb-0 small")
         elif metrics.spray_percentage > 0:
@@ -4921,7 +5521,7 @@ def update_decision_support_summary(sim_data, assumptions_data):
                 icon("shield-check", "me-2"),
                 html.Strong("Low Risk: "),
                 f"Only {metrics.spray_percentage:.0%} at critical level. "
-                f"Targeted intervention recommended."
+                f"Targeted field verification recommended."
             ], color="info", className="py-2 mb-0 small")
         else:
             summary_msg = dbc.Alert([
@@ -4937,6 +5537,7 @@ def update_decision_support_summary(sim_data, assumptions_data):
             formatted["pesticide_reduction"],
             formatted["estimated_savings"],
             summary_msg,
+            action_plan_view,
         )
         
     except Exception as e:
@@ -4944,7 +5545,7 @@ def update_decision_support_summary(sim_data, assumptions_data):
         print(f"[Decision Support] Error computing metrics: {e}")
         return "—", "—", "—", "—", "—", dbc.Alert(
             f"Metrics unavailable: {str(e)}", color="secondary", className="py-1 small"
-        )
+        ), ""
 
 
 # ── 7) Play / pause toggle ──
@@ -6233,10 +6834,20 @@ def handle_tree_modal(
         State("tree-status-dropdown", "value"),
         State("grid-overlay-store", "data"),
         State("sim-data-store", "data"),
+        State("orchards-store", "data"),
+        State("orchard-selector", "value"),
     ],
     prevent_initial_call=True,
 )
-def update_tree_status(n_clicks, selected_tree, new_status, grid_overlay_enabled, sim_data):
+def update_tree_status(
+    n_clicks,
+    selected_tree,
+    new_status,
+    grid_overlay_enabled,
+    sim_data,
+    orchards_payload,
+    selected_orchard_id,
+):
     """Update tree status in the sim-data-store and refresh modal display."""
     if not n_clicks or not selected_tree or not new_status:
         return no_update, no_update, no_update, no_update, no_update
@@ -6368,10 +6979,31 @@ def update_tree_status(n_clicks, selected_tree, new_status, grid_overlay_enabled
     
     # Build updated map with new tree colors
     show_grid_overlay = bool(grid_overlay_enabled)
-    updated_map = build_risk_map(
-        tree_overrides=sim_data.get("tree_overrides", {}),
-        show_grid_overlay=show_grid_overlay,
-    )
+    ctx = _selected_orchard_context(orchards_payload, selected_orchard_id)
+    show_ortho = bool(ctx.get("is_default"))
+    base_geojson = ctx.get("geojson") or DEFAULT_ORCHARD
+
+    if (
+        isinstance(sim_data, dict)
+        and sim_data.get("risk_geojson")
+        and sim_data.get("orchard_id") == ctx.get("orchard_id")
+        and not ctx.get("is_all")
+    ):
+        updated_map = build_risk_map(
+            sim_data.get("risk_geojson"),
+            tree_overrides=sim_data.get("tree_overrides", {}),
+            show_grid_overlay=show_grid_overlay,
+            show_heatmap_layer=True,
+            base_geojson=base_geojson,
+            show_ortho_overlay=show_ortho,
+        )
+    else:
+        updated_map = build_risk_map(
+            tree_overrides=sim_data.get("tree_overrides", {}),
+            show_grid_overlay=show_grid_overlay,
+            base_geojson=_geojson_for_orchard_selection(orchards_payload, selected_orchard_id),
+            show_ortho_overlay=show_ortho,
+        )
     
     return sim_data, status_msg, info_content, updated_tree, updated_map
 

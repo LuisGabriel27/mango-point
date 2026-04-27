@@ -309,6 +309,23 @@ body {
   box-shadow: inset 4px 0 0 #198754, 0 16px 34px rgba(33, 46, 39, 0.14);
 }
 
+.decision-action-item {
+  border-top: 1px solid rgba(33, 46, 39, 0.12);
+}
+
+.decision-action-item:first-child {
+  border-top: none;
+  padding-top: 0 !important;
+}
+
+.decision-action-steps {
+  padding-left: 1.1rem;
+}
+
+.decision-action-priority {
+  white-space: nowrap;
+}
+
 .sidebar-col .card-header,
 .content-col .card-header,
 .panel-card .card-header {
@@ -404,6 +421,23 @@ body {
 .map-overlay-btn.btn-light:focus {
   background: #ffffff !important;
   color: #1a2c24 !important;
+}
+
+.map-orchard-label {
+  position: absolute;
+  top: 12px;
+  left: 126px;
+  z-index: 1100;
+  max-width: min(360px, calc(100% - 250px));
+  padding: 0.35rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(60, 74, 66, 0.2);
+  background: rgba(255, 255, 255, 0.92);
+  color: #22362d;
+  font-size: 0.82rem;
+  font-weight: 700;
+  box-shadow: 0 8px 16px rgba(26, 41, 34, 0.14);
+  backdrop-filter: blur(3px);
 }
 
 .monitoring-modules-card {

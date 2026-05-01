@@ -22,6 +22,13 @@ from typing import Any, List, Dict, Tuple, Optional, Sequence
 import math
 import random
 
+from .historical_data import (
+    CECID_FLY_PCT_HIGH_THRESHOLD,
+    CECID_FLY_PCT_LOW_THRESHOLD,
+    FRUIT_FLY_CPTD_HIGH_THRESHOLD,
+    FRUIT_FLY_CPTD_LOW_THRESHOLD,
+)
+
 
 @dataclass
 class ConfusionMatrix:
@@ -633,6 +640,57 @@ def risk_score_to_level(
     return "High"
 
 
+def pest_value_scale_max(
+    pest_type: str,
+    use_managed: bool = True,
+) -> float:
+    """Return the raw pest value mapped to risk score 1.0."""
+    if pest_type == "fruitfly":
+        return 40.0 if use_managed else 65.0
+    return 100.0
+
+
+def normalized_risk_thresholds(
+    pest_type: str,
+    use_managed: bool = True,
+) -> Tuple[float, float]:
+    """
+    Return BPI-equivalent Low/High thresholds on the 0-1 risk scale.
+
+    These thresholds align calibrated validation scores with the raw BPI
+    classification thresholds used by ``HistoricalRecord``.
+    """
+    if pest_type == "fruitfly":
+        scale_max = pest_value_scale_max(pest_type, use_managed=use_managed)
+        return (
+            FRUIT_FLY_CPTD_LOW_THRESHOLD / scale_max,
+            FRUIT_FLY_CPTD_HIGH_THRESHOLD / scale_max,
+        )
+
+    scale_max = pest_value_scale_max(pest_type, use_managed=use_managed)
+    return (
+        CECID_FLY_PCT_LOW_THRESHOLD / scale_max,
+        CECID_FLY_PCT_HIGH_THRESHOLD / scale_max,
+    )
+
+
+def risk_score_to_pest_level(
+    score: float,
+    pest_type: str,
+    use_managed: bool = True,
+) -> str:
+    """Convert a calibrated risk score to a BPI-equivalent risk level."""
+    low_threshold, high_threshold = normalized_risk_thresholds(
+        pest_type,
+        use_managed=use_managed,
+    )
+    return risk_score_to_level(
+        score,
+        low_threshold=low_threshold,
+        high_threshold=high_threshold,
+    )
+
+
 def normalize_pest_value_to_risk(
     value: float,
     pest_type: str,
@@ -656,11 +714,10 @@ def normalize_pest_value_to_risk(
         Normalized risk score between 0 and 1
     """
     if pest_type == "fruitfly":
-        # CPTD normalization: 0-40 flies/trap/day maps to 0-1
-        # Based on BPI data: managed orchards peak around 30-35 CPTD
-        max_cptd = 40.0 if use_managed else 65.0
-        return min(1.0, value / max_cptd)
+        # CPTD normalization: 0-40 flies/trap/day maps to 0-1 for managed
+        # orchards; unmanaged orchards use the wider historical range.
+        return min(1.0, value / pest_value_scale_max(pest_type, use_managed))
     else:
         # Cecid fly: infestation percentage (0-100%) maps to 0-1
         # Most values in historical data are 0-50%
-        return min(1.0, value / 100.0)
+        return min(1.0, value / pest_value_scale_max(pest_type, use_managed))

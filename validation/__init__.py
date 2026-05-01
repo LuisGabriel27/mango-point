@@ -59,6 +59,7 @@ from .historical_data import (
 )
 from .weather_scenarios import (
     HistoricalWeatherGenerator,
+    HistoricalWeatherCoverage,
     SeasonalWeatherProfile,
     GUIMARAS_CLIMATE_PROFILES,
 )
@@ -72,7 +73,15 @@ from .metrics import (
     compute_full_metrics,
     bootstrap_confidence_intervals,
     risk_score_to_level,
+    risk_score_to_pest_level,
+    normalized_risk_thresholds,
     normalize_pest_value_to_risk,
+)
+from .calibration import (
+    PestCalibrationCurve,
+    ValidationCalibration,
+    fit_risk_calibration,
+    identity_curve,
 )
 from .validation_runner import (
     ValidationRunner,
@@ -115,6 +124,7 @@ __all__ = [
     "classify_cecid_fly_pct",
     # Weather scenarios
     "HistoricalWeatherGenerator",
+    "HistoricalWeatherCoverage",
     "SeasonalWeatherProfile",
     "GUIMARAS_CLIMATE_PROFILES",
     # Metrics
@@ -127,7 +137,14 @@ __all__ = [
     "compute_full_metrics",
     "bootstrap_confidence_intervals",
     "risk_score_to_level",
+    "risk_score_to_pest_level",
+    "normalized_risk_thresholds",
     "normalize_pest_value_to_risk",
+    # Calibration
+    "PestCalibrationCurve",
+    "ValidationCalibration",
+    "fit_risk_calibration",
+    "identity_curve",
     # Validation runner
     "ValidationRunner",
     "ValidationCase",

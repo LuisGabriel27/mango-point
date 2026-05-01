@@ -39,7 +39,7 @@ class AlertService:
     
     def store_alert_in_memory(self, alert_data: "AlertCreate") -> None:
         """Store alert in memory when database is unavailable."""
-        self._memory_alerts.append({
+        memory_alert = {
             "alert_id": alert_data.alert_id,
             "simulation_run_id": alert_data.simulation_run_id,
             "triggered_at": format_rfc3339(utcnow_naive()),
@@ -76,7 +76,33 @@ class AlertService:
             "acknowledged_by": None,
             "acknowledged_at": None,
             "resolved_at": None,
-        })
+        }
+
+        fingerprint = self.alert_fingerprint(memory_alert)
+        for existing in self._memory_alerts:
+            if (
+                existing.get("status") == "active"
+                and self.alert_fingerprint(existing) == fingerprint
+            ):
+                existing.update({
+                    "triggered_at": memory_alert["triggered_at"],
+                    "severity": memory_alert["severity"],
+                    "risk_value": memory_alert["risk_value"],
+                    "affected_cells": memory_alert["affected_cells"],
+                    "affected_tree_ids": memory_alert["affected_tree_ids"],
+                    "message": memory_alert["message"],
+                    "centroid_lon": memory_alert["centroid_lon"],
+                    "centroid_lat": memory_alert["centroid_lat"],
+                    "recommended_actions": memory_alert["recommended_actions"],
+                })
+                logger.info(
+                    "Updated existing in-memory alert %s instead of storing duplicate %s",
+                    existing.get("alert_id"),
+                    alert_data.alert_id,
+                )
+                return
+
+        self._memory_alerts.append(memory_alert)
         logger.info(f"Stored alert {alert_data.alert_id} in memory (database unavailable)")
     
     def get_memory_alerts(
@@ -85,16 +111,16 @@ class AlertService:
         orchard_id: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], int, int]:
         """Get alerts from memory store."""
-        alerts = self._memory_alerts
+        alerts = self._dedupe_alert_items(self._memory_alerts)
         if status:
             alerts = [a for a in alerts if a["status"] == status]
         if orchard_id:
             alerts = [a for a in alerts if a.get("orchard_id") == orchard_id]
 
-        active_alerts = [
+        active_alerts = self._dedupe_alert_items([
             a for a in self._memory_alerts
             if a["status"] == "active"
-        ]
+        ])
         if orchard_id:
             active_alerts = [
                 a for a in active_alerts
@@ -122,6 +148,56 @@ class AlertService:
                 })
                 return alert
         return None
+
+    @classmethod
+    def alert_fingerprint(cls, alert: Any) -> Tuple[Any, ...]:
+        """Return a stable key for one active operational alert."""
+
+        def get_value(name: str, default: Any = None) -> Any:
+            if isinstance(alert, dict):
+                return alert.get(name, default)
+            return getattr(alert, name, default)
+
+        orchard_id = str(get_value("orchard_id") or "").strip().lower()
+        zone_name = str(get_value("zone_name") or "").strip().lower()
+        message = str(get_value("message") or "").strip().lower()
+        alert_kind = "condition" if "gate condition" in zone_name else "risk"
+
+        tree_ids = tuple(sorted(
+            str(tree_id)
+            for tree_id in (get_value("affected_tree_ids") or [])
+            if tree_id not in (None, "")
+        ))
+
+        cell_values = []
+        for cell in get_value("affected_cells") or []:
+            if isinstance(cell, dict):
+                cell_values.append((cell.get("row"), cell.get("col")))
+            else:
+                cell_values.append(str(cell))
+        cells = tuple(sorted(cell_values))
+
+        if alert_kind == "condition":
+            return (alert_kind, orchard_id, zone_name)
+        return (alert_kind, orchard_id, zone_name, tree_ids, cells, message)
+
+    @classmethod
+    def _dedupe_alert_items(cls, alerts: Sequence[Any]) -> List[Any]:
+        """Collapse duplicate active alerts while preserving list order."""
+        unique: List[Any] = []
+        seen_active: set[Tuple[Any, ...]] = set()
+
+        for alert in alerts:
+            status = alert.get("status") if isinstance(alert, dict) else getattr(alert, "status", None)
+            status_value = status.value if hasattr(status, "value") else str(status or "")
+            if status_value == "active":
+                fingerprint = cls.alert_fingerprint(alert)
+                if fingerprint in seen_active:
+                    continue
+                seen_active.add(fingerprint)
+            unique.append(alert)
+
+        return unique
     
     def check_for_alerts(
         self,
@@ -567,6 +643,15 @@ class AlertService:
         Alert
             Created alert record
         """
+        duplicate = await self._find_active_duplicate_alert(db, alert_data)
+        if duplicate is not None:
+            logger.info(
+                "Reusing existing active alert %s instead of creating duplicate %s",
+                duplicate.alert_id,
+                alert_data.alert_id,
+            )
+            return duplicate
+
         severity_value = (
             alert_data.severity.value
             if hasattr(alert_data.severity, "value")
@@ -608,6 +693,30 @@ class AlertService:
         
         logger.info(f"Alert {alert.alert_id} created and persisted")
         return alert
+
+    async def _find_active_duplicate_alert(
+        self,
+        db: AsyncSession,
+        alert_data: AlertCreate,
+    ) -> Optional[Alert]:
+        """Find an existing active alert with the same operational meaning."""
+        query = (
+            select(Alert)
+            .where(
+                Alert.status == AlertStatus.ACTIVE,
+                Alert.orchard_id == alert_data.orchard_id,
+                Alert.zone_name == alert_data.zone_name,
+            )
+            .order_by(Alert.triggered_at.desc(), Alert.id.desc())
+        )
+        result = await db.execute(query)
+        fingerprint = self.alert_fingerprint(alert_data)
+
+        for existing in result.scalars().all():
+            if self.alert_fingerprint(existing) == fingerprint:
+                return existing
+
+        return None
     
     async def _send_notifications(self, alert: Alert) -> None:
         """Send email and SMS notifications for an alert."""
@@ -675,29 +784,26 @@ class AlertService:
         tuple
             (alerts, total_count, active_count)
         """
-        query = select(Alert).order_by(Alert.triggered_at.desc())
-        total_query = select(Alert)
-        active_query = select(Alert).where(Alert.status == AlertStatus.ACTIVE)
+        query = select(Alert).order_by(Alert.triggered_at.desc(), Alert.id.desc())
+        active_query = (
+            select(Alert)
+            .where(Alert.status == AlertStatus.ACTIVE)
+            .order_by(Alert.triggered_at.desc(), Alert.id.desc())
+        )
         
         if status:
             query = query.where(Alert.status == status)
-            total_query = total_query.where(Alert.status == status)
         if orchard_id:
             query = query.where(Alert.orchard_id == orchard_id)
-            total_query = total_query.where(Alert.orchard_id == orchard_id)
             active_query = active_query.where(Alert.orchard_id == orchard_id)
-        
-        query = query.limit(limit).offset(offset)
-        
+
         result = await db.execute(query)
-        alerts = result.scalars().all()
-        
-        # Get counts
-        total_result = await db.execute(total_query)
-        total_count = len(total_result.scalars().all())
+        matching_alerts = self._dedupe_alert_items(result.scalars().all())
+        total_count = len(matching_alerts)
+        alerts = matching_alerts[offset:offset + limit]
         
         active_result = await db.execute(active_query)
-        active_count = len(active_result.scalars().all())
+        active_count = len(self._dedupe_alert_items(active_result.scalars().all()))
         
         return alerts, total_count, active_count
     

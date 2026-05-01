@@ -5,6 +5,8 @@ import pytest
 from validation.metrics import (
     bootstrap_confidence_intervals,
     compute_full_metrics,
+    normalized_risk_thresholds,
+    risk_score_to_pest_level,
 )
 from validation.validation_runner import ValidationCase, ValidationResult, ValidationRunner
 from validation.weather_scenarios import HistoricalWeatherGenerator
@@ -59,6 +61,7 @@ def test_historical_weather_csv_is_used_when_available(tmp_path):
     assert df.attrs["source"] == "historical_weather_csv"
     assert stats["source"] == "historical_weather_csv"
     assert stats["historical_weather_path"] == str(weather_path)
+    assert stats["weather_coverage_status"] == "ready"
 
 
 def test_historical_weather_falls_back_when_month_has_insufficient_rows(tmp_path):
@@ -78,6 +81,68 @@ def test_historical_weather_falls_back_when_month_has_insufficient_rows(tmp_path
 
     assert df.attrs["source"] == "seasonal_profile_synthetic"
     assert stats["fallback_reason"] == "historical_weather_csv_has_insufficient_rows_for_case_month"
+    assert stats["weather_coverage_status"] == "insufficient_rows"
+
+
+def test_historical_weather_strict_mode_rejects_incomplete_case_month(tmp_path):
+    weather_path = tmp_path / "weather.csv"
+    weather_path.write_text(
+        "datetime,temperature_c,wind_speed_ms,wind_dir_deg,rainfall_mm\n"
+        "2024-05-15T06:00:00,28,1.5,90,0\n",
+        encoding="utf-8",
+    )
+
+    generator = HistoricalWeatherGenerator(
+        seed=1,
+        historical_weather_path=weather_path,
+        require_historical_weather=True,
+    )
+
+    with pytest.raises(ValueError, match="Historical weather is required"):
+        generator.generate(year=2024, month=5, hours=4)
+
+
+def test_historical_weather_coverage_summary_reports_fallback_cases(tmp_path):
+    weather_path = tmp_path / "weather.csv"
+    start = datetime(2024, 5, 15, 6)
+    rows = ["datetime,temperature_c,wind_speed_ms,wind_dir_deg,rainfall_mm"]
+    for hour in range(4):
+        ts = start + timedelta(hours=hour)
+        rows.append(f"{ts.isoformat()},{28 + hour},1.5,90,0")
+    weather_path.write_text("\n".join(rows), encoding="utf-8")
+
+    generator = HistoricalWeatherGenerator(
+        seed=1,
+        historical_weather_path=weather_path,
+    )
+    ready_case = ValidationCase(
+        case_id="FF-2024-05",
+        year=2024,
+        month=5,
+        date_str="2024-05",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=2.0,
+        actual_level="Low",
+        weather_scenario="typical",
+    )
+    missing_case = ValidationCase(
+        case_id="FF-2024-06",
+        year=2024,
+        month=6,
+        date_str="2024-06",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=30.0,
+        actual_level="High",
+        weather_scenario="typical",
+    )
+
+    summary = generator.summarize_case_coverage([ready_case, missing_case], hours=4)
+
+    assert summary["historical_ready_cases"] == 1
+    assert summary["fallback_cases"] == 1
+    assert summary["status_counts"] == {"ready": 1, "missing_month": 1}
 
 
 def test_validation_runner_assigns_splits_and_computes_split_metrics():
@@ -138,3 +203,72 @@ def test_validation_runner_assigns_splits_and_computes_split_metrics():
     assert testing_metrics.overall_accuracy_pct == pytest.approx(100.0)
     assert "testing" in split_metrics
     assert split_metrics["calibration"].total_tests == 1
+
+
+def test_bpi_thresholds_are_available_on_normalized_risk_scale():
+    fruitfly_low, fruitfly_high = normalized_risk_thresholds("fruitfly")
+    cecid_low, cecid_high = normalized_risk_thresholds("cecid")
+
+    assert fruitfly_low == pytest.approx(0.2)
+    assert fruitfly_high == pytest.approx(0.5)
+    assert cecid_low == pytest.approx(0.05)
+    assert cecid_high == pytest.approx(0.15)
+    assert risk_score_to_pest_level(0.45, "fruitfly") == "Medium"
+    assert risk_score_to_pest_level(0.16, "cecid") == "High"
+
+
+def test_validation_runner_fits_and_applies_bpi_calibration():
+    runner = ValidationRunner(seed=1)
+    low_case = ValidationCase(
+        case_id="FF-2024-05-low",
+        year=2024,
+        month=5,
+        date_str="2024-05",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=2.0,
+        actual_level="Low",
+        weather_scenario="typical",
+        split="calibration",
+    )
+    high_case = ValidationCase(
+        case_id="FF-2024-06-high",
+        year=2024,
+        month=6,
+        date_str="2024-06",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=30.0,
+        actual_level="High",
+        weather_scenario="typical",
+        split="calibration",
+    )
+    testing_case = ValidationCase(
+        case_id="FF-2025-06-high",
+        year=2025,
+        month=6,
+        date_str="2025-06",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=30.0,
+        actual_level="High",
+        weather_scenario="typical",
+        split="testing",
+    )
+    runner.results = [
+        ValidationResult(low_case, predicted_risk=0.10, predicted_level="Low", match=True),
+        ValidationResult(high_case, predicted_risk=0.30, predicted_level="Medium", match=False),
+        ValidationResult(testing_case, predicted_risk=0.30, predicted_level="Medium", match=False),
+    ]
+
+    calibration = runner.fit_calibration(split="calibration")
+    runner.apply_calibration(calibration)
+    testing_result = runner.results[-1]
+
+    assert calibration.curves["fruitfly"].n_cases == 2
+    assert calibration.curves["fruitfly"].mae_after < calibration.curves["fruitfly"].mae_before
+    assert testing_result.raw_predicted_risk == pytest.approx(0.30)
+    assert testing_result.calibration_applied is True
+    assert testing_result.predicted_risk == pytest.approx(0.75)
+    assert testing_result.predicted_level == "High"
+    assert testing_result.match is True

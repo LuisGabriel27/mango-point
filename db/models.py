@@ -195,7 +195,8 @@ class Tree(Base):
 
     # PostGIS geometry point (populated from GeoJSON)
     geom: Mapped[Optional[Any]] = mapped_column(
-        Geometry(geometry_type="POINT", srid=4326), nullable=True,
+        Geometry(geometry_type="POINT", srid=4326, spatial_index=False),
+        nullable=True,
     )
 
     age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

@@ -25,7 +25,7 @@ import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Iterable, Optional, Dict, Any
 
 
 @dataclass
@@ -62,6 +62,39 @@ class SeasonalWeatherProfile:
     rainfall_mean_mm: float
     wind_speed_mean: float
     wind_dir_mean: float
+
+
+@dataclass(frozen=True)
+class HistoricalWeatherCoverage:
+    """Coverage status for one validation case month in an hourly weather CSV."""
+
+    year: int
+    month: int
+    required_hours: int
+    rows_available: int
+    status: str
+    first_datetime: Optional[str] = None
+    last_datetime: Optional[str] = None
+    max_gap_hours: Optional[float] = None
+
+    @property
+    def ready(self) -> bool:
+        """Return whether this month has enough rows for the requested case."""
+        return self.status == "ready"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert coverage status to a report-friendly dictionary."""
+        return {
+            "year": self.year,
+            "month": self.month,
+            "required_hours": self.required_hours,
+            "rows_available": self.rows_available,
+            "status": self.status,
+            "ready": self.ready,
+            "first_datetime": self.first_datetime,
+            "last_datetime": self.last_datetime,
+            "max_gap_hours": self.max_gap_hours,
+        }
 
 
 # ─────────────────────────────────────────────
@@ -159,6 +192,7 @@ class HistoricalWeatherGenerator:
         self,
         seed: Optional[int] = None,
         historical_weather_path: Optional[str | Path] = None,
+        require_historical_weather: bool = False,
     ):
         """
         Initialize the weather generator.
@@ -171,12 +205,16 @@ class HistoricalWeatherGenerator:
             Hourly historical weather CSV. When rows are available for a
             validation case's year/month, they are used before synthetic
             seasonal profiles.
+        require_historical_weather : bool
+            If True, raise an error when the requested year/month lacks enough
+            hourly historical rows instead of falling back to synthetic weather.
         """
         self.seed = seed
         self._rng = np.random.default_rng(seed)
         self.historical_weather_path = (
             Path(historical_weather_path) if historical_weather_path else None
         )
+        self.require_historical_weather = require_historical_weather
         self._historical_weather = self._load_historical_weather()
     
     def reset_seed(self, seed: int) -> None:
@@ -292,6 +330,127 @@ class HistoricalWeatherGenerator:
 
         return df
 
+    def get_case_coverage(
+        self,
+        year: int,
+        month: int,
+        hours: int,
+    ) -> HistoricalWeatherCoverage:
+        """Return historical-weather coverage for one validation case month."""
+        if self._historical_weather is None:
+            return HistoricalWeatherCoverage(
+                year=year,
+                month=month,
+                required_hours=hours,
+                rows_available=0,
+                status="missing_csv",
+            )
+
+        data = self._historical_weather
+        month_rows = data[
+            (data["datetime"].dt.year == year)
+            & (data["datetime"].dt.month == month)
+        ].sort_values("datetime")
+
+        if month_rows.empty:
+            return HistoricalWeatherCoverage(
+                year=year,
+                month=month,
+                required_hours=hours,
+                rows_available=0,
+                status="missing_month",
+            )
+
+        times = month_rows["datetime"].reset_index(drop=True)
+        gaps = times.diff().dt.total_seconds().dropna() / 3600.0
+        max_gap_hours = float(gaps.max()) if not gaps.empty else None
+        status = "ready" if len(month_rows) >= hours else "insufficient_rows"
+
+        return HistoricalWeatherCoverage(
+            year=year,
+            month=month,
+            required_hours=hours,
+            rows_available=int(len(month_rows)),
+            status=status,
+            first_datetime=times.iloc[0].isoformat(),
+            last_datetime=times.iloc[-1].isoformat(),
+            max_gap_hours=max_gap_hours,
+        )
+
+    def summarize_case_coverage(
+        self,
+        cases: Iterable[Any],
+        hours: int,
+    ) -> Dict[str, Any]:
+        """Summarize historical-weather coverage for a validation case list."""
+        case_coverages = [
+            self.get_case_coverage(case.year, case.month, hours)
+            for case in cases
+        ]
+        ready_count = sum(coverage.ready for coverage in case_coverages)
+        status_counts: Dict[str, int] = {}
+        for coverage in case_coverages:
+            status_counts[coverage.status] = status_counts.get(coverage.status, 0) + 1
+
+        unique_months = {
+            (coverage.year, coverage.month): coverage
+            for coverage in case_coverages
+        }
+        ready_unique_months = sum(
+            coverage.ready for coverage in unique_months.values()
+        )
+
+        return {
+            "historical_weather_csv": (
+                str(self.historical_weather_path)
+                if self.historical_weather_path
+                else None
+            ),
+            "required_hours": hours,
+            "total_cases": len(case_coverages),
+            "historical_ready_cases": ready_count,
+            "fallback_cases": len(case_coverages) - ready_count,
+            "total_case_months": len(unique_months),
+            "historical_ready_case_months": ready_unique_months,
+            "fallback_case_months": len(unique_months) - ready_unique_months,
+            "status_counts": status_counts,
+            "case_months": [
+                coverage.to_dict()
+                for coverage in case_coverages
+            ],
+        }
+
+    @staticmethod
+    def _coverage_fallback_reason(
+        coverage: HistoricalWeatherCoverage,
+    ) -> Optional[str]:
+        """Map coverage status to the fallback reason stored in reports."""
+        if coverage.ready:
+            return None
+        reason_map = {
+            "missing_csv": "historical_weather_csv_not_provided",
+            "missing_month": "historical_weather_csv_has_no_rows_for_case_month",
+            "insufficient_rows": "historical_weather_csv_has_insufficient_rows_for_case_month",
+        }
+        return reason_map.get(coverage.status, coverage.status)
+
+    def _raise_if_required_weather_missing(
+        self,
+        coverage: HistoricalWeatherCoverage,
+    ) -> None:
+        """Fail fast when strict historical weather is requested but unavailable."""
+        if not self.require_historical_weather or coverage.ready:
+            return
+
+        reason = self._coverage_fallback_reason(coverage) or coverage.status
+        path_text = str(self.historical_weather_path) if self.historical_weather_path else "not provided"
+        raise ValueError(
+            "Historical weather is required for validation, but case "
+            f"{coverage.year}-{coverage.month:02d} is not covered "
+            f"({reason}; rows={coverage.rows_available}, "
+            f"required_hours={coverage.required_hours}, csv={path_text})."
+        )
+
     def _generate_from_historical(
         self,
         year: int,
@@ -322,6 +481,7 @@ class HistoricalWeatherGenerator:
         selected.attrs["scenario"] = scenario
         selected.attrs["historical_weather_path"] = str(self.historical_weather_path)
         selected.attrs["weather_rows_available"] = int(len(month_rows))
+        selected.attrs["weather_coverage_status"] = "ready"
         return selected.reset_index(drop=True)
     
     def get_profile(self, month: int) -> SeasonalWeatherProfile:
@@ -375,8 +535,11 @@ class HistoricalWeatherGenerator:
         """
         profile = self.get_profile(month)
 
-        fallback_reason = None
-        if self._historical_weather is not None:
+        coverage = self.get_case_coverage(year, month, hours)
+        fallback_reason = self._coverage_fallback_reason(coverage)
+        self._raise_if_required_weather_missing(coverage)
+
+        if coverage.ready:
             historical = self._generate_from_historical(
                 year=year,
                 month=month,
@@ -385,9 +548,6 @@ class HistoricalWeatherGenerator:
             )
             if historical is not None:
                 return historical
-            fallback_reason = (
-                "historical_weather_csv_has_insufficient_rows_for_case_month"
-            )
         
         # Create datetime array starting from 6:00 AM on the 15th
         start = datetime(year, month, 15, 6, 0)
@@ -477,6 +637,11 @@ class HistoricalWeatherGenerator:
             df.attrs["historical_weather_path"] = str(self.historical_weather_path)
         if fallback_reason:
             df.attrs["fallback_reason"] = fallback_reason
+        df.attrs["weather_coverage_status"] = coverage.status
+        df.attrs["weather_rows_available"] = coverage.rows_available
+        df.attrs["required_hours"] = coverage.required_hours
+        if coverage.max_gap_hours is not None:
+            df.attrs["weather_max_gap_hours"] = coverage.max_gap_hours
         
         return df
     
@@ -626,6 +791,9 @@ class HistoricalWeatherGenerator:
         for key in (
             "historical_weather_path",
             "weather_rows_available",
+            "required_hours",
+            "weather_coverage_status",
+            "weather_max_gap_hours",
             "fallback_reason",
         ):
             if key in df.attrs:

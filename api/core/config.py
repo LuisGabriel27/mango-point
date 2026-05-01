@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # Database (PostgreSQL + PostGIS)
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5433/mangopoint"
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/mangopoint"
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 

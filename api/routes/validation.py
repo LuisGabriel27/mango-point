@@ -13,7 +13,7 @@ Endpoints:
 """
 
 import logging
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -44,6 +44,18 @@ class ValidationRequest(BaseModel):
     years: Optional[List[int]] = Field(
         default=None,
         description="Filter by specific years (e.g., [2023, 2024])"
+    )
+    split_year: Optional[int] = Field(
+        default=None,
+        description="Use years before this as calibration and this year or later as testing",
+    )
+    test_years: Optional[List[int]] = Field(
+        default=None,
+        description="Explicit years reserved for testing; other selected years become calibration",
+    )
+    calibrate: bool = Field(
+        default=False,
+        description="Fit pest-specific calibration on the calibration split before scoring",
     )
     hours: int = Field(
         default=48,
@@ -119,6 +131,9 @@ class ValidationResultItem(BaseModel):
     actual_value: float
     actual_normalized: Optional[float] = None
     predicted_risk: float
+    raw_predicted_risk: Optional[float] = None
+    raw_predicted_level: Optional[str] = None
+    calibration_applied: bool = False
 
 
 class ValidationResponse(BaseModel):
@@ -133,6 +148,10 @@ class ValidationResponse(BaseModel):
     confusion_matrix: ConfusionMatrixResponse
     fruit_fly_metrics: Optional[ClassificationMetricsResponse] = None
     cecid_fly_metrics: Optional[ClassificationMetricsResponse] = None
+    split: Optional[Dict[str, Any]] = None
+    split_metrics: Optional[Dict[str, Any]] = None
+    calibration: Optional[Dict[str, Any]] = None
+    weather: Optional[Dict[str, Any]] = None
     results: List[ValidationResultItem]
 
 
@@ -249,8 +268,9 @@ async def list_validation_cases(
     1. Loads historical pest monitoring records from BPI Guimaras
     2. Generates weather scenarios matching historical climate conditions
     3. Runs simulation for each validation case using the existing engine
-    4. Compares predicted risk levels with actual recorded pest levels
-    5. Computes evaluation metrics (accuracy, precision, recall, F1, MAE, RMSE)
+    4. Optionally calibrates risk scores using calibration years
+    5. Compares predicted risk levels with actual recorded pest levels
+    6. Computes evaluation metrics (accuracy, precision, recall, F1, MAE, RMSE)
     
     **Note:** This operation may take several minutes depending on the number
     of cases and Monte Carlo runs configured.
@@ -272,6 +292,9 @@ async def run_validation(request: ValidationRequest):
             max_cases=request.max_cases,
             pest_types=request.pest_types,
             years=request.years,
+            split_year=request.split_year,
+            test_years=request.test_years,
+            calibrate=request.calibrate,
             hours=request.hours,
             monte_carlo_runs=request.monte_carlo_runs,
             seed=request.seed,
@@ -363,5 +386,13 @@ async def get_metrics_explanation():
                 "MEDIUM": "5-15%",
                 "HIGH": "> 15%"
             }
+        },
+        "calibration": {
+            "description": (
+                "When requested with a calibration/testing split, the API fits "
+                "pest-specific score curves on calibration years and applies "
+                "those frozen curves before computing reported metrics."
+            ),
+            "raw_output": "raw_predicted_risk preserves the uncalibrated simulator score",
         }
     }

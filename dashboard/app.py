@@ -84,7 +84,28 @@ def _read_env_setting(name: str, default: str) -> str:
     return default
 
 
+def _read_int_env_setting(name: str, default: int) -> int:
+    """Read a positive integer setting from env or .env."""
+    raw_value = _read_env_setting(name, str(default))
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _format_seconds(seconds: int) -> str:
+    """Return compact user-facing refresh interval text."""
+    if seconds % 60 == 0 and seconds >= 60:
+        minutes = seconds // 60
+        return f"{minutes} min" if minutes == 1 else f"{minutes} min"
+    return f"{seconds} s"
+
+
 API_BASE = _read_env_setting("MANGOPOINT_API_BASE", "http://localhost:8000").rstrip("/")
+DASHBOARD_ALERT_REFRESH_SECONDS = _read_int_env_setting("DASHBOARD_ALERT_REFRESH_SECONDS", 120)
+DASHBOARD_ALERT_REFRESH_MS = DASHBOARD_ALERT_REFRESH_SECONDS * 1000
+DASHBOARD_ALERT_REFRESH_LABEL = _format_seconds(DASHBOARD_ALERT_REFRESH_SECONDS)
 DEFAULT_LAT = ORCHARD_LAT
 DEFAULT_LON = ORCHARD_LON
 MAP_STYLE = "white-bg"
@@ -2736,7 +2757,7 @@ def make_alert_panel():
     body = [
         dbc.Spinner(html.Div(id="alert-list", children="Loading…"), size="sm"),
         html.Small(
-            [icon("arrow-repeat", "me-1"), "Auto-refreshes every 30 s"],
+            [icon("arrow-repeat", "me-1"), f"Auto-refreshes every {DASHBOARD_ALERT_REFRESH_LABEL}"],
             className="text-muted mt-2 d-block",
         ),
     ]
@@ -2803,7 +2824,7 @@ def make_historical_validation_panel():
                 dbc.Col(
                     [
                         dbc.Label([icon("collection", "me-1"), " Max cases"], className="fw-medium mb-1"),
-                        dbc.Input(id="validation-max-cases", type="number", min=1, max=20, step=1, value=12),
+                        dbc.Input(id="validation-max-cases", type="number", min=1, max=20, step=1, value=20),
                     ],
                     md=6,
                 ),
@@ -2832,6 +2853,36 @@ def make_historical_validation_panel():
                         ),
                     ],
                     md=6,
+                ),
+            ],
+            className="g-2 mb-3",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Label([icon("calendar-check", "me-1"), " Test years"], className="fw-medium mb-1"),
+                        dcc.Dropdown(
+                            id="validation-test-year-filter",
+                            options=VALIDATION_YEAR_OPTIONS,
+                            value=[2025],
+                            multi=True,
+                            clearable=True,
+                        ),
+                    ],
+                    md=7,
+                ),
+                dbc.Col(
+                    [
+                        dbc.Label([icon("sliders2", "me-1"), " Calibration"], className="fw-medium mb-1"),
+                        dbc.Switch(
+                            id="validation-calibrate",
+                            label="Fit on other years",
+                            value=True,
+                            className="mt-2",
+                        ),
+                    ],
+                    md=5,
                 ),
             ],
             className="g-2 mb-3",
@@ -3766,7 +3817,7 @@ app.layout = dbc.Container(
 
         # ── Timers ──
         dcc.Interval(id="weather-timer", interval=60_000, n_intervals=0),
-        dcc.Interval(id="alert-timer", interval=30_000, n_intervals=0),
+        dcc.Interval(id="alert-timer", interval=DASHBOARD_ALERT_REFRESH_MS, n_intervals=0),
         dcc.Interval(id="clock-timer", interval=1_000, n_intervals=0),
         dcc.Interval(id="monitoring-timer", interval=30_000, n_intervals=0),
 
@@ -5696,7 +5747,7 @@ def load_validation_case_preview(pest_types, years, max_cases, auth_session):
     """Preview eligible historical cases for the current validation filters."""
     selected_pests = ensure_list(pest_types)
     selected_years = sorted(int(year) for year in ensure_list(years))
-    safe_max_cases = max(1, min(int(max_cases or 12), 100))
+    safe_max_cases = max(1, min(int(max_cases or 20), 100))
 
     query_params: dict[str, str | int] = {"max_cases": safe_max_cases}
     if selected_pests:
@@ -5731,21 +5782,36 @@ def load_validation_case_preview(pest_types, years, max_cases, auth_session):
         State("validation-max-cases", "value"),
         State("validation-hours", "value"),
         State("validation-monte-carlo-runs", "value"),
+        State("validation-test-year-filter", "value"),
+        State("validation-calibrate", "value"),
         State("auth-session-store", "data"),
     ],
     prevent_initial_call=True,
 )
-def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, monte_carlo_runs, auth_session):
+def run_historical_validation(
+    n_clicks,
+    pest_types,
+    years,
+    max_cases,
+    hours,
+    monte_carlo_runs,
+    test_years,
+    calibrate,
+    auth_session,
+):
     """Run historical validation and cache the latest successful response."""
     if not n_clicks:
         return no_update, no_update
 
     selected_pests = ensure_list(pest_types)
     selected_years = sorted(int(year) for year in ensure_list(years))
+    selected_test_years = sorted(int(year) for year in ensure_list(test_years))
     payload = {
-        "max_cases": max(1, min(int(max_cases or 12), 100)),
+        "max_cases": max(1, min(int(max_cases or 20), 100)),
         "pest_types": selected_pests or None,
         "years": selected_years or None,
+        "test_years": selected_test_years or None,
+        "calibrate": bool(calibrate),
         "hours": max(24, min(int(hours or 48), 168)),
         "monte_carlo_runs": max(10, min(int(monte_carlo_runs or 20), 100)),
     }
@@ -5774,14 +5840,18 @@ def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, mon
         "max_cases": payload["max_cases"],
         "pest_types": selected_pests,
         "years": selected_years,
+        "test_years": selected_test_years,
+        "calibrate": bool(calibrate),
         "hours": payload["hours"],
         "monte_carlo_runs": payload["monte_carlo_runs"],
     }
 
     summary = response.get("summary", {})
+    calibration = response.get("calibration") or {}
     duration_seconds = float(response.get("duration_seconds", 0.0) or 0.0)
     completed_at = response.get("completed_at", "")
     completed_label = completed_at.replace("T", " ")[:19] if completed_at else "N/A"
+    calibration_text = " Calibrated scores applied." if calibration.get("enabled") else ""
 
     feedback = dbc.Alert(
         [
@@ -5797,7 +5867,8 @@ def run_historical_validation(n_clicks, pest_types, years, max_cases, hours, mon
             ),
             html.Small(
                 f"Completed at {completed_label}. Overall accuracy: {summary.get('overall_accuracy_pct', 0):.1f}%. "
-                "These results summarize agreement with historical records and should not be treated as a guarantee of future field performance.",
+                "These results summarize agreement with historical records and should not be treated as a guarantee of future field performance."
+                f"{calibration_text}",
                 className="d-block mt-1",
             ),
         ],
@@ -5912,13 +5983,33 @@ def render_validation_results(validation_data, explanation_data, cases_data):
     confusion_matrix = validation_data.get("confusion_matrix", {})
     results = validation_data.get("results", [])
     request_details = validation_data.get("request", {})
+    calibration_data = validation_data.get("calibration") or {}
+    weather_data = validation_data.get("weather") or {}
 
     selected_pests = request_details.get("pest_types") or []
     selected_years = request_details.get("years") or []
     pest_text = ", ".join(validation_pest_label(pest) for pest in selected_pests) if selected_pests else "All supported pests"
     year_text = ", ".join(str(year) for year in selected_years) if selected_years else "All available years"
+    test_years = request_details.get("test_years") or []
+    test_year_text = ", ".join(str(year) for year in test_years) if test_years else "No holdout years"
     completed_at = validation_data.get("completed_at", "")
     completed_label = completed_at.replace("T", " ")[:19] if completed_at else "N/A"
+    if calibration_data.get("enabled"):
+        calibration_note = (
+            f"Calibration fit on {calibration_data.get('source_split', 'calibration')} "
+            f"and applied before scoring. Holdout: {test_year_text}."
+        )
+    else:
+        calibration_note = f"No score calibration applied. Holdout: {test_year_text}."
+    coverage = weather_data.get("coverage") or {}
+    if coverage:
+        weather_note = (
+            f" Historical weather coverage: "
+            f"{coverage.get('historical_ready_cases', 0)}/"
+            f"{coverage.get('total_cases', 0)} cases."
+        )
+    else:
+        weather_note = ""
 
     kpi_cards = dbc.Row(
         [
@@ -6138,7 +6229,7 @@ def render_validation_results(validation_data, explanation_data, cases_data):
                         className="d-flex align-items-center flex-wrap gap-1",
                     ),
                     html.Small(
-                        f"Completed at {completed_label}. Historical validation indicates the model aligns reasonably with past pest activity patterns and provides evidence for decision-support use. Future accuracy still depends on environmental variability, data quality, and continued calibration.",
+                        f"Completed at {completed_label}. {calibration_note}{weather_note} Historical validation indicates the model aligns reasonably with past pest activity patterns and provides evidence for decision-support use. Future accuracy still depends on environmental variability and data quality.",
                         className="d-block mt-1",
                     ),
                 ],

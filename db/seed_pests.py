@@ -16,7 +16,7 @@ from pathlib import Path
 import psycopg2
 
 
-DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5433/mangopoint"
+DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/mangopoint"
 
 PEST_SEED_DATA = [
     {
@@ -42,7 +42,7 @@ def parse_db_url(url: str) -> dict:
     if ":" in host_port:
         host, port = host_port.split(":", 1)
     else:
-        host, port = host_port, "5433"
+        host, port = host_port, "5432"
     return {
         "dbname": dbname,
         "user": user,

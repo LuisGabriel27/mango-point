@@ -178,6 +178,49 @@ def test_gate_condition_alerts_skip_when_gate_stays_closed():
     assert alerts == []
 
 
+def test_memory_alert_store_dedupes_active_duplicates():
+    service = AlertService()
+
+    base_alert = AlertCreate(
+        alert_id="alert-memory-a",
+        simulation_run_id="run-a",
+        severity=AlertSeverityEnum.HIGH,
+        risk_value=0.82,
+        affected_cells=[],
+        affected_tree_ids=[],
+        orchard_id="orchard-a",
+        zone_name="Cecid fly gate condition",
+        message="Cecid fly biological gate opened.",
+        centroid_lon=None,
+        centroid_lat=None,
+        recommended_actions=["Inspect fruitlet-stage blocks."],
+    )
+    duplicate_alert = AlertCreate(
+        alert_id="alert-memory-b",
+        simulation_run_id="run-b",
+        severity=AlertSeverityEnum.HIGH,
+        risk_value=0.90,
+        affected_cells=[],
+        affected_tree_ids=[],
+        orchard_id="orchard-a",
+        zone_name="Cecid fly gate condition",
+        message="Cecid fly biological gate opened again.",
+        centroid_lon=None,
+        centroid_lat=None,
+        recommended_actions=["Inspect fruitlet-stage blocks."],
+    )
+
+    service.store_alert_in_memory(base_alert)
+    service.store_alert_in_memory(duplicate_alert)
+
+    memory_alerts, total, active_count = service.get_memory_alerts()
+
+    assert total == 1
+    assert active_count == 1
+    assert memory_alerts[0]["alert_id"] == "alert-memory-a"
+    assert memory_alerts[0]["risk_value"] == 0.90
+
+
 @pytest.mark.asyncio
 async def test_simulation_background_alerts_store_memory_with_centroid(monkeypatch):
     alert_service.clear_memory_alerts()

@@ -1,7 +1,7 @@
 param(
     [string]$PgUser = "postgres",
     [string]$PgHost = "localhost",
-    [int]$PgPort = 5433,
+    [int]$PgPort = 5432,
     [string]$DbName = "mangopoint"
 )
 

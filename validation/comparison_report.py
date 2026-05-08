@@ -187,18 +187,18 @@ class ComparisonReportGenerator:
             
             # Add interpretation based on scores
             if overall.trend_similarity_score >= 0.80:
-                lines.append("  ✓ Simulation captures real-world pest patterns VERY WELL")
+                lines.append("  [PASS] Simulation captures real-world pest patterns VERY WELL")
             elif overall.trend_similarity_score >= 0.60:
-                lines.append("  ✓ Simulation captures major trends SUCCESSFULLY")
+                lines.append("  [PASS] Simulation captures major trends SUCCESSFULLY")
             elif overall.trend_similarity_score >= 0.40:
                 lines.append("  ~ Simulation captures SOME patterns, improvements possible")
             else:
-                lines.append("  ✗ Significant discrepancy with observed data")
+                lines.append("  [FAIL] Significant discrepancy with observed data")
             
             if self.metrics.classification.recall >= 0.80:
-                lines.append(f"  ✓ High outbreak detection rate ({self.metrics.classification.recall:.0%})")
+                lines.append(f"  [PASS] High outbreak detection rate ({self.metrics.classification.recall:.0%})")
             if self.metrics.classification.precision >= 0.70:
-                lines.append(f"  ✓ Low false alarm rate (precision: {self.metrics.classification.precision:.0%})")
+                lines.append(f"  [PASS] Low false alarm rate (precision: {self.metrics.classification.precision:.0%})")
         
         # Section 2: Detailed Classification Metrics
         lines.extend([
@@ -341,7 +341,7 @@ class ComparisonReportGenerator:
                 "-" * 60,
             ])
             for row in comparison_table:
-                match_symbol = "✓" if row["match"] else "✗"
+                match_symbol = "PASS" if row["match"] else "FAIL"
                 lines.append(
                     f"{row['date']:11} | {row['pest_type']:9} | {row['actual_level']:12} | "
                     f"{row['predicted_level']:9} | {match_symbol}"

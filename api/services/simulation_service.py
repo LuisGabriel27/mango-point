@@ -467,8 +467,8 @@ class SimulationService:
             completed_at = utcnow_naive()
             duration = (completed_at - started_at).total_seconds()
             
-            # Convert to time-series GeoJSON
-            time_series = self._result_to_time_series(result, origin)
+            include_time_series = bool(getattr(request, "include_time_series", True))
+            time_series = self._result_to_time_series(result, origin) if include_time_series else []
             
             # Final risk GeoJSON
             risk_geojson = self._grid_to_geojson(
@@ -482,14 +482,13 @@ class SimulationService:
             cells_at_risk = int((result.risk_series[-1] > risk_threshold).sum())
             n_infested_final = int(result.grid.infested_mask.sum())
             
-            # Build timesteps array for research format
             timesteps = [
                 TimestepEntry(
                     hour=ts.hour,
                     geojson=ts.risk_geojson,
                 )
                 for ts in time_series
-            ]
+            ] if include_time_series else []
             
             # Build metadata block
             metadata = SimulationMetadata(
@@ -872,12 +871,18 @@ class SimulationService:
         
         # Sample snapshots — include first, last, and intermediate steps
         total = len(result)
-        n_samples = min(total, 12)
+        # Allow up to 24 frames so a 48-hour sim gets every-2-hour resolution;
+        # longer sims still cap at 24 to keep the response size reasonable.
+        n_samples = min(total, 24)
         step_size = max(1, total // n_samples)
-        
-        for i in range(0, total, step_size):
+        sampled_indices = list(range(0, total, step_size))
+        # Always include final snapshot
+        if (total - 1) not in sampled_indices:
+            sampled_indices.append(total - 1)
+
+        for i in sampled_indices:
             snap = result.snapshots[i]
-            
+
             # Create GeoJSON for this timestep (use snapshot state, not final)
             risk_geojson = self._grid_to_geojson(
                 result.grid,
@@ -885,14 +890,16 @@ class SimulationService:
                 origin,
                 state_override=snap["state"],
             )
-            
+
             dt = snap["datetime"]
             dt_str = format_rfc3339(dt) if hasattr(dt, "isoformat") else str(dt)
-            
+
             time_series.append(TimeSeriesSnapshot(
                 timestep=snap["timestep"],
                 datetime=dt_str,
-                hour=snap["hour"],
+                # Use timestep (elapsed hours) not w["hour"] (hour-of-day 0-23)
+                # so playback labels show "Hour 0..48" not cycling "0..23, 0..23"
+                hour=snap["timestep"],
                 risk_geojson=risk_geojson,
                 n_infested=snap["n_infested"],
                 n_new=snap["n_new"],
@@ -900,26 +907,6 @@ class SimulationService:
                     "wind_speed_ms": snap["weather"]["wind_speed_ms"],
                     "wind_dir_deg": snap["weather"]["wind_dir_deg"],
                     "temperature_c": snap["weather"]["temperature_c"],
-                },
-            ))
-        
-        # Always include final snapshot
-        if len(result) - 1 not in range(0, len(result), step_size):
-            final = result.snapshots[-1]
-            dt = final["datetime"]
-            dt_str = format_rfc3339(dt) if hasattr(dt, "isoformat") else str(dt)
-            
-            time_series.append(TimeSeriesSnapshot(
-                timestep=final["timestep"],
-                datetime=dt_str,
-                hour=final["hour"],
-                risk_geojson=self._grid_to_geojson(result.grid, final["risk"], origin, state_override=final["state"]),
-                n_infested=final["n_infested"],
-                n_new=final["n_new"],
-                weather={
-                    "wind_speed_ms": final["weather"]["wind_speed_ms"],
-                    "wind_dir_deg": final["weather"]["wind_dir_deg"],
-                    "temperature_c": final["weather"]["temperature_c"],
                 },
             ))
         
@@ -1219,7 +1206,8 @@ class SimulationService:
         n_infested_final = result.graph.n_infested() if result.graph else 0
 
         # ── convert to time-series ────────────────────────────────
-        time_series = self._tg_result_to_time_series(result, graph)
+        include_time_series = bool(getattr(request, "include_time_series", True))
+        time_series = self._tg_result_to_time_series(result, graph) if include_time_series else []
         risk_geojson = self._tg_snapshot_to_geojson(
             graph=result.graph or graph,
             states=result.snapshots[-1]["states"] if result.snapshots else [],
@@ -1229,7 +1217,7 @@ class SimulationService:
         timesteps = [
             TimestepEntry(hour=ts.hour, geojson=ts.risk_geojson)
             for ts in time_series
-        ]
+        ] if include_time_series else []
 
         # ── metadata ──────────────────────────────────────────────
         metadata = SimulationMetadata(
@@ -1367,7 +1355,7 @@ class SimulationService:
         if total == 0:
             return time_series
 
-        n_samples = min(total, 12)
+        n_samples = min(total, 24)
         step_size = max(1, total // n_samples)
         sampled_indices = list(range(0, total, step_size))
         # Always include final snapshot
@@ -1387,7 +1375,8 @@ class SimulationService:
             time_series.append(TimeSeriesSnapshot(
                 timestep=snap["timestep"],
                 datetime=dt_str,
-                hour=snap["hour"],
+                # Use timestep (elapsed hours) not w["hour"] (hour-of-day 0-23)
+                hour=snap["timestep"],
                 risk_geojson=risk_geojson,
                 n_infested=snap["n_infested"],
                 n_new=snap["n_new"],

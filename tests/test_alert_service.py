@@ -178,6 +178,38 @@ def test_gate_condition_alerts_skip_when_gate_stays_closed():
     assert alerts == []
 
 
+def test_memory_alert_store_skips_duplicate_active_alerts():
+    service = AlertService()
+    alert = AlertCreate(
+        alert_id="alert-memory-dup-1",
+        simulation_run_id="run-1",
+        severity=AlertSeverityEnum.MEDIUM,
+        risk_value=0.65,
+        affected_cells=[],
+        affected_tree_ids=["T1"],
+        orchard_id="orchard-a",
+        zone_name="Tree zone",
+        message="Repeated condition",
+        centroid_lon=122.5,
+        centroid_lat=10.5,
+        recommended_actions=["Inspect tree T1"],
+    )
+
+    duplicate = (
+        alert.model_copy(update={"alert_id": "alert-memory-dup-2", "simulation_run_id": "run-2"})
+        if hasattr(alert, "model_copy")
+        else alert.copy(update={"alert_id": "alert-memory-dup-2", "simulation_run_id": "run-2"})
+    )
+
+    service.store_alert_in_memory(alert)
+    service.store_alert_in_memory(duplicate)
+
+    memory_alerts, total, active_count = service.get_memory_alerts()
+    assert total == 1
+    assert active_count == 1
+    assert memory_alerts[0]["alert_id"] == "alert-memory-dup-1"
+
+
 @pytest.mark.asyncio
 async def test_simulation_background_alerts_store_memory_with_centroid(monkeypatch):
     alert_service.clear_memory_alerts()

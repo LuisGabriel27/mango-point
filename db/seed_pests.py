@@ -64,7 +64,7 @@ def main():
     try:
         conn = psycopg2.connect(**conn_params)
     except Exception as e:
-        print(f"\n✗ Connection failed: {e}")
+        print(f"\n[ERROR] Connection failed: {e}")
         sys.exit(1)
 
     try:
@@ -76,7 +76,7 @@ def main():
                     (pest["name"],),
                 )
                 if cur.fetchone():
-                    print(f"  ℹ '{pest['name']}' already exists — skipped")
+                    print(f"  [INFO] '{pest['name']}' already exists - skipped")
                     continue
 
                 cur.execute(
@@ -88,16 +88,16 @@ def main():
                     (pest["name"], pest["scientific_name"], pest["attack_stage"]),
                 )
                 pid = cur.fetchone()[0]
-                print(f"  ✓ Inserted '{pest['name']}' (id={pid})")
+                print(f"  [OK] Inserted '{pest['name']}' (id={pid})")
 
         conn.commit()
-        print("\n✓ Pest seed data complete.")
+        print("\n[OK] Pest seed data complete.")
         print("\nVerify with:")
         print('  psql -d mangopoint -c "SELECT * FROM pest;"')
 
     except Exception as e:
         conn.rollback()
-        print(f"\n✗ Seed failed: {e}")
+        print(f"\n[ERROR] Seed failed: {e}")
         sys.exit(1)
     finally:
         conn.close()

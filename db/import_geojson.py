@@ -83,7 +83,7 @@ def ensure_orchard(conn, name: str, location: str) -> int:
         cur.execute("SELECT orchard_id FROM orchard WHERE name = %s;", (name,))
         row = cur.fetchone()
         if row:
-            print(f"  ℹ Orchard '{name}' already exists (id={row[0]})")
+            print(f"  [INFO] Orchard '{name}' already exists (id={row[0]})")
             return row[0]
         
         # Insert new orchard
@@ -97,7 +97,7 @@ def ensure_orchard(conn, name: str, location: str) -> int:
         )
         orchard_id = cur.fetchone()[0]
         conn.commit()
-        print(f"  ✓ Created orchard '{name}' (id={orchard_id})")
+        print(f"  [OK] Created orchard '{name}' (id={orchard_id})")
         return orchard_id
 
 
@@ -108,7 +108,7 @@ def import_trees(conn, geojson: dict, orchard_id: int) -> int:
     """
     features = geojson.get("features", [])
     if not features:
-        print("  ⚠ No features found in GeoJSON file.")
+        print("  [WARN] No features found in GeoJSON file.")
         return 0
 
     # Map GeoJSON Status to tree_status_enum
@@ -149,7 +149,7 @@ def import_trees(conn, geojson: dict, orchard_id: int) -> int:
         ))
 
     if not rows:
-        print("  ⚠ No valid Point features found.")
+        print("  [WARN] No valid Point features found.")
         return 0
 
     with conn.cursor() as cur:
@@ -229,7 +229,7 @@ def main():
 
     # Validate GeoJSON file
     if not args.geojson.exists():
-        print(f"\n✗ GeoJSON file not found: {args.geojson}")
+        print(f"\n[ERROR] GeoJSON file not found: {args.geojson}")
         sys.exit(1)
 
     print(f"\nGeoJSON file : {args.geojson}")
@@ -240,16 +240,16 @@ def main():
     print("\n[1/3] Loading GeoJSON...")
     geojson = load_geojson(args.geojson)
     n_features = len(geojson.get("features", []))
-    print(f"  ✓ Loaded {n_features} features")
+    print(f"  [OK] Loaded {n_features} features")
 
     # Connect to database
     print("\n[2/3] Connecting to database...")
     conn_params = parse_db_url(args.database_url)
     try:
         conn = psycopg2.connect(**conn_params)
-        print("  ✓ Connected")
+        print("  [OK] Connected")
     except Exception as e:
-        print(f"\n✗ Connection failed: {e}")
+        print(f"\n[ERROR] Connection failed: {e}")
         print("\nMake sure PostgreSQL is running and the database exists.")
         sys.exit(1)
 
@@ -261,13 +261,13 @@ def main():
         # Import trees
         n_imported = import_trees(conn, geojson, orchard_id)
 
-        print(f"\n✓ Successfully imported {n_imported} trees into orchard_id={orchard_id}")
+        print(f"\n[OK] Successfully imported {n_imported} trees into orchard_id={orchard_id}")
         print("\nVerify with:")
         print("  psql -d mangopoint -c \"SELECT tree_id, x_coordinate, y_coordinate, ST_AsText(geom) FROM tree LIMIT 5;\"")
 
     except Exception as e:
         conn.rollback()
-        print(f"\n✗ Import failed: {e}")
+        print(f"\n[ERROR] Import failed: {e}")
         sys.exit(1)
     finally:
         conn.close()

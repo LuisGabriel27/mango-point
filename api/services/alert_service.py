@@ -34,11 +34,25 @@ class AlertService:
     
     def __init__(self):
         self.risk_threshold = settings.ALERT_RISK_THRESHOLD
-        # In-memory alert store for when database is unavailable
+            # In-memory alert store for when database is unavailable
         self._memory_alerts: List[Dict[str, Any]] = []
     
     def store_alert_in_memory(self, alert_data: "AlertCreate") -> None:
         """Store alert in memory when database is unavailable."""
+        for alert in self._memory_alerts:
+            if (
+                alert.get("status") == "active"
+                and alert.get("orchard_id") == alert_data.orchard_id
+                and alert.get("zone_name") == alert_data.zone_name
+                and alert.get("message") == alert_data.message
+            ):
+                logger.info(
+                    "Skipped duplicate in-memory active alert for orchard %s zone %s",
+                    alert_data.orchard_id,
+                    alert_data.zone_name,
+                )
+                return
+
         self._memory_alerts.append({
             "alert_id": alert_data.alert_id,
             "simulation_run_id": alert_data.simulation_run_id,

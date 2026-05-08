@@ -53,6 +53,66 @@ async_session_maker = async_sessionmaker(
 Base = declarative_base()
 
 
+async def _normalize_user_role_enum(conn) -> None:
+    """Normalize legacy uppercase role labels to the schema's lowercase labels."""
+    await conn.execute(text("""
+        DO $$
+        BEGIN
+            IF to_regtype('user_role_enum') IS NOT NULL THEN
+                IF EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'ADMIN'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'admin'
+                ) THEN
+                    ALTER TYPE user_role_enum RENAME VALUE 'ADMIN' TO 'admin';
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'ANALYST'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'analyst'
+                ) THEN
+                    ALTER TYPE user_role_enum RENAME VALUE 'ANALYST' TO 'analyst';
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'OPERATOR'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'user_role_enum'::regtype
+                      AND enumlabel = 'operator'
+                ) THEN
+                    ALTER TYPE user_role_enum RENAME VALUE 'OPERATOR' TO 'operator';
+                END IF;
+            END IF;
+        END $$;
+    """))
+    await conn.execute(text("""
+        ALTER TABLE IF EXISTS user_account
+        ALTER COLUMN role SET DEFAULT 'admin';
+    """))
+    await conn.execute(text("""
+        DO $$
+        BEGIN
+            IF to_regclass('user_account') IS NOT NULL THEN
+                UPDATE user_account
+                SET role = lower(role::text)::user_role_enum
+                WHERE role::text IN ('ADMIN', 'ANALYST', 'OPERATOR');
+            END IF;
+        END $$;
+    """))
+
+
 def is_database_unavailable(exc: Exception) -> bool:
     """Return True when an exception indicates a database connectivity issue."""
     if isinstance(exc, DATABASE_ERROR_TYPES):
@@ -99,6 +159,7 @@ async def init_db():
         # Enable PostGIS extension
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         await conn.run_sync(Base.metadata.create_all)
+        await _normalize_user_role_enum(conn)
         # Backward-compatible migration for older installs: field
         # observations are ground truth and do not belong to a simulation run.
         await conn.execute(text(

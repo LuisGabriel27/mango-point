@@ -127,7 +127,7 @@ This is an automated alert from the MangoPoint pest monitoring system.
 </head>
 <body>
     <div class="alert-box">
-        <div class="alert-header">🚨 Pest Risk Alert</div>
+        <div class="alert-header">Pest Risk Alert</div>
         <div class="alert-id">Alert ID: {alert_id}</div>
         <div class="message">{message}</div>
     </div>

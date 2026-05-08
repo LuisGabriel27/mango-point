@@ -95,6 +95,11 @@ class UserRoleEnum(str, enum.Enum):
     OPERATOR = "operator"
 
 
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    """Use enum values, not Python member names, as PostgreSQL labels."""
+    return [member.value for member in enum_cls]
+
+
 # ═══════════════════════════════════════════════
 #  1. Orchard
 # ═══════════════════════════════════════════════
@@ -111,7 +116,12 @@ class UserAccount(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRoleEnum] = mapped_column(
-        SQLEnum(UserRoleEnum, name="user_role_enum", create_type=False),
+        SQLEnum(
+            UserRoleEnum,
+            name="user_role_enum",
+            create_type=False,
+            values_callable=_enum_values,
+        ),
         nullable=False,
         default=UserRoleEnum.ADMIN,
     )
@@ -469,10 +479,10 @@ class Alert(Base):
 
     # Alert details
     severity: Mapped[AlertSeverity] = mapped_column(
-        SQLEnum(AlertSeverity), default=AlertSeverity.HIGH,
+        SQLEnum(AlertSeverity, values_callable=_enum_values), default=AlertSeverity.HIGH,
     )
     status: Mapped[AlertStatus] = mapped_column(
-        SQLEnum(AlertStatus), default=AlertStatus.ACTIVE,
+        SQLEnum(AlertStatus, values_callable=_enum_values), default=AlertStatus.ACTIVE,
     )
 
     # Risk information

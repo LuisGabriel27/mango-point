@@ -607,7 +607,7 @@ class ValidationRunner:
             self.results.append(result)
             
             # Log progress
-            status = "✓" if result.match else "✗"
+            status = "PASS" if result.match else "FAIL"
             logger.debug(
                 f"[{i+1}/{total}] {status} {case.case_id}: "
                 f"Actual={case.actual_level}, Predicted={result.predicted_level}"

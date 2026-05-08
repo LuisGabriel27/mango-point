@@ -472,6 +472,12 @@ class SimulationRequest(BaseModel):
                     "per-hour gate-open/closed flags and the inputs that determined "
                     "them. Useful for tuning manual weather scenarios.",
     )
+    include_time_series: bool = Field(
+        default=True,
+        description="When false, skips detailed per-timestep GeoJSON snapshots in "
+                    "`time_series` and `timesteps`. Use this for dashboards that only "
+                    "need the final `risk_geojson` so simulation results return faster.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

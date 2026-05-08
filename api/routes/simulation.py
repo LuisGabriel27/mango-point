@@ -9,11 +9,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..models.schemas import SimulationRequest, SimulationResponse
-from db.models import SimulationRun, PestType
+from db.models import Alert, AlertStatus, SimulationRun, PestType
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
@@ -423,12 +424,22 @@ async def _persist_or_store_alerts(
         from ..core.database import async_session_maker
 
         async with async_session_maker() as db:
+            created_count = 0
             for alert_data in alerts:
+                if await _active_duplicate_alert_exists(db, alert_data):
+                    logger.info(
+                        "Skipped duplicate active %s alert for orchard %s zone %s",
+                        alert_kind,
+                        alert_data.orchard_id,
+                        alert_data.zone_name,
+                    )
+                    continue
                 await alert_service.create_alert(db, alert_data, send_notifications=True)
+                created_count += 1
             await db.commit()
             logger.info(
                 "Created %d %s alert(s) in database for simulation %s",
-                len(alerts),
+                created_count,
                 alert_kind,
                 run_id,
             )
@@ -446,6 +457,21 @@ async def _persist_or_store_alerts(
             alert_kind,
             run_id,
         )
+
+
+async def _active_duplicate_alert_exists(db: AsyncSession, alert_data: Any) -> bool:
+    """Return True when the same alert condition is already active."""
+    result = await db.execute(
+        select(Alert.alert_id)
+        .where(
+            Alert.status == AlertStatus.ACTIVE,
+            Alert.orchard_id == alert_data.orchard_id,
+            Alert.zone_name == alert_data.zone_name,
+            Alert.message == alert_data.message,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 @router.get(

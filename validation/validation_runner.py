@@ -144,18 +144,47 @@ class ValidationResult:
     peak_risk: float = 0.0
     n_infested: int = 0
     weather_stats: Dict = field(default_factory=dict)
+    raw_predicted_risk: Optional[float] = None
+    raw_predicted_level: Optional[str] = None
+    calibration_applied: bool = False
+    calibration_method: Optional[str] = None
     
     # Error for regression analysis
     error: float = 0.0
     
     def __post_init__(self):
         """Compute error after initialization."""
-        # Normalize actual value to 0-1 scale for comparison
-        actual_normalized = normalize_pest_value_to_risk(
+        self._refresh_error()
+
+    def _actual_normalized(self) -> float:
+        """Return the case's BPI value on the 0-1 risk scale."""
+        return normalize_pest_value_to_risk(
             self.case.actual_value,
             self.case.pest_type,
         )
-        self.error = abs(self.predicted_risk - actual_normalized)
+
+    def _refresh_error(self) -> None:
+        """Refresh regression error after prediction changes."""
+        self.error = abs(self.predicted_risk - self._actual_normalized())
+
+    def apply_calibrated_prediction(
+        self,
+        calibrated_risk: float,
+        calibrated_level: str,
+        method: str,
+    ) -> None:
+        """Replace the reported prediction while preserving raw simulation output."""
+        if self.raw_predicted_risk is None:
+            self.raw_predicted_risk = self.predicted_risk
+        if self.raw_predicted_level is None:
+            self.raw_predicted_level = self.predicted_level
+
+        self.predicted_risk = max(0.0, min(1.0, float(calibrated_risk)))
+        self.predicted_level = calibrated_level
+        self.match = self.predicted_level == self.case.actual_level
+        self.calibration_applied = True
+        self.calibration_method = method
+        self._refresh_error()
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for export."""
@@ -170,6 +199,10 @@ class ValidationResult:
             "n_infested": self.n_infested,
             "weather_source": self.weather_stats.get("source", "unknown"),
             "weather_fallback_reason": self.weather_stats.get("fallback_reason"),
+            "raw_predicted_risk": self.raw_predicted_risk,
+            "raw_predicted_level": self.raw_predicted_level,
+            "calibration_applied": self.calibration_applied,
+            "calibration_method": self.calibration_method,
         }
     
     def to_metrics_dict(self) -> Dict[str, Any]:
@@ -232,6 +265,7 @@ class ValidationRunner:
         data_path: Optional[Path] = None,
         seed: int = 42,
         historical_weather_path: Optional[Path] = None,
+        require_historical_weather: bool = False,
     ):
         """
         Initialize the validation runner.
@@ -245,16 +279,21 @@ class ValidationRunner:
         historical_weather_path : Path, optional
             Optional hourly historical weather CSV used before synthetic
             seasonal weather profiles.
+        require_historical_weather : bool
+            If True, validation fails when a case lacks enough hourly
+            historical weather rows.
         """
         self.data_loader = HistoricalDataLoader(data_path)
         self.weather_generator = HistoricalWeatherGenerator(
             seed=seed,
             historical_weather_path=historical_weather_path,
+            require_historical_weather=require_historical_weather,
         )
         self.seed = seed
         self.results: List[ValidationResult] = []
         self._cases: List[ValidationCase] = []
         self._metrics: Optional[ValidationMetrics] = None
+        self.calibration = None
         
         # Lazy-loaded simulation components
         self._simulation_loaded = False
@@ -729,6 +768,74 @@ class ValidationRunner:
         if split is None:
             self._metrics = metrics
         return metrics
+
+    def fit_calibration(
+        self,
+        split: Optional[str] = "calibration",
+        min_cases: int = 2,
+    ):
+        """
+        Fit pest-specific risk calibration from completed validation results.
+
+        By default, calibration uses only cases assigned to the ``calibration``
+        split. Pass ``split=None`` to fit on all available results for
+        exploratory analysis.
+        """
+        if not self.results:
+            raise ValueError(
+                "No validation results available. "
+                "Call run_validation() before fitting calibration."
+            )
+
+        selected_results = [
+            result for result in self.results
+            if split is None or result.case.split == split
+        ]
+        if not selected_results:
+            raise ValueError(f"No validation results available for calibration split: {split}")
+
+        from .calibration import fit_risk_calibration
+
+        self.calibration = fit_risk_calibration(
+            selected_results,
+            source_split=split or "all_results",
+            min_cases=min_cases,
+        )
+        return self.calibration
+
+    def apply_calibration(self, calibration=None) -> List[ValidationResult]:
+        """
+        Apply fitted calibration curves to current validation results.
+
+        Raw simulation scores are retained on each ``ValidationResult`` as
+        ``raw_predicted_risk`` and ``raw_predicted_level``.
+        """
+        calibration = calibration or self.calibration
+        if calibration is None:
+            raise ValueError("No calibration is available to apply.")
+
+        for result in self.results:
+            raw_score = (
+                result.raw_predicted_risk
+                if result.raw_predicted_risk is not None
+                else result.predicted_risk
+            )
+            calibrated_risk = calibration.apply_score(
+                raw_score,
+                result.case.pest_type,
+            )
+            calibrated_level = calibration.predict_level(
+                calibrated_risk,
+                result.case.pest_type,
+            )
+            result.apply_calibrated_prediction(
+                calibrated_risk,
+                calibrated_level,
+                calibration.method,
+            )
+
+        self._metrics = None
+        return self.results
 
     def compute_split_metrics(
         self,

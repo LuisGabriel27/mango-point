@@ -38,7 +38,7 @@ def _resolve_default_geojson() -> Path:
 
 
 DEFAULT_GEOJSON = _resolve_default_geojson()
-DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5433/mangopoint"
+DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/mangopoint"
 DEFAULT_ORCHARD_NAME = "Guimaras Mango Orchard"
 DEFAULT_ORCHARD_LOCATION = "Jordan, Guimaras, Philippines"
 
@@ -56,7 +56,7 @@ def parse_db_url(url: str) -> dict:
     if ":" in host_port:
         host, port = host_port.split(":", 1)
     else:
-        host, port = host_port, "5433"
+        host, port = host_port, "5432"
     
     return {
         "dbname": dbname,

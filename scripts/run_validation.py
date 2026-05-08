@@ -37,6 +37,9 @@ Usage Examples
     # Quick test with fewer Monte Carlo runs
     python -m scripts.run_validation --max-cases 5 --monte-carlo 10
 
+    # Fit on 2022-2024 and report held-out 2025 testing metrics
+    python -m scripts.run_validation --test-years 2025
+
 Output Files
 ------------
     - validation_comparison_<timestamp>.csv: Detailed per-case results
@@ -129,6 +132,7 @@ Examples:
   python -m scripts.run_validation                           # Full validation
   python -m scripts.run_validation --pest-type fruitfly      # Fruit Fly only
   python -m scripts.run_validation --years 2023,2024         # Specific years
+  python -m scripts.run_validation --test-years 2025         # Calibrate then test on 2025
   python -m scripts.run_validation --max-cases 10 --verbose  # Quick test with debug output
         """,
     )
@@ -162,6 +166,14 @@ Examples:
         )
     )
     parser.add_argument(
+        "--require-historical-weather",
+        action="store_true",
+        help=(
+            "Fail before simulation if any selected validation case lacks "
+            "enough hourly rows in --historical-weather-csv"
+        ),
+    )
+    parser.add_argument(
         "--split-year",
         type=int,
         default=None,
@@ -190,6 +202,20 @@ Examples:
         type=float,
         default=0.95,
         help="Confidence level for bootstrap intervals (default: 0.95)"
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help=(
+            "Fit pest-specific risk calibration before metrics. With a split, "
+            "calibration uses calibration years and is applied to testing years; "
+            "without a split, all selected cases are used."
+        ),
+    )
+    parser.add_argument(
+        "--no-calibration",
+        action="store_true",
+        help="Disable automatic calibration for split-year/test-year runs",
     )
     
     # Simulation options
@@ -290,6 +316,45 @@ def _split_metadata(args: argparse.Namespace, test_years: list[int] | None) -> d
     return {"strategy": "evaluation_only"}
 
 
+def _should_apply_calibration(args: argparse.Namespace, has_split: bool) -> bool:
+    """Return whether this run should fit and apply validation calibration."""
+    if args.no_calibration:
+        return False
+    return bool(args.calibrate or has_split)
+
+
+def _print_weather_coverage(summary: dict) -> None:
+    """Print a compact historical weather coverage summary."""
+    total = summary.get("total_cases", 0)
+    ready = summary.get("historical_ready_cases", 0)
+    fallback = summary.get("fallback_cases", 0)
+    status_counts = summary.get("status_counts", {})
+
+    print("\nHistorical weather coverage:")
+    print(f"  Cases ready for historical weather: {ready}/{total}")
+    print(f"  Cases that would use fallback weather: {fallback}/{total}")
+    if status_counts:
+        counts_text = ", ".join(
+            f"{status}: {count}"
+            for status, count in sorted(status_counts.items())
+        )
+        print(f"  Status counts: {counts_text}")
+
+    missing = [
+        item for item in summary.get("case_months", [])
+        if not item.get("ready")
+    ]
+    if missing:
+        print("  First uncovered case months:")
+        for item in missing[:5]:
+            print(
+                "    "
+                f"{item['year']}-{item['month']:02d}: "
+                f"{item['status']} "
+                f"({item['rows_available']}/{item['required_hours']} rows)"
+            )
+
+
 def print_data_summary() -> None:
     """Print summary of historical data."""
     print("\n" + "=" * 60)
@@ -368,6 +433,8 @@ def run_validation(args: argparse.Namespace) -> None:
     # Parse years
     years = _parse_years(args.years)
     test_years = _parse_years(args.test_years)
+    has_split = args.split_year is not None or bool(test_years)
+    calibration_requested = _should_apply_calibration(args, has_split)
     
     print("\n" + "=" * 60)
     print("MANGOPOINT MODEL VALIDATION")
@@ -382,7 +449,9 @@ def run_validation(args: argparse.Namespace) -> None:
     print(f"  Grid size: {args.grid_size}x{args.grid_size}")
     print(f"  Random seed: {args.seed}")
     print(f"  Historical weather CSV: {args.historical_weather_csv or 'not provided'}")
+    print(f"  Require historical weather: {'yes' if args.require_historical_weather else 'no'}")
     print(f"  Validation split: {_split_metadata(args, test_years)['strategy']}")
+    print(f"  Risk calibration: {'enabled' if calibration_requested else 'disabled'}")
     print(f"  Bootstrap CI resamples: {args.bootstrap}")
     print("\n" + "-" * 60)
     
@@ -394,6 +463,7 @@ def run_validation(args: argparse.Namespace) -> None:
             if args.historical_weather_csv
             else None
         ),
+        require_historical_weather=args.require_historical_weather,
     )
     
     logger.info("Loading historical data...")
@@ -417,6 +487,18 @@ def run_validation(args: argparse.Namespace) -> None:
             for split, split_cases in sorted(split_groups.items())
         )
         print(f"Split counts: {split_counts}")
+
+    weather_coverage = runner.weather_generator.summarize_case_coverage(
+        cases,
+        hours=args.hours,
+    )
+    _print_weather_coverage(weather_coverage)
+    if args.require_historical_weather and weather_coverage.get("fallback_cases", 0):
+        raise SystemExit(
+            "Historical weather coverage is incomplete. "
+            "Provide a CSV covering all selected case months or remove "
+            "--require-historical-weather to allow synthetic fallback."
+        )
     
     logger.info(f"Running validation ({len(cases)} cases)...")
     print("\nRunning simulations (this may take several minutes)...")
@@ -433,6 +515,23 @@ def run_validation(args: argparse.Namespace) -> None:
     )
     
     print()  # New line after progress bar
+
+    calibration = None
+    if calibration_requested:
+        calibration_source_split = "calibration" if has_split else None
+        try:
+            calibration = runner.fit_calibration(split=calibration_source_split)
+            results = runner.apply_calibration(calibration)
+            print("\nApplied risk-score calibration:")
+            for pest_type, curve in sorted(calibration.curves.items()):
+                print(
+                    f"  {pest_type}: scale={curve.scale:.3f}, "
+                    f"intercept={curve.intercept:.3f}, "
+                    f"cases={curve.n_cases}, "
+                    f"MAE {curve.mae_before:.3f}->{curve.mae_after:.3f}"
+                )
+        except ValueError as exc:
+            print(f"\nCalibration skipped: {exc}")
     
     # Compute metrics
     metrics = runner.compute_metrics(
@@ -513,20 +612,32 @@ def run_validation(args: argparse.Namespace) -> None:
             },
             "weather": {
                 "historical_weather_csv": args.historical_weather_csv,
+                "require_historical_weather": args.require_historical_weather,
                 "source_counts": dict(weather_sources),
+                "coverage": weather_coverage,
             },
             "bootstrap": {
                 "iterations": args.bootstrap,
                 "confidence": args.confidence,
             },
+            "calibration": (
+                calibration.to_dict()
+                if calibration
+                else {
+                    "enabled": False,
+                    "requested": calibration_requested,
+                    "reason": "not requested or no usable calibration split",
+                }
+            ),
             "science_notes": [
                 (
                     "Use --historical-weather-csv to replace synthetic seasonal "
                     "profiles with observed hourly weather when available."
                 ),
                 (
-                    "Calibration/testing split metrics are only meaningful when "
-                    "--split-year or --test-years is supplied."
+                    "When calibration is enabled, curves are fit only from the "
+                    "calibration split and then frozen before testing metrics "
+                    "are computed."
                 ),
             ],
         }

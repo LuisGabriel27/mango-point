@@ -6,7 +6,7 @@ GET /alerts endpoint for risk alerts.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,6 +121,36 @@ def _db_alert_to_response(alert) -> AlertResponse:
     )
 
 
+def _alert_response_payload(alert: AlertResponse) -> dict[str, Any]:
+    """Convert an API alert response to the service fingerprint shape."""
+    return {
+        "alert_id": alert.alert_id,
+        "status": alert.status.value if hasattr(alert.status, "value") else str(alert.status),
+        "orchard_id": alert.orchard_id,
+        "zone_name": alert.zone_name,
+        "message": alert.message,
+        "affected_cells": alert.affected_cells,
+        "affected_tree_ids": alert.affected_tree_ids,
+    }
+
+
+def _dedupe_alert_responses(alerts: List[AlertResponse]) -> List[AlertResponse]:
+    """Collapse duplicate active alerts across database and memory sources."""
+    unique: List[AlertResponse] = []
+    seen_active = set()
+
+    for alert in alerts:
+        status = alert.status.value if hasattr(alert.status, "value") else str(alert.status)
+        if status == AlertStatusEnum.ACTIVE.value:
+            fingerprint = alert_service.alert_fingerprint(_alert_response_payload(alert))
+            if fingerprint in seen_active:
+                continue
+            seen_active.add(fingerprint)
+        unique.append(alert)
+
+    return unique
+
+
 @router.get(
     "",
     response_model=AlertListResponse,
@@ -202,6 +232,18 @@ async def get_alerts(
             alert for alert in all_memory_alerts
             if alert["status"] == "active" and alert["alert_id"] not in seen_alert_ids
         ])
+        pre_dedupe_count = len(alert_responses)
+        pre_dedupe_active = len([
+            alert for alert in alert_responses
+            if alert.status == AlertStatusEnum.ACTIVE
+        ])
+        alert_responses = _dedupe_alert_responses(alert_responses)
+        post_dedupe_active = len([
+            alert for alert in alert_responses
+            if alert.status == AlertStatusEnum.ACTIVE
+        ])
+        total = max(len(alert_responses), total - (pre_dedupe_count - len(alert_responses)))
+        active_count = max(post_dedupe_active, active_count - (pre_dedupe_active - post_dedupe_active))
         
         return AlertListResponse(
             total=total,
@@ -220,6 +262,12 @@ async def get_alerts(
         alert_responses = []
         for a in memory_alerts:
             alert_responses.append(_memory_alert_to_response(a))
+        alert_responses = _dedupe_alert_responses(alert_responses)
+        total = len(alert_responses)
+        active_count = len([
+            alert for alert in alert_responses
+            if alert.status == AlertStatusEnum.ACTIVE
+        ])
         
         return AlertListResponse(
             total=total,

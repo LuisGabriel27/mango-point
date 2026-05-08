@@ -187,6 +187,7 @@ class ValidationReportGenerator:
             f"4. Weather source: {self._weather_note()}",
             "5. Monte Carlo ensemble used for risk estimation",
             "6. Confidence intervals use case-level bootstrap resampling",
+            f"7. Risk calibration: {self._calibration_note()}",
             "",
             "=" * 70,
         ])
@@ -225,12 +226,36 @@ class ValidationReportGenerator:
         else:
             source_text = "not recorded"
 
+        coverage = weather.get("coverage", {})
+        coverage_text = ""
+        if coverage:
+            ready = coverage.get("historical_ready_cases", 0)
+            total = coverage.get("total_cases", 0)
+            fallback = coverage.get("fallback_cases", 0)
+            coverage_text = (
+                f"; historical coverage {ready}/{total} cases, "
+                f"fallback {fallback}"
+            )
+
         if weather.get("historical_weather_csv"):
             return (
                 "historical hourly CSV where available; seasonal synthetic "
-                f"profile fallback. Sources: {source_text}"
+                f"profile fallback. Sources: {source_text}{coverage_text}"
             )
-        return f"seasonal synthetic profiles. Sources: {source_text}"
+        return f"seasonal synthetic profiles. Sources: {source_text}{coverage_text}"
+
+    def _calibration_note(self) -> str:
+        """Describe risk-score calibration from report metadata."""
+        calibration = self.metadata.get("calibration", {})
+        if not calibration.get("enabled"):
+            return "not applied"
+
+        curve_count = len(calibration.get("curves", {}))
+        return (
+            f"{calibration.get('method', 'calibration')} fit on "
+            f"{calibration.get('source_split', 'calibration')} "
+            f"({curve_count} pest curve(s))"
+        )
     
     def _generate_interpretation(self) -> str:
         """Generate interpretation text based on metrics."""

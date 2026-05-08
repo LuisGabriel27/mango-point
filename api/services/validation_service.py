@@ -70,6 +70,9 @@ class ValidationService:
         max_cases: Optional[int] = None,
         pest_types: Optional[List[str]] = None,
         years: Optional[List[int]] = None,
+        split_year: Optional[int] = None,
+        test_years: Optional[List[int]] = None,
+        calibrate: bool = False,
         hours: int = 48,
         monte_carlo_runs: int = 30,
         seed: int = 42,
@@ -85,6 +88,12 @@ class ValidationService:
             Filter by pest type ('cecid', 'fruitfly')
         years : list[int], optional
             Filter by years
+        split_year : int, optional
+            Use years before this as calibration and this year or later as testing
+        test_years : list[int], optional
+            Explicit years reserved for testing
+        calibrate : bool
+            Fit pest-specific risk calibration before computing metrics
         hours : int
             Simulation duration per case
         monte_carlo_runs : int
@@ -103,22 +112,56 @@ class ValidationService:
         
         # Create and run validation
         runner = self._ValidationRunner(seed=seed)
-        results = runner.run_full_validation(
+        runner.data_loader.load()
+        cases = runner.generate_validation_cases(
             max_cases=max_cases,
             pest_types=pest_types,
             years=years,
+        )
+        split_groups = runner.assign_case_splits(
+            cases,
+            split_year=split_year,
+            test_years=test_years,
+        )
+        weather_coverage = runner.weather_generator.summarize_case_coverage(
+            cases,
+            hours=hours,
+        )
+        results = runner.run_validation(
+            cases=cases,
             hours=hours,
             monte_carlo_runs=monte_carlo_runs,
         )
+
+        calibration = None
+        calibration_error = None
+        if calibrate:
+            try:
+                calibration = runner.fit_calibration(
+                    split="calibration" if (split_year or test_years) else None,
+                )
+                results = runner.apply_calibration(calibration)
+            except ValueError as exc:
+                calibration_error = str(exc)
         
         # Compute metrics
         metrics = runner.compute_metrics()
+        split_metrics = {}
+        if split_year or test_years:
+            split_metrics = {
+                split: metric.to_dict()
+                for split, metric in runner.compute_split_metrics().items()
+            }
         classification = _round_mapping(metrics.classification.to_dict())
         regression = _round_mapping(metrics.regression.to_dict())
         confusion_matrix = metrics.classification.confusion_matrix
         
         completed_at = utcnow_naive()
         duration = (completed_at - started_at).total_seconds()
+        weather_source_counts: Dict[str, int] = {}
+        for result in results:
+            source = result.weather_stats.get("source", "unknown")
+            weather_source_counts[source] = weather_source_counts.get(source, 0) + 1
         
         # Format response
         return {
@@ -148,6 +191,33 @@ class ValidationService:
                 _round_mapping(metrics.cecid_fly_metrics.to_dict())
                 if metrics.cecid_fly_metrics else None
             ),
+            "split": {
+                "strategy": (
+                    "explicit_test_years" if test_years
+                    else "split_year" if split_year
+                    else "evaluation_only"
+                ),
+                "split_year": split_year,
+                "test_years": test_years,
+                "counts": {
+                    split: len(split_cases)
+                    for split, split_cases in split_groups.items()
+                },
+            },
+            "split_metrics": split_metrics,
+            "calibration": (
+                calibration.to_dict()
+                if calibration
+                else {
+                    "enabled": False,
+                    "requested": calibrate,
+                    "reason": calibration_error,
+                }
+            ),
+            "weather": {
+                "source_counts": weather_source_counts,
+                "coverage": weather_coverage,
+            },
             "results": [
                 {
                     "case_id": r.case.case_id,
@@ -166,6 +236,13 @@ class ValidationService:
                         4,
                     ),
                     "predicted_risk": round(r.predicted_risk, 4),
+                    "raw_predicted_risk": (
+                        round(r.raw_predicted_risk, 4)
+                        if r.raw_predicted_risk is not None
+                        else None
+                    ),
+                    "raw_predicted_level": r.raw_predicted_level,
+                    "calibration_applied": r.calibration_applied,
                 }
                 for r in results
             ],

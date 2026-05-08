@@ -371,6 +371,7 @@ class ComparisonReportGenerator:
             "  - Monte Carlo ensemble: 30 runs per scenario",
             f"  - Weather: {self._weather_methodology_note()}",
             f"  - Validation split: {self._split_methodology_note()}",
+            f"  - Risk calibration: {self._calibration_methodology_note()}",
             "  - Grid: 20x20 cells (0.25 hectares)",
             "  - Duration: 48 hours per validation case",
             "",
@@ -393,7 +394,7 @@ class ComparisonReportGenerator:
             "Validation Limits:",
             "  - BPI pest observations are monthly aggregates, not tree-level forecasts.",
             "  - Synthetic weather validates plausibility more than true forecasting accuracy.",
-            "  - Holdout split metrics do not auto-fit or recalibrate model parameters.",
+            "  - When enabled, calibration aligns validation scores to BPI observations; it does not prove future field accuracy.",
             "",
             "=" * 75,
             "END OF REPORT",
@@ -427,6 +428,10 @@ class ComparisonReportGenerator:
                 "actual_level": result.case.actual_level,
                 "predicted_risk": result.predicted_risk,
                 "predicted_level": result.predicted_level,
+                "raw_predicted_risk": result.raw_predicted_risk,
+                "raw_predicted_level": result.raw_predicted_level,
+                "calibration_applied": result.calibration_applied,
+                "calibration_method": result.calibration_method,
                 "match": result.match,
                 "error": result.error,
                 "peak_risk": result.peak_risk,
@@ -533,14 +538,25 @@ class ComparisonReportGenerator:
         else:
             source_text = "source not recorded"
 
+        coverage = weather_meta.get("coverage", {})
+        coverage_text = ""
+        if coverage:
+            ready = coverage.get("historical_ready_cases", 0)
+            total = coverage.get("total_cases", 0)
+            fallback = coverage.get("fallback_cases", 0)
+            coverage_text = (
+                f"; historical coverage {ready}/{total} cases, "
+                f"fallback {fallback}"
+            )
+
         if weather_meta.get("historical_weather_csv"):
             return (
                 "hourly historical CSV where sufficient rows exist; "
-                f"otherwise seasonal synthetic profiles. Sources: {source_text}"
+                f"otherwise seasonal synthetic profiles. Sources: {source_text}{coverage_text}"
             )
         return (
             "seasonally calibrated synthetic profiles; no hourly historical "
-            f"weather CSV supplied. Sources: {source_text}"
+            f"weather CSV supplied. Sources: {source_text}{coverage_text}"
         )
 
     def _split_methodology_note(self) -> str:
@@ -555,6 +571,25 @@ class ComparisonReportGenerator:
                 f"{split_meta.get('testing', 'testing')}"
             )
         return "no holdout split requested"
+
+    def _calibration_methodology_note(self) -> str:
+        """Describe risk-score calibration used in this validation run."""
+        calibration_meta = self.metadata.get("calibration", {})
+        if not calibration_meta.get("enabled"):
+            return "not applied"
+
+        curves = calibration_meta.get("curves", {})
+        curve_parts = []
+        for pest_type, curve in sorted(curves.items()):
+            curve_parts.append(
+                f"{pest_type} n={curve.get('n_cases', 0)} "
+                f"MAE {curve.get('mae_before', 0.0):.3f}->{curve.get('mae_after', 0.0):.3f}"
+            )
+        curve_text = "; ".join(curve_parts) if curve_parts else "no pest curves"
+        return (
+            f"{calibration_meta.get('method', 'calibration')} fit on "
+            f"{calibration_meta.get('source_split', 'calibration')} ({curve_text})"
+        )
     
     # ── Export Methods ──────────────────────────────────────────
     
@@ -636,6 +671,16 @@ class ComparisonReportGenerator:
                 "metric": f"{metric_name}_upper",
                 "value": interval["upper"],
             })
+
+        calibration_meta = self.metadata.get("calibration", {})
+        if calibration_meta.get("enabled"):
+            for pest_type, curve in calibration_meta.get("curves", {}).items():
+                for metric_name in ("scale", "intercept", "mae_before", "mae_after", "n_cases"):
+                    rows.append({
+                        "category": f"calibration_{pest_type}",
+                        "metric": metric_name,
+                        "value": curve.get(metric_name),
+                    })
         
         # Trend analysis
         for pest_type, comparison in trend_comparisons.items():

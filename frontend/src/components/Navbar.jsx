@@ -25,7 +25,7 @@ export default function Navbar({ alertCount = 0, activeTab, onTabChange }) {
   return (
     <nav className="main-navbar">
       <a className="navbar-brand" href="/">
-        <img src="https://img.icons8.com/color/48/mango.png" height="24" alt="" />
+        <img src="/mangopoint.png" className="navbar-logo" alt="MangoPoint" />
         <span>MangoPoint</span>
       </a>
 

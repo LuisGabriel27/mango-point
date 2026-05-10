@@ -39,7 +39,10 @@ export default function LoginPage() {
           <div className="col-12 col-lg-6 mb-4 mb-lg-0">
             <div className="login-hero-panel">
               <span className="badge login-badge mb-3">Secure Access</span>
-              <h1 className="login-hero-title">MangoPoint</h1>
+              <div className="d-flex align-items-center gap-0 mb-2">
+                <img src="/mangopoint.png" alt="MangoPoint" className="login-logo" />
+                <h1 className="login-hero-title mb-0">MangoPoint</h1>
+              </div>
               <p className="login-hero-copy">
                 Sign in to unlock the existing simulation, monitoring, GIS, and validation tools.
               </p>

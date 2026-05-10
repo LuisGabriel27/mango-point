@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -m pytest tests/test_tree_graph.py -v --tb=short)",
       "Bash(python -m pytest tests/test_grid_stability.py -v --tb=short)",
-      "Bash(grep -E \"\\\\.\\(py|html|css|js\\)$\")"
+      "Bash(grep -E \"\\\\.\\(py|html|css|js\\)$\")",
+      "Bash(copy \"c:\\\\Users\\\\luisg\\\\Desktop\\\\johan\\\\capstone\\\\mangopoint-react\\\\frontend\\\\mangopoint.png\" \"c:\\\\Users\\\\luisg\\\\Desktop\\\\johan\\\\capstone\\\\mangopoint-react\\\\frontend\\\\public\\\\mangopoint.png\")"
     ]
   }
 }

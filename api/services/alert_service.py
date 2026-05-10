@@ -54,6 +54,7 @@ class AlertService:
             "centroid_lon": alert_data.centroid_lon,
             "centroid_lat": alert_data.centroid_lat,
             "recommended_actions": alert_data.recommended_actions or [],
+            "suggested_simulation_params": alert_data.suggested_simulation_params,
             "action_status": (
                 alert_data.action_status.value
                 if hasattr(alert_data.action_status, "value")
@@ -161,7 +162,7 @@ class AlertService:
         orchard_id = str(get_value("orchard_id") or "").strip().lower()
         zone_name = str(get_value("zone_name") or "").strip().lower()
         message = str(get_value("message") or "").strip().lower()
-        alert_kind = "condition" if "gate condition" in zone_name else "risk"
+        alert_kind = "condition" if ("gate condition" in zone_name or "weather forecast" in zone_name) else "risk"
 
         tree_ids = tuple(sorted(
             str(tree_id)
@@ -482,6 +483,153 @@ class AlertService:
 
         return [alert]
 
+    def check_weather_forecast_alerts(
+        self,
+        forecast: List[Dict[str, Any]],
+        orchard_id: str,
+        lat: float,
+        lon: float,
+        orchard_stage: Optional[str] = None,
+        monitored_pest_types: Optional[List[str]] = None,
+    ) -> List["AlertCreate"]:
+        """
+        Analyze a 48-hour weather forecast for upcoming rain events and return
+        pre-emptive pest alerts with suggested simulation parameters attached.
+
+        Rain is the primary environmental trigger for both Cecid Fly (fruitlet
+        stage) and Fruit Fly (mature stage). When rain is forecast, this method
+        creates condition-style alerts so growers can run an informed simulation
+        before the rain arrives rather than reacting after the fact.
+
+        Parameters
+        ----------
+        forecast : list[dict]
+            Hourly forecast from ``weather_service.get_forecast()``.
+        orchard_id : str
+            Identifier of the orchard.
+        lat, lon : float
+            Orchard coordinates (used as alert centroid).
+        orchard_stage : str, optional
+            Current phenological stage.  When supplied, only alerts for pests
+            that are active at this stage are generated.
+        monitored_pest_types : list[str], optional
+            Pests to evaluate; defaults to ["cecid", "fruitfly"].
+        """
+        RAIN_MM_THRESHOLD = 0.5  # mm/h minimum to flag as a rain event
+
+        rain_hours = [
+            f for f in forecast
+            if float(f.get("rainfall_mm", 0) or 0) >= RAIN_MM_THRESHOLD
+        ]
+        if not rain_hours:
+            return []
+
+        peak_rain = max(float(f.get("rainfall_mm", 0) or 0) for f in rain_hours)
+        total_rain_hours = len(rain_hours)
+        cumulative_rain = sum(float(f.get("rainfall_mm", 0) or 0) for f in rain_hours)
+        first_dt = rain_hours[0].get("datetime", "soon")
+
+        if peak_rain >= 10.0 or total_rain_hours >= 12:
+            severity = AlertSeverityEnum.HIGH
+        elif peak_rain >= 3.0 or total_rain_hours >= 4:
+            severity = AlertSeverityEnum.MEDIUM
+        else:
+            severity = AlertSeverityEnum.LOW
+
+        # Higher neighbor pressure when rain is widespread (≥ 20 mm total)
+        neighbor_threat_value = round(0.3 if cumulative_rain >= 20.0 else 0.1, 1)
+
+        pest_types = monitored_pest_types or ["cecid", "fruitfly"]
+
+        # Stage-gating: filter to pests that are active at the current stage
+        stage_pest_map: Dict[str, List[str]] = {
+            "fruitlet": ["cecid"],
+            "mature": ["fruitfly"],
+            "dormant": [],
+            "flowering": [],
+        }
+        if orchard_stage and orchard_stage in stage_pest_map:
+            relevant_pests = [p for p in pest_types if p in stage_pest_map[orchard_stage]]
+            if not relevant_pests:
+                return []
+        else:
+            relevant_pests = pest_types
+
+        hours_word = "hour" if total_rain_hours == 1 else "hours"
+        alerts = []
+
+        for pest in relevant_pests:
+            pest_lower = str(pest).strip().lower().replace("-", "_")
+            pest_label = self._pest_label(pest)
+            is_cecid = "cecid" in pest_lower
+
+            if is_cecid:
+                suggested_stage = orchard_stage if orchard_stage == "fruitlet" else "fruitlet"
+                suggested_days = 30
+                prefix_rain = round(min(cumulative_rain, 24.0), 1)
+                stage_note = (
+                    "Cecid fly infestations peak 1–3 days after rainfall on fruitlet-stage trees."
+                )
+            else:
+                suggested_stage = orchard_stage if orchard_stage == "mature" else "mature"
+                suggested_days = 80
+                prefix_rain = 0.0
+                stage_note = (
+                    "Fruit fly activity intensifies during warm, humid post-rain conditions near harvest."
+                )
+
+            suggested_params: Dict[str, Any] = {
+                "pest_type": "cecid" if is_cecid else "fruitfly",
+                "orchard_stage": suggested_stage,
+                "hours": min(48, len(forecast)),
+                "days_since_flowering": suggested_days,
+                "neighbor_threat": neighbor_threat_value,
+                "manual_weather_prefix_rain": prefix_rain,
+                "_rain_summary": (
+                    f"Rain forecast: {total_rain_hours} {hours_word} of rainfall in the next 48 h "
+                    f"(peak {peak_rain:.1f} mm/h). Parameters pre-configured for {pest_label} risk."
+                ),
+            }
+
+            message = (
+                f"Rain forecast for the next 48 hours: {total_rain_hours} {hours_word} of rainfall "
+                f"(peak {peak_rain:.1f} mm/h), first expected around {first_dt}. "
+                f"{stage_note} "
+                f"Simulation parameters have been pre-configured — run a forecast now to assess "
+                f"orchard '{orchard_id}' risk before the rain arrives."
+            )
+
+            alert = AlertCreate(
+                alert_id=f"alert_wx_{pest_lower[:6]}_{uuid.uuid4().hex[:10]}",
+                simulation_run_id=None,
+                severity=severity,
+                risk_value=round(min(peak_rain / 25.0, 1.0), 4),
+                affected_cells=[],
+                affected_tree_ids=[],
+                orchard_id=orchard_id,
+                zone_name=f"{pest_label} weather forecast",
+                message=message,
+                centroid_lat=lat,
+                centroid_lon=lon,
+                recommended_actions=self._recommended_actions(
+                    alert_kind="condition",
+                    pest_type=pest,
+                ),
+                suggested_simulation_params=suggested_params,
+            )
+            alerts.append(alert)
+
+            logger.info(
+                "Weather forecast alert generated: %s, %d %s of rain (peak %.1f mm/h) for %s",
+                pest_label,
+                total_rain_hours,
+                hours_word,
+                peak_rain,
+                orchard_id,
+            )
+
+        return alerts
+
     def _classify_severity(
         self,
         max_risk: float,
@@ -673,6 +821,7 @@ class AlertService:
             centroid_lon=alert_data.centroid_lon,
             centroid_lat=alert_data.centroid_lat,
             recommended_actions=alert_data.recommended_actions or [],
+            suggested_simulation_params=alert_data.suggested_simulation_params,
             action_status=(
                 alert_data.action_status.value
                 if hasattr(alert_data.action_status, "value")
@@ -683,7 +832,7 @@ class AlertService:
             action_due_at=alert_data.action_due_at,
             action_completed_at=alert_data.action_completed_at,
         )
-        
+
         db.add(alert)
         await db.flush()
         

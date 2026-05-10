@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
+import MpSelect from '../MpSelect'
 import api, { apiErrorMessage } from '../../api'
 
 const STAGE_OPTIONS = [
@@ -29,6 +30,37 @@ const DEFAULTS = {
   pesticide_cost_per_ha: 0,
 }
 
+// Sensitivity presets — maps plain-language choice to biological gate params
+const SENSITIVITY_PRESETS = {
+  cautious: {
+    label: 'Cautious',
+    icon: 'shield-check',
+    description: 'Pest spreads only under strong trigger conditions. Use when recent scouting shows low activity.',
+    cecid_rainfall_threshold_mm: 8.0,
+    cecid_base_dispersal_prob: 0.08,
+    fruit_fly_temp_threshold_c: 28.0,
+    fruit_fly_base_dispersal_prob: 0.05,
+  },
+  standard: {
+    label: 'Standard',
+    icon: 'bullseye',
+    description: 'Based on 2022–2025 Iloilo orchard data. Best default for most situations.',
+    cecid_rainfall_threshold_mm: null,
+    cecid_base_dispersal_prob: null,
+    fruit_fly_temp_threshold_c: null,
+    fruit_fly_base_dispersal_prob: null,
+  },
+  sensitive: {
+    label: 'Sensitive',
+    icon: 'exclamation-triangle',
+    description: 'Pest spreads under mild conditions. Use for early-season monitoring or when activity is already high.',
+    cecid_rainfall_threshold_mm: 2.0,
+    cecid_base_dispersal_prob: 0.18,
+    fruit_fly_temp_threshold_c: 22.0,
+    fruit_fly_base_dispersal_prob: 0.13,
+  },
+}
+
 function manualWeatherPayload(weather) {
   if (!weather) return null
 
@@ -45,6 +77,24 @@ function SectionLabel({ iconName, text }) {
     <div className="section-label">
       <i className={`bi bi-${iconName} me-1`} />
       <span>{text}</span>
+    </div>
+  )
+}
+
+function BtnGroup({ options, value, onChange, small = false }) {
+  return (
+    <div className={`sim-btn-group${small ? ' sim-btn-group-sm' : ''}`}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          className={`sim-btn-group-item${value === o.value ? ' active' : ''}`}
+          onClick={() => onChange(o.value)}
+        >
+          {o.icon && <i className={`bi bi-${o.icon} me-1`} />}
+          {o.label}
+        </button>
+      ))}
     </div>
   )
 }
@@ -75,6 +125,8 @@ export default function SimulationCard({
   onSimulationComplete,
   manualWeather,
   weatherOverrideActive,
+  suggestedParams,
+  onClearSuggested,
 }) {
   const [simMode, setSimMode] = useState('grid')
   const [pestType, setPestType] = useState('fruitfly')
@@ -92,6 +144,24 @@ export default function SimulationCard({
   const [impact, setImpact] = useState(DEFAULTS)
   const [running, setRunning] = useState(false)
   const [status, setStatus] = useState(null)
+  const [prefixRain, setPrefixRain] = useState(null)
+
+  // Calibration overrides
+  const [showCalibration, setShowCalibration] = useState(false)
+  const [useObsSeeds, setUseObsSeeds] = useState(false)
+  const [obsLookbackDays, setObsLookbackDays] = useState(30)
+  const [sensitivity, setSensitivity] = useState('standard')
+
+  // Apply suggested params from a weather forecast alert
+  useEffect(() => {
+    if (!suggestedParams) return
+    if (suggestedParams.pest_type) setPestType(suggestedParams.pest_type)
+    if (suggestedParams.orchard_stage) setOrchardStage(suggestedParams.orchard_stage)
+    if (suggestedParams.hours) setSimHours(String(suggestedParams.hours))
+    if (suggestedParams.days_since_flowering != null) setDaysFlowering(suggestedParams.days_since_flowering)
+    if (suggestedParams.neighbor_threat != null) setNeighborThreat(suggestedParams.neighbor_threat)
+    setPrefixRain(suggestedParams.manual_weather_prefix_rain ?? null)
+  }, [suggestedParams])
 
   const setImpactField = (k, v) => setImpact((p) => ({ ...p, [k]: v }))
   const setQStage = (q, v) => setQuadrantStages((p) => ({ ...p, [q]: v }))
@@ -138,14 +208,37 @@ export default function SimulationCard({
         body.manual_weather = manualWeatherPayload(manualWeather)
       }
 
+      if (prefixRain != null && prefixRain > 0) {
+        body.manual_weather_prefix_rain = prefixRain
+      }
+
       if (treeOverrides && Object.keys(treeOverrides).length > 0) {
         body.tree_overrides = treeOverrides
+      }
+
+      // Calibration overrides
+      if (useObsSeeds) {
+        body.use_observations_as_seeds = true
+        body.observations_lookback_days = obsLookbackDays
+      }
+      const preset = SENSITIVITY_PRESETS[sensitivity]
+      if (preset) {
+        if (preset.cecid_rainfall_threshold_mm != null) body.cecid_rainfall_threshold_mm = preset.cecid_rainfall_threshold_mm
+        if (preset.cecid_base_dispersal_prob != null) body.cecid_base_dispersal_prob = preset.cecid_base_dispersal_prob
+        if (preset.fruit_fly_temp_threshold_c != null) body.fruit_fly_temp_threshold_c = preset.fruit_fly_temp_threshold_c
+        if (preset.fruit_fly_base_dispersal_prob != null) body.fruit_fly_base_dispersal_prob = preset.fruit_fly_base_dispersal_prob
       }
 
       const res = await api.runSimulation(body)
       const peakPct = res.data.peak_risk != null ? `${(res.data.peak_risk * 100).toFixed(0)}%` : '—'
       const nInfested = res.data.n_infested_final ?? 0
-      setStatus({ type: 'success', msg: `Done — peak risk: ${peakPct}, ${nInfested} infested` })
+      const weatherSrc = weatherOverrideActive ? 'manual weather' : 'live forecast'
+      const seedNote = useObsSeeds ? 'field observations' : 'auto seed'
+      const sensitivityLabel = SENSITIVITY_PRESETS[sensitivity]?.label ?? 'Standard'
+      setStatus({
+        type: 'success',
+        msg: `Done — peak risk: ${peakPct}, ${nInfested} infested · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
+      })
       onSimulationComplete?.(res.data)
     } catch (err) {
       const msg = apiErrorMessage(err, 'Simulation failed.')
@@ -155,13 +248,37 @@ export default function SimulationCard({
     }
   }
 
+  const handleClearSuggested = () => {
+    setPrefixRain(null)
+    onClearSuggested?.()
+  }
+
   return (
     <CollapsibleCard iconName="cpu" title="Simulation">
+      {suggestedParams?._rain_summary && (
+        <div
+          className="alert alert-primary py-2 px-2 mb-2 d-flex align-items-start gap-2"
+          style={{ fontSize: '.78rem' }}
+        >
+          <i className="bi bi-cloud-rain-fill flex-shrink-0 mt-1" />
+          <span className="flex-grow-1">{suggestedParams._rain_summary}</span>
+          <button
+            type="button"
+            className="btn-close flex-shrink-0"
+            style={{ fontSize: '.6rem' }}
+            onClick={handleClearSuggested}
+          />
+        </div>
+      )}
       <SectionLabel iconName="diagram-3" text="Spread Model" />
-      <select className="form-select mb-1" value={simMode} onChange={(e) => setSimMode(e.target.value)}>
-        <option value="grid">Grid - Cellular Automata (baseline)</option>
-        <option value="tree_graph">Tree Graph - Crown-aware model</option>
-      </select>
+      <BtnGroup
+        value={simMode}
+        onChange={setSimMode}
+        options={[
+          { value: 'grid', label: 'Grid (CA)', icon: 'grid' },
+          { value: 'tree_graph', label: 'Tree Graph', icon: 'diagram-3' },
+        ]}
+      />
       {simMode === 'tree_graph' && (
         <div className="alert alert-info py-1 px-2 mt-1 mb-0" style={{ fontSize: '.78rem' }}>
           <i className="bi bi-info-circle me-1" />
@@ -170,30 +287,32 @@ export default function SimulationCard({
       )}
 
       <SectionLabel iconName="bug" text="Pest & Phenology" />
-      <div className="row g-2 mb-1">
-        <div className="col-6">
-          <label className="small fw-medium mb-1 d-block"><i className="bi bi-bug me-1" />Pest</label>
-          <select className="form-select form-select-sm" value={pestType} onChange={(e) => setPestType(e.target.value)}>
-            <option value="cecid">Cecid Fly</option>
-            <option value="fruitfly">Fruit Fly</option>
-          </select>
-        </div>
-        <div className="col-6">
-          <label className="small fw-medium mb-1 d-block"><i className="bi bi-flower1 me-1" />Stage</label>
-          <select className="form-select form-select-sm" value={orchardStage} onChange={(e) => setOrchardStage(e.target.value)}>
-            {STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-      </div>
-      <small className="text-muted d-block mb-2">Fruitlet activates Cecid Fly · Mature activates Fruit Fly</small>
+      <label className="small fw-medium mb-1 d-block"><i className="bi bi-bug me-1" />Pest</label>
+      <BtnGroup
+        value={pestType}
+        onChange={setPestType}
+        options={[
+          { value: 'cecid', label: 'Cecid Fly', icon: 'droplet' },
+          { value: 'fruitfly', label: 'Fruit Fly', icon: 'bug' },
+        ]}
+      />
+      <label className="small fw-medium mb-1 d-block mt-2"><i className="bi bi-flower1 me-1" />Orchard Stage</label>
+      <BtnGroup
+        value={orchardStage}
+        onChange={setOrchardStage}
+        options={STAGE_OPTIONS}
+        small
+      />
+      <small className="text-muted d-block mb-2 mt-1">Fruitlet activates Cecid Fly · Mature activates Fruit Fly</small>
 
-      <div className="form-check form-switch mb-1">
-        <input className="form-check-input" type="checkbox" role="switch" id="quadrant-mode"
+      <label className="sim-toggle-row mb-1" htmlFor="quadrant-mode">
+        <div className="sim-toggle-body">
+          <i className="bi bi-grid-3x3 sim-toggle-icon" />
+          <span className="sim-toggle-label">Different stage per quadrant</span>
+        </div>
+        <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="quadrant-mode"
           checked={quadrantMode} onChange={(e) => setQuadrantMode(e.target.checked)} />
-        <label className="form-check-label small" htmlFor="quadrant-mode">
-          Use different stages per orchard quadrant (NW / NE / SW / SE)
-        </label>
-      </div>
+      </label>
       {quadrantMode && (
         <div className="mb-2">
           <small className="text-muted d-block mb-2">Each quadrant has a dominant stage; 70% of trees follow it.</small>
@@ -201,10 +320,12 @@ export default function SimulationCard({
             {['nw','ne','sw','se'].map((q) => (
               <div className="col-6" key={q}>
                 <label className="small fw-medium mb-1 d-block">{q.toUpperCase()}</label>
-                <select className="form-select form-select-sm" value={quadrantStages[q]}
-                  onChange={(e) => setQStage(q, e.target.value)}>
-                  {STAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
+                <MpSelect
+                  value={quadrantStages[q]}
+                  onChange={(v) => setQStage(q, v)}
+                  options={STAGE_OPTIONS}
+                  small
+                />
               </div>
             ))}
           </div>
@@ -227,30 +348,42 @@ export default function SimulationCard({
       {neighborThreat > 0 && (
         <div className="mb-1">
           <label className="small fw-medium mb-1 d-block"><i className="bi bi-compass me-1" />Neighbor Direction</label>
-          <select className="form-select mb-1" value={neighborDir} onChange={(e) => setNeighborDir(e.target.value)}>
-            {DIR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          <div className="sim-btn-group sim-btn-group-sm">
+            {DIR_OPTIONS.map((o) => (
+              <button key={o.value} type="button"
+                className={`sim-btn-group-item${neighborDir === o.value ? ' active' : ''}`}
+                onClick={() => setNeighborDir(o.value)}>
+                {o.value}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       <small className="text-muted d-block mb-0">Pressure from unmanaged orchards (historical ~2× higher CPTD).</small>
 
       <SectionLabel iconName="shield-plus" text="Treatment Scenario" />
-      <div className="form-check form-switch mb-1">
-        <input className="form-check-input" type="checkbox" role="switch" id="treatment-enabled"
+      <label className="sim-toggle-row mb-1" htmlFor="treatment-enabled">
+        <div className="sim-toggle-body">
+          <i className="bi bi-shield-plus sim-toggle-icon" />
+          <span className="sim-toggle-label">Include orchard treatment</span>
+        </div>
+        <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="treatment-enabled"
           checked={treatmentEnabled} onChange={(e) => setTreatmentEnabled(e.target.checked)} />
-        <label className="form-check-label fw-medium small" htmlFor="treatment-enabled">
-          Include orchard treatment in forecast
-        </label>
-      </div>
+      </label>
       {treatmentEnabled && (
         <div>
           <label className="small fw-medium mb-1 d-block"><i className="bi bi-capsule me-1" />Treatment type</label>
-          <select className="form-select form-select-sm mb-2" value={treatmentType} onChange={(e) => setTreatmentType(e.target.value)}>
-            <option value="protective_spray">Protective spray</option>
-            <option value="targeted_spray">Targeted spray</option>
-            <option value="sanitation">Sanitation</option>
-            <option value="combined">Combined action</option>
-          </select>
+          <BtnGroup
+            value={treatmentType}
+            onChange={setTreatmentType}
+            small
+            options={[
+              { value: 'protective_spray', label: 'Protective' },
+              { value: 'targeted_spray', label: 'Targeted' },
+              { value: 'sanitation', label: 'Sanitation' },
+              { value: 'combined', label: 'Combined' },
+            ]}
+          />
           <Slider id="treatment-efficacy" label="Effectiveness" iconName="activity"
             min={0} max={0.95} step={0.05} value={treatmentEfficacy}
             marks={[{label:'0%'},{label:'50%'},{label:'95%'}]}
@@ -260,20 +393,27 @@ export default function SimulationCard({
       )}
 
       <SectionLabel iconName="clock-history" text="Forecast Duration" />
-      <select className="form-select mb-0" value={simHours} onChange={(e) => setSimHours(e.target.value)}>
-        <option value="24">24 h - Short-range</option>
-        <option value="48">48 h - Standard</option>
-        <option value="72">72 h - Extended</option>
-        <option value="168">168 h - 7-day outlook</option>
-      </select>
+      <BtnGroup
+        value={simHours}
+        onChange={setSimHours}
+        options={[
+          { value: '24', label: '24 h' },
+          { value: '48', label: '48 h' },
+          { value: '72', label: '72 h' },
+          { value: '168', label: '7 day' },
+        ]}
+      />
 
       {/* Impact assumptions */}
-      <div className="mt-3 mb-1">
-        <button type="button" className="btn btn-link btn-sm px-0 text-muted fw-medium"
-          onClick={() => setShowImpact((v) => !v)}>
-          <i className={`bi bi-chevron-${showImpact ? 'up' : 'down'} me-1`} />Impact Assumptions
-        </button>
-      </div>
+      <button
+        type="button"
+        className="sim-expandable-row mt-3"
+        onClick={() => setShowImpact((v) => !v)}
+      >
+        <i className="bi bi-cash-stack sim-expandable-icon" />
+        <span className="sim-expandable-label">Crop Impact Assumptions</span>
+        <i className={`bi bi-chevron-${showImpact ? 'up' : 'down'} sim-expandable-chevron`} />
+      </button>
       {showImpact && (
         <div>
           <div className="row g-2 mb-2">
@@ -303,6 +443,75 @@ export default function SimulationCard({
           <input type="number" className="form-control form-control-sm mb-1" min={0} step={50}
             value={impact.pesticide_cost_per_ha} onChange={(e) => setImpactField('pesticide_cost_per_ha', +e.target.value)} />
           <small className="text-muted d-block">Updates Crop Impact and Economic Impact estimates.</small>
+        </div>
+      )}
+
+      {/* Calibration panel */}
+      <button
+        type="button"
+        className="sim-expandable-row"
+        onClick={() => setShowCalibration((v) => !v)}
+      >
+        <i className="bi bi-sliders sim-expandable-icon" />
+        <span className="sim-expandable-label">Accuracy Settings</span>
+        <i className={`bi bi-chevron-${showCalibration ? 'up' : 'down'} sim-expandable-chevron`} />
+      </button>
+      {showCalibration && (
+        <div className="border rounded p-2 mb-2" style={{ fontSize: '.82rem' }}>
+
+          {/* Observation seeding */}
+          <label className="sim-toggle-row mb-1" htmlFor="obs-seeds">
+            <div className="sim-toggle-body">
+              <i className="bi bi-geo-alt sim-toggle-icon" />
+              <span className="sim-toggle-label">Start from field observations</span>
+            </div>
+            <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="obs-seeds"
+              checked={useObsSeeds} onChange={(e) => setUseObsSeeds(e.target.checked)} />
+          </label>
+          <small className="text-muted d-block mb-2">
+            Uses scout reports as the starting point instead of a random guess.
+          </small>
+          {useObsSeeds && (
+            <div className="mb-3 ms-1">
+              <label className="small mb-1 d-block">Include observations from the last:</label>
+              <div className="d-flex gap-2 flex-wrap">
+                {[7, 14, 30, 60].map((d) => (
+                  <button
+                    key={d} type="button"
+                    className={`btn btn-sm py-0 ${obsLookbackDays === d ? 'btn-primary' : 'btn-outline-secondary'}`}
+                    onClick={() => setObsLookbackDays(d)}
+                  >
+                    {d === 7 ? '1 week' : d === 14 ? '2 weeks' : d === 30 ? '1 month' : '2 months'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sensitivity preset */}
+          <div className="fw-medium small mb-1">
+            <i className="bi bi-activity me-1" />How cautious should the forecast be?
+          </div>
+          <div className="d-flex flex-column gap-1 mb-2">
+            {Object.entries(SENSITIVITY_PRESETS).map(([key, preset]) => (
+              <button
+                key={key} type="button"
+                className={`btn btn-sm text-start py-1 px-2 ${sensitivity === key ? 'btn-primary' : 'btn-outline-secondary'}`}
+                onClick={() => setSensitivity(key)}
+              >
+                <i className={`bi bi-${preset.icon} me-1`} />
+                <strong>{preset.label}</strong>
+                <span className="ms-1 fw-normal" style={{ fontSize: '.75rem', opacity: 0.85 }}>— {preset.description}</span>
+              </button>
+            ))}
+          </div>
+
+          {treeOverrides && Object.values(treeOverrides).filter(v => v === 'infected').length > 0 && (
+            <div className="text-muted" style={{ fontSize: '.76rem' }}>
+              <i className="bi bi-exclamation-circle me-1 text-danger" />
+              {Object.values(treeOverrides).filter(v => v === 'infected').length} tree(s) marked infected on map will also be used.
+            </div>
+          )}
         </div>
       )}
 

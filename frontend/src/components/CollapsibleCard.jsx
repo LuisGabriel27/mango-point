@@ -13,18 +13,20 @@ export default function CollapsibleCard({
 
   return (
     <div className={`sidebar-section ${cardClass}`} style={cardStyle}>
-      <div className="sidebar-section-header" onClick={() => setOpen((o) => !o)}>
-        {iconName && <i className={`bi bi-${iconName} sidebar-section-icon`} />}
+      <div
+        className={`sidebar-section-header${open ? ' is-open' : ''}`}
+        onClick={() => setOpen((o) => !o)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === 'Enter' && setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <div className="sidebar-section-icon-wrap">
+          {iconName && <i className={`bi bi-${iconName} sidebar-section-icon`} />}
+        </div>
         <span className="sidebar-section-title">{title}</span>
         {headerExtra && <span className="sidebar-section-extra">{headerExtra}</span>}
-        <button
-          type="button"
-          className="sidebar-section-toggle"
-          onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }}
-          aria-label={open ? 'Collapse' : 'Expand'}
-        >
-          {open ? '−' : '+'}
-        </button>
+        <i className={`bi bi-chevron-${open ? 'up' : 'down'} sidebar-section-chevron`} />
       </div>
       {open && <div className="sidebar-section-body">{children}</div>}
     </div>

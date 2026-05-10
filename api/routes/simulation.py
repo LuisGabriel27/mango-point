@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
 from ..models.schemas import SimulationRequest, SimulationResponse
-from db.models import Alert, AlertStatus, SimulationRun, PestType
+from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Pest
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
@@ -158,6 +158,7 @@ def _infer_weather_source(
 async def run_simulation(
     request: SimulationRequest,
     background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ) -> SimulationResponse:
     """
     Execute a pest dispersal simulation.
@@ -166,6 +167,10 @@ async def run_simulation(
     to model pest spread based on weather conditions.
     """
     try:
+        # Merge field observations into tree_overrides when requested
+        if request.use_observations_as_seeds:
+            request = await _apply_observation_seeds(request, db)
+
         # Fetch weather data
         logger.info(f"Fetching weather forecast for simulation")
         
@@ -259,6 +264,44 @@ async def run_simulation(
             status_code=500,
             detail=f"Simulation failed: {str(e)}",
         )
+
+
+async def _apply_observation_seeds(
+    request: SimulationRequest,
+    db: AsyncSession,
+) -> SimulationRequest:
+    """Query recent field observations and merge infected tree_ids into tree_overrides."""
+    from datetime import timedelta
+    from utils.datetime_utils import utcnow_naive
+
+    try:
+        cutoff = utcnow_naive() - timedelta(days=request.observations_lookback_days)
+        result = await db.execute(
+            select(InfestationRecord).where(
+                InfestationRecord.infected_status == True,
+                InfestationRecord.simulation_id.is_(None),
+                InfestationRecord.record_date >= cutoff,
+            )
+        )
+        records = result.scalars().all()
+        if not records:
+            return request
+
+        observed_tree_ids = {str(r.tree_id) for r in records}
+        existing_overrides = dict(request.tree_overrides or {})
+        for tid in observed_tree_ids:
+            if tid not in existing_overrides:
+                existing_overrides[tid] = "infected"
+
+        logger.info(
+            "Seeded %d tree(s) from field observations (lookback %d days)",
+            len(observed_tree_ids),
+            request.observations_lookback_days,
+        )
+        return request.model_copy(update={"tree_overrides": existing_overrides})
+    except Exception as e:
+        logger.warning("Could not load observation seeds: %s", e)
+        return request
 
 
 def _build_manual_weather(overrides: dict, hours: int) -> list:

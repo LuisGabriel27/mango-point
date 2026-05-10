@@ -233,23 +233,35 @@ class DispersalGate:
 class CecidFlyGate(DispersalGate):
     """
     Mango Gall Midge – phenology-calibrated, rainfall-triggered emergence.
-    
+
     Based on 2022-2025 historical data:
     - Activity is episodic, not continuous
     - Emergence events cluster around late dry to early wet season transitions
     - Larvae emerge from soil after rainfall to infest newly formed fruitlets
-    
+
     Gate Requirements (ALL must be met):
     1. Orchard stage must be FRUITLET (post-flowering, young fruitlets forming)
     2. 24-hour accumulated rainfall must exceed threshold (soil moisture activation)
     3. Current timestep must show NO rainfall (emergence during drying period)
     4. Wind speed must be below threshold (weak fliers)
     5. Time must be crepuscular (dawn or dusk)
-    
+
     If any condition fails, gate remains FULLY CLOSED.
     """
 
     REQUIRED_STAGE = OrchardStage.FRUITLET
+
+    def __init__(
+        self,
+        rainfall_threshold_mm: Optional[float] = None,
+        wind_threshold_ms: Optional[float] = None,
+        base_dispersal_prob: Optional[float] = None,
+        distance_decay: Optional[float] = None,
+    ):
+        self.rainfall_threshold_mm = rainfall_threshold_mm if rainfall_threshold_mm is not None else CECID_RAINFALL_THRESHOLD_MM
+        self.wind_threshold_ms = wind_threshold_ms if wind_threshold_ms is not None else CECID_WIND_THRESHOLD_MS
+        self.base_dispersal_prob = base_dispersal_prob if base_dispersal_prob is not None else CECID_BASE_DISPERSAL_PROB
+        self.distance_decay = distance_decay if distance_decay is not None else CECID_DISTANCE_DECAY
 
     def is_open(
         self,
@@ -268,18 +280,18 @@ class CecidFlyGate(DispersalGate):
         # 2. Rainfall accumulation check: need sufficient soil moisture
         if rainfall_history is not None:
             accumulated_rain = sum(rainfall_history)
-            if accumulated_rain < CECID_RAINFALL_THRESHOLD_MM:
+            if accumulated_rain < self.rainfall_threshold_mm:
                 return False
         else:
             # No history available, default closed for safety
             return False
-        
+
         # 3. Current rainfall check: must be dry (emergence during drying)
         if CECID_NO_CURRENT_RAIN and rainfall_mm > 0.0:
             return False
-        
+
         # 4. Wind check: gate closes above threshold
-        if wind_speed_ms > CECID_WIND_THRESHOLD_MS:
+        if wind_speed_ms > self.wind_threshold_ms:
             return False
         
         # 5. Crepuscular behavior: dawn or dusk only
@@ -302,12 +314,12 @@ class CecidFlyGate(DispersalGate):
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
     ) -> None:
-        wind_factor = max(0.0, 1.0 - wind_speed_ms / (CECID_WIND_THRESHOLD_MS * 2))
+        wind_factor = max(0.0, 1.0 - wind_speed_ms / (self.wind_threshold_ms * 2))
         dispersal_factor = 0.5 + 0.5 * wind_factor
         rain_factor = 1.0
         if rainfall_history is not None:
             accumulated = sum(rainfall_history)
-            rain_factor = min(1.5, 1.0 + (accumulated - CECID_RAINFALL_THRESHOLD_MM) / 20.0)
+            rain_factor = min(1.5, 1.0 + (accumulated - self.rainfall_threshold_mm) / 20.0)
         source_factor = grid.get_source_treatment_factor(src_r, src_c)
         for dr, dc, dist in CECID_OFFSETS:
             tr, tc = src_r + dr, src_c + dc
@@ -316,7 +328,7 @@ class CecidFlyGate(DispersalGate):
             if grid.state[tr, tc] in (CellState.EMPTY, CellState.INFESTED, CellState.DEAD):
                 continue
 
-            prob = CECID_BASE_DISPERSAL_PROB * (CECID_DISTANCE_DECAY ** (dist - 1))
+            prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
             prob *= dispersal_factor * rain_factor
             prob *= source_factor
 
@@ -350,6 +362,18 @@ class FruitFlyGate(DispersalGate):
 
     REQUIRED_STAGE = OrchardStage.MATURE
 
+    def __init__(
+        self,
+        temp_threshold_c: Optional[float] = None,
+        base_dispersal_prob: Optional[float] = None,
+        distance_decay: Optional[float] = None,
+        wind_boost: Optional[float] = None,
+    ):
+        self.temp_threshold_c = temp_threshold_c if temp_threshold_c is not None else FRUIT_FLY_TEMP_THRESHOLD_C
+        self.base_dispersal_prob = base_dispersal_prob if base_dispersal_prob is not None else FRUIT_FLY_BASE_DISPERSAL_PROB
+        self.distance_decay = distance_decay if distance_decay is not None else FRUIT_FLY_DISTANCE_DECAY
+        self.wind_boost = wind_boost if wind_boost is not None else FRUIT_FLY_WIND_BOOST
+
     def is_open(
         self,
         hour: int,
@@ -370,7 +394,7 @@ class FruitFlyGate(DispersalGate):
             return False
         
         # 3. Temperature check
-        warm_enough = temperature_c >= FRUIT_FLY_TEMP_THRESHOLD_C
+        warm_enough = temperature_c >= self.temp_threshold_c
         if not warm_enough:
             return False
         
@@ -431,7 +455,7 @@ class FruitFlyGate(DispersalGate):
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
     ) -> None:
-        temp_factor = min(1.5, (temperature_c - FRUIT_FLY_TEMP_THRESHOLD_C) / 10.0 + 1.0)
+        temp_factor = min(1.5, (temperature_c - self.temp_threshold_c) / 10.0 + 1.0)
         sugar_factor = sugar_index / FRUIT_FLY_SUGAR_INDEX_MAX
         ripeness_factor = 0.5 + 1.0 * sugar_factor
         wind_neighbor_factor = grid.get_wind_neighbor_factor(wind_dir_deg)
@@ -443,14 +467,14 @@ class FruitFlyGate(DispersalGate):
             if grid.state[tr, tc] in (CellState.EMPTY, CellState.INFESTED, CellState.DEAD):
                 continue
 
-            prob = FRUIT_FLY_BASE_DISPERSAL_PROB * (FRUIT_FLY_DISTANCE_DECAY ** (dist - 1))
+            prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
 
             # Wind-direction bias: target_angle is precomputed for this offset.
             ang_diff = _angular_diff(wind_dir_deg, target_angle)
 
             # Boost when target is downwind (small angular difference)
             if ang_diff < 45:
-                prob += FRUIT_FLY_WIND_BOOST * (1.0 - ang_diff / 45.0)
+                prob += self.wind_boost * (1.0 - ang_diff / 45.0)
 
             # Temperature bonus (warmer -> more active)
             prob *= temp_factor
@@ -482,7 +506,7 @@ class FruitFlyGate(DispersalGate):
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
     ) -> None:
-        temp_factor = min(1.5, (temperature_c - FRUIT_FLY_TEMP_THRESHOLD_C) / 10.0 + 1.0)
+        temp_factor = min(1.5, (temperature_c - self.temp_threshold_c) / 10.0 + 1.0)
         sugar_factor = sugar_index / FRUIT_FLY_SUGAR_INDEX_MAX
         ripeness_factor = 0.5 + 1.0 * sugar_factor
         wind_neighbor_factor = grid.get_wind_neighbor_factor(wind_dir_deg)
@@ -495,11 +519,11 @@ class FruitFlyGate(DispersalGate):
                 continue
 
             source_factor = grid.get_source_treatment_factor(src_r, src_c)
-            prob = FRUIT_FLY_BASE_DISPERSAL_PROB * (FRUIT_FLY_DISTANCE_DECAY ** (dist - 1))
+            prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
 
             ang_diff = _angular_diff(wind_dir_deg, target_angle)
             if ang_diff < 45:
-                prob += FRUIT_FLY_WIND_BOOST * (1.0 - ang_diff / 45.0)
+                prob += self.wind_boost * (1.0 - ang_diff / 45.0)
 
             prob *= temp_factor
             prob *= ripeness_factor

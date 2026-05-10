@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import OrchardSwitcher from './cards/OrchardSwitcher'
 import WeatherCard from './cards/WeatherCard'
 import SimulationCard from './cards/SimulationCard'
@@ -28,6 +29,8 @@ export default function Sidebar({
   onAlertRefresh,
   decisionMetrics,
 }) {
+  const [suggestedSimParams, setSuggestedSimParams] = useState(null)
+
   return (
     <aside className="floating-right-sidebar" id="right-sidebar">
       <div className="sidebar-scroll-frame">
@@ -52,19 +55,23 @@ export default function Sidebar({
           onSimulationComplete={onSimulationComplete}
           manualWeather={manualWeather}
           weatherOverrideActive={weatherOverrideActive}
+          suggestedParams={suggestedSimParams}
+          onClearSuggested={() => setSuggestedSimParams(null)}
         />
         <PlaybackCard
           frames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
           onFrameSeek={onFrameSeek}
+          defaultOpen={false}
         />
         <AlertPanel
           alerts={alerts}
           loading={alertLoading}
           onRefresh={onAlertRefresh}
+          onApplySuggested={setSuggestedSimParams}
         />
-        <DecisionSupportCard metrics={decisionMetrics} />
-        <RiskLegendCard />
+        <DecisionSupportCard metrics={decisionMetrics} defaultOpen={false} />
+        <RiskLegendCard defaultOpen={false} />
       </div>
     </aside>
   )

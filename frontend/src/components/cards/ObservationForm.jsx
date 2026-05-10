@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
+import MpSelect from '../MpSelect'
 import api, { apiErrorMessage } from '../../api'
 
 export default function ObservationForm() {
@@ -40,10 +41,15 @@ export default function ObservationForm() {
         value={treeId} onChange={(e) => setTreeId(e.target.value)} />
 
       <label className="fw-medium mb-1 d-block small"><i className="bi bi-bug me-1" />Pest observed</label>
-      <select className="form-select mb-2" value={pest} onChange={(e) => setPest(e.target.value)}>
-        <option value="cecid">Cecid Fly</option>
-        <option value="fruitfly">Fruit Fly</option>
-      </select>
+      <MpSelect
+        value={pest}
+        onChange={setPest}
+        options={[
+          { value: 'cecid', label: 'Cecid Fly' },
+          { value: 'fruitfly', label: 'Fruit Fly' },
+        ]}
+        className="mb-2"
+      />
 
       <label className="fw-medium mb-1 d-block small"><i className="bi bi-speedometer2 me-1" />Severity (0–1)</label>
       <input type="range" className="form-range w-100 mb-1" min={0} max={1} step={0.1}

@@ -15,6 +15,10 @@ from core.config import (
     TG_WIND_BIAS,
     TG_MAX_NEIGHBOR_DIST_M,
     TG_DEFAULT_CROWN_RADIUS_M,
+    CECID_RAINFALL_THRESHOLD_MM,
+    CECID_BASE_DISPERSAL_PROB,
+    FRUIT_FLY_TEMP_THRESHOLD_C,
+    FRUIT_FLY_BASE_DISPERSAL_PROB,
 )
 
 
@@ -466,6 +470,41 @@ class SimulationRequest(BaseModel):
                     "rain already accumulated. Length is clipped to the engine's "
                     "history window (24 h).",
     )
+    # ── biological gate parameter overrides ──────────────────────
+    cecid_rainfall_threshold_mm: Optional[float] = Field(
+        default=None, ge=0.1, le=50.0,
+        description="Override cecid gate 24-h rainfall accumulation threshold (mm). "
+                    f"Default: {CECID_RAINFALL_THRESHOLD_MM}.",
+    )
+    cecid_base_dispersal_prob: Optional[float] = Field(
+        default=None, ge=0.01, le=0.50,
+        description="Override cecid per-cell base dispersal probability. "
+                    f"Default: {CECID_BASE_DISPERSAL_PROB}.",
+    )
+    fruit_fly_temp_threshold_c: Optional[float] = Field(
+        default=None, ge=15.0, le=40.0,
+        description="Override fruit fly gate temperature threshold (°C). "
+                    f"Default: {FRUIT_FLY_TEMP_THRESHOLD_C}.",
+    )
+    fruit_fly_base_dispersal_prob: Optional[float] = Field(
+        default=None, ge=0.01, le=0.50,
+        description="Override fruit fly per-cell base dispersal probability. "
+                    f"Default: {FRUIT_FLY_BASE_DISPERSAL_PROB}.",
+    )
+
+    # ── observation-based seeding ─────────────────────────────────
+    use_observations_as_seeds: bool = Field(
+        default=False,
+        description="When true, recent infestation observations for this orchard are "
+                    "merged into tree_overrides as infected sources before the simulation "
+                    "starts. Lets field data drive the initial infestation pattern.",
+    )
+    observations_lookback_days: int = Field(
+        default=30, ge=1, le=365,
+        description="How many calendar days back to look for infestation observations "
+                    "when use_observations_as_seeds=True.",
+    )
+
     debug_gates: bool = Field(
         default=False,
         description="If true, the response includes a `gate_diagnostics` array with "
@@ -709,6 +748,15 @@ class EvaluationResponse(BaseModel):
 # ═══════════════════════════════════════════════
 #  Alert Schemas
 # ═══════════════════════════════════════════════
+class WeatherForecastCheckRequest(BaseModel):
+    """Request body for POST /alerts/check-weather-forecast."""
+    orchard_id: str = Field(default="unknown", description="Orchard identifier")
+    lat: Optional[float] = Field(default=None, ge=-90, le=90, description="Latitude (defaults to server default)")
+    lon: Optional[float] = Field(default=None, ge=-180, le=180, description="Longitude (defaults to server default)")
+    orchard_stage: Optional[str] = Field(default=None, description="Current phenological stage of the orchard")
+    monitored_pest_types: Optional[List[str]] = Field(default=None, description="Pest types to check (defaults to both)")
+
+
 class AlertCreate(BaseModel):
     """Internal schema for creating alerts."""
     alert_id: str
@@ -728,6 +776,7 @@ class AlertCreate(BaseModel):
     action_notes: Optional[str] = None
     action_due_at: Optional[datetime] = None
     action_completed_at: Optional[datetime] = None
+    suggested_simulation_params: Optional[Dict[str, Any]] = None
 
 
 class AlertResponse(BaseModel):
@@ -755,6 +804,7 @@ class AlertResponse(BaseModel):
     action_notes: Optional[str] = None
     action_due_at: Optional[str] = None
     action_completed_at: Optional[str] = None
+    suggested_simulation_params: Optional[Dict[str, Any]] = None
 
 
 class AlertListResponse(BaseModel):

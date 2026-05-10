@@ -198,6 +198,7 @@ async def init_db():
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_notes TEXT;"))
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_due_at TIMESTAMP;"))
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_completed_at TIMESTAMP;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS suggested_simulation_params JSONB;"))
     logger.info("Database initialized successfully")
 
 

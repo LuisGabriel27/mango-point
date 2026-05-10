@@ -506,6 +506,9 @@ class Alert(Base):
     recommended_actions: Mapped[Optional[List[str]]] = mapped_column(
         JSON, nullable=True,
     )
+    suggested_simulation_params: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+    )
 
     # Notification tracking
     email_sent: Mapped[bool] = mapped_column(Boolean, default=False)

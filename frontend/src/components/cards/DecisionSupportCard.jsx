@@ -22,14 +22,14 @@ function priorityColor(p) {
   return 'success'
 }
 
-export default function DecisionSupportCard({ metrics }) {
+export default function DecisionSupportCard({ metrics, defaultOpen = true }) {
   if (!metrics) {
     return (
       <CollapsibleCard
         iconName="clipboard2-pulse"
-        title="Decision Support Summary"
+        title="Decision Support"
+        defaultOpen={defaultOpen}
         cardClass="decision-support-card"
-        headerExtra={<span className="badge bg-info rounded-pill">NEW</span>}
       >
         <div className="text-muted small">
           <i className="bi bi-info-circle me-1" />Run a simulation to generate decision support metrics.
@@ -45,10 +45,10 @@ export default function DecisionSupportCard({ metrics }) {
   return (
     <CollapsibleCard
       iconName="clipboard2-pulse"
-      title="Decision Support Summary"
+      title="Decision Support"
+      defaultOpen={defaultOpen}
       cardClass="decision-support-card"
       cardStyle={{ boxShadow: 'inset 3px 0 0 var(--mp-primary), var(--mp-shadow-card)' }}
-      headerExtra={<span className="badge bg-info rounded-pill">NEW</span>}
     >
       {/* Thresholds */}
       <div className="mb-2">

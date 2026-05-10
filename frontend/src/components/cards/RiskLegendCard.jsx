@@ -30,9 +30,9 @@ function Swatch({ color, label, circle }) {
   )
 }
 
-export default function RiskLegendCard() {
+export default function RiskLegendCard({ defaultOpen = true }) {
   return (
-    <CollapsibleCard iconName="info-circle" title="Legend">
+    <CollapsibleCard iconName="info-circle" title="Legend" defaultOpen={defaultOpen}>
       <small className="d-block mb-1">
         <i className="bi bi-palette me-1" /><strong>Risk Scale</strong>
       </small>

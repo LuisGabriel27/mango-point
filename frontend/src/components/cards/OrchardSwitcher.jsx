@@ -1,4 +1,5 @@
 import CollapsibleCard from '../CollapsibleCard'
+import MpSelect from '../MpSelect'
 
 const ALL_ID = '__all_orchards__'
 
@@ -18,15 +19,12 @@ export default function OrchardSwitcher({ orchards = [], selectedId, onSelect, o
       <label className="small fw-medium mb-1 d-block">
         <i className="bi bi-map me-1" /> Active Orchard
       </label>
-      <select
-        className="form-select mb-2"
+      <MpSelect
         value={selectedId ?? ''}
-        onChange={(e) => onSelect(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
+        onChange={onSelect}
+        options={options}
+        className="mb-2"
+      />
       <button
         type="button"
         className="btn btn-outline-secondary btn-sm w-100 mb-2"

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
@@ -20,9 +20,12 @@ from ..models.schemas import (
     AlertActionUpdate,
     AlertStatusEnum,
     AlertSeverityEnum,
+    WeatherForecastCheckRequest,
 )
+from ..core.config import settings
 from db.models import AlertStatus
 from ..services.alert_service import alert_service
+from ..services.weather_service import weather_service
 from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,7 @@ def _memory_alert_to_response(alert: dict) -> AlertResponse:
         action_notes=alert.get("action_notes"),
         action_due_at=alert.get("action_due_at"),
         action_completed_at=alert.get("action_completed_at"),
+        suggested_simulation_params=alert.get("suggested_simulation_params"),
     )
 
 
@@ -118,6 +122,7 @@ def _db_alert_to_response(alert) -> AlertResponse:
         action_notes=alert.action_notes,
         action_due_at=format_rfc3339(alert.action_due_at) if alert.action_due_at else None,
         action_completed_at=format_rfc3339(alert.action_completed_at) if alert.action_completed_at else None,
+        suggested_simulation_params=getattr(alert, "suggested_simulation_params", None),
     )
 
 
@@ -466,6 +471,79 @@ async def update_alert_action(
             status_code=500,
             detail=f"Failed to update alert action: {str(e)}",
         )
+
+
+@router.post(
+    "/check-weather-forecast",
+    response_model=AlertListResponse,
+    summary="Check weather forecast for pest alerts",
+    description="""
+    Fetch the 48-hour weather forecast and create pre-emptive pest risk alerts when
+    rain is expected.
+
+    **Why this matters:**
+    Rain is the primary environmental trigger for both Cecid Fly (fruitlet stage) and
+    Fruit Fly (mature stage).  Each generated alert includes a `suggested_simulation_params`
+    payload so growers can immediately run an informed simulation without guessing at
+    parameters.
+
+    **Deduplication:** repeated calls for the same orchard + pest combination do not
+    create duplicate active alerts.
+    """,
+)
+async def check_weather_forecast(
+    body: WeatherForecastCheckRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AlertListResponse:
+    """Fetch forecast, create weather-triggered alerts with suggested sim params."""
+    lat = body.lat if body.lat is not None else settings.DEFAULT_LAT
+    lon = body.lon if body.lon is not None else settings.DEFAULT_LON
+
+    try:
+        forecast = await weather_service.get_forecast(lat=lat, lon=lon, hours=48)
+    except Exception as exc:
+        logger.warning("Weather forecast unavailable for alert check: %s", exc)
+        forecast = []
+
+    alert_data_list = alert_service.check_weather_forecast_alerts(
+        forecast=forecast,
+        orchard_id=body.orchard_id,
+        lat=lat,
+        lon=lon,
+        orchard_stage=body.orchard_stage,
+        monitored_pest_types=body.monitored_pest_types,
+    )
+
+    created_responses: list[AlertResponse] = []
+    for alert_data in alert_data_list:
+        try:
+            alert = await alert_service.create_alert(db, alert_data, send_notifications=False)
+            await db.flush()
+            created_responses.append(_db_alert_to_response(alert))
+        except Exception as exc:
+            logger.warning("DB unavailable for weather alert, using memory: %s", exc)
+            alert_service.store_alert_in_memory(alert_data)
+            created_responses.append(_memory_alert_to_response({
+                **alert_data.model_dump(),
+                "triggered_at": format_rfc3339(utcnow_naive()),
+                "status": "active",
+                "email_sent": False,
+                "sms_sent": False,
+                "acknowledged_by": None,
+                "acknowledged_at": None,
+                "resolved_at": None,
+            }))
+
+    try:
+        await db.commit()
+    except Exception:
+        pass
+
+    return AlertListResponse(
+        total=len(created_responses),
+        active_count=len(created_responses),
+        alerts=created_responses,
+    )
 
 
 @router.get(

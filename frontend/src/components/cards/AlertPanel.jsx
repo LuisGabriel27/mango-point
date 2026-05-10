@@ -4,7 +4,7 @@ import api from '../../api'
 
 const SEV_BADGE = { critical: 'danger', high: 'warning', medium: 'info', low: 'secondary' }
 
-function AlertItem({ alert, onUpdate }) {
+function AlertItem({ alert, onUpdate, onApplySuggested }) {
   const [ackNotes, setAckNotes] = useState('')
   const [acting, setActing] = useState(false)
 
@@ -28,12 +28,20 @@ function AlertItem({ alert, onUpdate }) {
     ? new Date(alert.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : ''
 
+  const isWeatherAlert = alert.zone_name?.toLowerCase().includes('weather forecast')
+
   return (
-    <div className="border rounded p-2 mb-2" style={{ fontSize: '.8rem' }}>
+    <div
+      className={`border rounded p-2 mb-2${isWeatherAlert ? ' border-primary border-opacity-50' : ''}`}
+      style={{ fontSize: '.8rem' }}
+    >
       <div className="d-flex align-items-start justify-content-between gap-1 mb-1">
-        <span className={`badge bg-${SEV_BADGE[alert.severity] ?? 'secondary'}`}>
-          {alert.severity?.toUpperCase()}
-        </span>
+        <div className="d-flex align-items-center gap-1">
+          {isWeatherAlert && <i className="bi bi-cloud-rain-fill text-primary" style={{ fontSize: '.85rem' }} />}
+          <span className={`badge bg-${SEV_BADGE[alert.severity] ?? 'secondary'}`}>
+            {alert.severity?.toUpperCase()}
+          </span>
+        </div>
         <small className="text-muted">{ts}</small>
       </div>
       <div className="mb-1">{alert.message}</div>
@@ -43,6 +51,15 @@ function AlertItem({ alert, onUpdate }) {
         </ul>
       )}
       <div className="d-flex gap-1 flex-wrap mt-1">
+        {alert.suggested_simulation_params && onApplySuggested && (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm py-0 fw-semibold"
+            onClick={() => onApplySuggested(alert.suggested_simulation_params)}
+          >
+            <i className="bi bi-play-circle me-1" />Pre-fill Simulation
+          </button>
+        )}
         {alert.status === 'active' && (
           <button type="button" className="btn btn-outline-secondary btn-sm py-0"
             disabled={acting} onClick={handleAck}>
@@ -60,7 +77,7 @@ function AlertItem({ alert, onUpdate }) {
   )
 }
 
-export default function AlertPanel({ alerts = [], loading, onRefresh }) {
+export default function AlertPanel({ alerts = [], loading, onRefresh, onApplySuggested }) {
   const active = alerts.filter((a) => a.status === 'active')
 
   const badge = active.length > 0 ? (
@@ -81,12 +98,9 @@ export default function AlertPanel({ alerts = [], loading, onRefresh }) {
         </div>
       ) : (
         active.map((a) => (
-          <AlertItem key={a.alert_id} alert={a} onUpdate={onRefresh} />
+          <AlertItem key={a.alert_id} alert={a} onUpdate={onRefresh} onApplySuggested={onApplySuggested} />
         ))
       )}
-      <small className="text-muted d-block mt-2">
-        <i className="bi bi-arrow-repeat me-1" />Auto-refreshes every 30 s
-      </small>
     </CollapsibleCard>
   )
 }

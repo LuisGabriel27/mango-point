@@ -37,7 +37,6 @@ export default function DashboardPage() {
 
   // Monitoring state
   const [monitoringData, setMonitoringData] = useState(null)
-  const [lastUpdated, setLastUpdated] = useState(null)
 
   // Alerts
   const [alerts, setAlerts] = useState([])
@@ -161,6 +160,21 @@ export default function DashboardPage() {
       if (list.length && !list.find((o) => o.orchard_id === selectedOrchardId)) {
         setSelectedOrchardId(list[0].orchard_id)
       }
+      // After orchards load, check the 48 h weather forecast and create
+      // rain-triggered pest alerts so growers are never caught off-guard.
+      const targetId = list.find((o) => o.orchard_id === selectedOrchardId)
+        ? selectedOrchardId
+        : list[0]?.orchard_id
+      if (targetId && targetId !== ALL_ID) {
+        const record = list.find((o) => o.orchard_id === targetId)
+        api.checkWeatherForecast({
+          orchard_id: targetId,
+          lat: record?.centroid_lat ?? null,
+          lon: record?.centroid_lon ?? null,
+          orchard_stage: record?.orchard_stage ?? null,
+          monitored_pest_types: record?.monitored_pest_types ?? null,
+        }).then(() => fetchAlerts()).catch(() => {})
+      }
     } catch (_) {
       // Backend may be offline; keep existing orchard list
     } finally {
@@ -191,7 +205,6 @@ export default function DashboardPage() {
     try {
       const res = await api.getMonitoringMetrics()
       setMonitoringData(res.data)
-      setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
     } catch (_) { /* ignore */ }
   }, [])
 
@@ -207,10 +220,6 @@ export default function DashboardPage() {
     return () => clearInterval(id)
   }, [fetchWeather])
 
-  useEffect(() => {
-    const id = setInterval(() => { fetchAlerts(); fetchMonitoring() }, 30_000)
-    return () => clearInterval(id)
-  }, [fetchAlerts, fetchMonitoring])
 
   // ── Simulation complete handler ───────────────────────────────────────
   const handleSimulationComplete = useCallback((data) => {
@@ -266,7 +275,6 @@ export default function DashboardPage() {
                 <OverviewTab
                   monitoringData={monitoringData}
                   simData={simData}
-                  lastUpdated={lastUpdated}
                   currentFrame={currentFrame}
                   totalTrees={orchardGeojson?.features?.length ?? 0}
                 />
@@ -288,13 +296,6 @@ export default function DashboardPage() {
                 <SurveillanceTab monitoringData={monitoringData} simData={simData} weather={weather} />
               </div>
 
-              {/* Refresh footer */}
-              <div className="ops-refresh-footer">
-                <small className="text-muted">
-                  <i className="bi bi-arrow-repeat me-1" />
-                  Auto-refreshes every 30 seconds | Last: {lastUpdated ?? 'Never'}
-                </small>
-              </div>
             </div>
           </div>
         </main>

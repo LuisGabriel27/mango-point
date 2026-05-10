@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 
-export default function PlaybackCard({ frames = [], currentFrameIdx = 0, onFrameSeek }) {
+export default function PlaybackCard({ frames = [], currentFrameIdx = 0, onFrameSeek, defaultOpen = true }) {
   const [playing, setPlaying] = useState(false)
   const intervalRef = useRef(null)
   const disabled = frames.length === 0
@@ -38,7 +38,7 @@ export default function PlaybackCard({ frames = [], currentFrameIdx = 0, onFrame
   const wind = weather.wind_speed_ms ?? weather.wind_ms
 
   return (
-    <CollapsibleCard iconName="film" title="Playback">
+    <CollapsibleCard iconName="film" title="Playback" defaultOpen={defaultOpen}>
       {disabled ? (
         <div className="text-muted small">Run a simulation to enable playback.</div>
       ) : (

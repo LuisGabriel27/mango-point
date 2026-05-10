@@ -401,7 +401,13 @@ class SimulationService:
             weather = self._create_weather(weather_data, request.hours)
             
             # Select pest gate based on type
-            gates = self._get_gates(request.pest_type)
+            gate_params = {
+                "cecid_rainfall_threshold_mm": request.cecid_rainfall_threshold_mm,
+                "cecid_base_dispersal_prob": request.cecid_base_dispersal_prob,
+                "fruit_fly_temp_threshold_c": request.fruit_fly_temp_threshold_c,
+                "fruit_fly_base_dispersal_prob": request.fruit_fly_base_dispersal_prob,
+            }
+            gates = self._get_gates(request.pest_type, gate_params)
             
             # Convert orchard stage string to enum
             orchard_stage_map = {
@@ -847,19 +853,31 @@ class SimulationService:
             # Generate synthetic weather
             return self._weather_class.synthetic(hours=hours)
     
-    def _get_gates(self, pest_type: PestTypeEnum) -> list:
+    def _get_gates(self, pest_type: PestTypeEnum, gate_params: dict | None = None) -> list:
         """Get appropriate dispersal gates for pest type.
-        
+
         Always includes both gates for realistic spread modelling.
         The selected pest_type is listed first (primary agent).
+        gate_params keys (all optional):
+          cecid_rainfall_threshold_mm, cecid_base_dispersal_prob,
+          fruit_fly_temp_threshold_c, fruit_fly_base_dispersal_prob
         """
         assert self._cecid_gate is not None and self._fruit_fly_gate is not None, "Modules not loaded"
+        p = gate_params or {}
+        cecid = self._cecid_gate(
+            rainfall_threshold_mm=p.get("cecid_rainfall_threshold_mm"),
+            base_dispersal_prob=p.get("cecid_base_dispersal_prob"),
+        )
+        fruit_fly = self._fruit_fly_gate(
+            temp_threshold_c=p.get("fruit_fly_temp_threshold_c"),
+            base_dispersal_prob=p.get("fruit_fly_base_dispersal_prob"),
+        )
         if pest_type == PestTypeEnum.CECID:
-            return [self._cecid_gate(), self._fruit_fly_gate()]
+            return [cecid, fruit_fly]
         elif pest_type == PestTypeEnum.FRUITFLY:
-            return [self._fruit_fly_gate(), self._cecid_gate()]
+            return [fruit_fly, cecid]
         else:
-            return [self._cecid_gate(), self._fruit_fly_gate()]
+            return [cecid, fruit_fly]
     
     def _result_to_time_series(
         self,
@@ -1140,7 +1158,13 @@ class SimulationService:
 
         # ── weather & biological gates ────────────────────────────
         weather = self._create_weather(weather_data, request.hours)
-        gates   = self._get_gates(request.pest_type)
+        gate_params = {
+            "cecid_rainfall_threshold_mm": request.cecid_rainfall_threshold_mm,
+            "cecid_base_dispersal_prob": request.cecid_base_dispersal_prob,
+            "fruit_fly_temp_threshold_c": request.fruit_fly_temp_threshold_c,
+            "fruit_fly_base_dispersal_prob": request.fruit_fly_base_dispersal_prob,
+        }
+        gates   = self._get_gates(request.pest_type, gate_params)
 
         assert self._orchard_stage_enum is not None
         stage_map = {

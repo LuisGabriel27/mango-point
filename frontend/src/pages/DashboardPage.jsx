@@ -243,7 +243,7 @@ export default function DashboardPage() {
 
   return (
     <div className="app-shell">
-      <Navbar alertCount={activeAlertCount} activeTab={activeTab} onTabChange={setActiveTab} />
+      <Navbar alertCount={activeAlertCount} alerts={alerts} activeTab={activeTab} onTabChange={setActiveTab} />
 
       <div className="viewport-layout">
         {/* ── Main content area (map + tabs) ── */}

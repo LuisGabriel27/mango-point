@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import DatePicker from 'react-datepicker'
+import 'react-datepicker/dist/react-datepicker.css'
 import CollapsibleCard from '../CollapsibleCard'
 
 const CARDINAL = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -234,14 +236,61 @@ export default function WeatherCard({ weather, manualWeather, weatherOverrideAct
       {/* Custom controls — only shown in Custom mode */}
       {scenarioKey === 'custom' && (
         <div className="border rounded p-2 mt-1" style={{ fontSize: '.82rem' }}>
+
+          {/* Date & time */}
+          <div className="mb-3">
+            <div className="small fw-medium mb-1">
+              <i className="bi bi-calendar-event me-1" />Simulation date &amp; time
+            </div>
+            <DatePicker
+              selected={manualWeather?.sim_datetime ? new Date(manualWeather.sim_datetime) : null}
+              onChange={(date) => setField('sim_datetime', date ? date.toISOString() : '')}
+              showTimeSelect
+              timeFormat="HH:mm"
+              timeIntervals={30}
+              dateFormat="MMMM d, yyyy h:mm aa"
+              placeholderText="Select date and time…"
+              className="form-control form-control-sm mp-datepicker-input"
+              calendarClassName="mp-datepicker"
+              popperPlacement="bottom-start"
+              isClearable
+            />
+            <small className="text-muted">Leave blank to use the current date and time.</small>
+          </div>
+
+          {/* Temperature */}
           <TempPicker value={manualWeather?.temperature_c ?? 30} onChange={(v) => setField('temperature_c', v)} />
+          <div className="input-group input-group-sm mb-3" style={{ maxWidth: 140 }}>
+            <input
+              type="number" className="form-control" placeholder="Exact °C"
+              value={manualWeather?.temperature_c ?? ''}
+              min={0} max={50} step={0.1}
+              onChange={(e) => setField('temperature_c', parseFloat(e.target.value))}
+            />
+            <span className="input-group-text">°C</span>
+          </div>
+
+          {/* Rainfall */}
           <RainPicker value={manualWeather?.rainfall_mm ?? 0} onChange={(v) => setField('rainfall_mm', v)} />
+          <div className="input-group input-group-sm mb-3" style={{ maxWidth: 140 }}>
+            <input
+              type="number" className="form-control" placeholder="Exact mm/h"
+              value={manualWeather?.rainfall_mm ?? ''}
+              min={0} max={100} step={0.5}
+              onChange={(e) => setField('rainfall_mm', parseFloat(e.target.value))}
+            />
+            <span className="input-group-text">mm/h</span>
+          </div>
+
+          {/* Wind direction */}
           <WindCompass value={manualWeather?.wind_direction_deg ?? 90} onChange={(v) => setField('wind_direction_deg', v)} />
+
+          {/* Wind strength */}
           <div className="mb-1">
             <div className="small fw-medium mb-1">
               <i className="bi bi-wind me-1" />Wind strength
             </div>
-            <div className="d-flex gap-1 flex-wrap">
+            <div className="d-flex gap-1 flex-wrap mb-1">
               {[{l:'Calm',v:1},{l:'Light',v:3},{l:'Moderate',v:6},{l:'Strong',v:10}].map(({l,v}) => {
                 const cur = manualWeather?.wind_speed_ms ?? 2
                 const isActive = Math.abs(cur - v) < 2
@@ -253,6 +302,15 @@ export default function WeatherCard({ weather, manualWeather, weatherOverrideAct
                   </button>
                 )
               })}
+            </div>
+            <div className="input-group input-group-sm" style={{ maxWidth: 140 }}>
+              <input
+                type="number" className="form-control" placeholder="Exact m/s"
+                value={manualWeather?.wind_speed_ms ?? ''}
+                min={0} max={30} step={0.5}
+                onChange={(e) => setField('wind_speed_ms', parseFloat(e.target.value))}
+              />
+              <span className="input-group-text">m/s</span>
             </div>
             {(manualWeather?.wind_speed_ms ?? 2) >= 6 && (
               <small className="text-muted d-block mt-1">

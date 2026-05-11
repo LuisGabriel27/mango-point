@@ -206,6 +206,9 @@ export default function SimulationCard({
 
       if (weatherOverrideActive) {
         body.manual_weather = manualWeatherPayload(manualWeather)
+        if (manualWeather?.sim_datetime) {
+          body.manual_weather_start = manualWeather.sim_datetime
+        }
       }
 
       if (prefixRain != null && prefixRain > 0) {

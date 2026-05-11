@@ -365,11 +365,6 @@ class SimulationService:
             if tree_overrides:
                 self._apply_tree_overrides(grid, tree_overrides)
 
-            treatment_summary = self._apply_treatments_to_grid(
-                grid,
-                getattr(request, "treatment_applications", None),
-            )
-            
             seed_metadata = self._empty_seed_result("none")
 
             # Seed initial infestation
@@ -396,6 +391,11 @@ class SimulationService:
                     neighbor_threat=neighbor_threat,
                     neighbor_direction=neighbor_direction,
                 )
+
+            treatment_summary = self._apply_treatments_to_grid(
+                grid,
+                getattr(request, "treatment_applications", None),
+            )
             
             # Create weather time series
             weather = self._create_weather(weather_data, request.hours)
@@ -695,9 +695,18 @@ class SimulationService:
                 data[key] = data[key].value
         return data
 
-    def _treatment_source_reduction(self, treatment: Any, efficacy: float) -> float:
+    def _treatment_source_reduction(
+        self,
+        treatment: Any,
+        efficacy: float,
+        treatment_type: str,
+    ) -> float:
         raw = self._treatment_field(treatment, "source_reduction")
-        return float(efficacy if raw is None else raw)
+        if raw is not None:
+            return float(raw)
+        if treatment_type == "protective_spray":
+            return 0.0
+        return float(efficacy)
 
     def _apply_treatments_to_grid(self, grid, treatments: Optional[List[Any]]) -> Dict[str, Any]:
         """Apply treatment scenarios to grid cells and return response metadata."""
@@ -717,7 +726,7 @@ class SimulationService:
             efficacy = float(self._treatment_field(treatment, "efficacy", 0.0) or 0.0)
             efficacy = float(np.clip(efficacy, 0.0, 1.0))
             source_reduction = float(np.clip(
-                self._treatment_source_reduction(treatment, efficacy),
+                self._treatment_source_reduction(treatment, efficacy, treatment_type),
                 0.0,
                 1.0,
             ))
@@ -727,17 +736,21 @@ class SimulationService:
                 mask = (grid.state != self._cell_state.EMPTY) & (grid.state != self._cell_state.DEAD)
             else:
                 target_ids = set(str(v) for v in self._treatment_field(treatment, "target_tree_ids", []) or [])
+                target_cells = self._treatment_field(treatment, "target_cells", []) or []
+                has_explicit_targets = bool(target_ids or target_cells)
                 for r in range(grid.rows):
                     for c in range(grid.cols):
                         if target_ids and str(grid.tree_ids[r, c]) in target_ids:
                             mask[r, c] = True
-                for cell in self._treatment_field(treatment, "target_cells", []) or []:
+                for cell in target_cells:
                     try:
                         row, col = int(cell["row"]), int(cell["col"])
                     except (KeyError, TypeError, ValueError):
                         continue
                     if 0 <= row < grid.rows and 0 <= col < grid.cols:
                         mask[row, col] = True
+                if not has_explicit_targets:
+                    mask = grid.infested_mask.copy()
 
             active_mask = (
                 mask
@@ -745,7 +758,7 @@ class SimulationService:
                 & (grid.state != self._cell_state.DEAD)
             )
             before_count = int(active_mask.sum())
-            if before_count <= 0 or efficacy <= 0.0:
+            if before_count <= 0 or (efficacy <= 0.0 and source_reduction <= 0.0):
                 continue
 
             grid.apply_treatment_mask(
@@ -792,11 +805,11 @@ class SimulationService:
             treatment_type = self._enum_value(self._treatment_field(treatment, "treatment_type", "targeted_spray"))
             efficacy = float(np.clip(float(self._treatment_field(treatment, "efficacy", 0.0) or 0.0), 0.0, 1.0))
             source_reduction = float(np.clip(
-                self._treatment_source_reduction(treatment, efficacy),
+                self._treatment_source_reduction(treatment, efficacy, treatment_type),
                 0.0,
                 1.0,
             ))
-            if efficacy <= 0.0:
+            if efficacy <= 0.0 and source_reduction <= 0.0:
                 continue
 
             if coverage == "whole_orchard":
@@ -806,7 +819,13 @@ class SimulationService:
                 ]
             else:
                 target_ids = [str(v) for v in self._treatment_field(treatment, "target_tree_ids", []) or []]
-                targets = [node_by_id[tree_id] for tree_id in target_ids if tree_id in node_by_id]
+                if target_ids:
+                    targets = [node_by_id[tree_id] for tree_id in target_ids if tree_id in node_by_id]
+                else:
+                    targets = [
+                        node for node in graph.nodes
+                        if node.state == TreeState.INFESTED
+                    ]
 
             if not targets:
                 continue
@@ -1115,11 +1134,6 @@ class SimulationService:
                         )
 
         # ── seed initial infestation ──────────────────────────────
-        treatment_summary = self._apply_treatments_to_tree_graph(
-            graph,
-            getattr(request, "treatment_applications", None),
-        )
-
         seed_metadata = self._empty_seed_result("none")
         seed_ids = list(request.initial_infestation_tree_ids or [])
         if seed_ids:
@@ -1156,7 +1170,13 @@ class SimulationService:
                 seed_metadata.get("strategy"),
             )
 
-        # ── weather & biological gates ────────────────────────────
+        # Apply treatments after seeding so targeted defaults can use source trees.
+        treatment_summary = self._apply_treatments_to_tree_graph(
+            graph,
+            getattr(request, "treatment_applications", None),
+        )
+
+        # Weather & biological gates
         weather = self._create_weather(weather_data, request.hours)
         gate_params = {
             "cecid_rainfall_threshold_mm": request.cecid_rainfall_threshold_mm,

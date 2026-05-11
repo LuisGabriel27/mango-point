@@ -27,6 +27,14 @@ const HEATMAP_LAYER = {
 
 const SATELLITE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+// OpenStreetMap raster tiles. Used as a fallback underlayer so the basemap
+// keeps something visible past Esri's max imagery zoom (~19 in rural areas).
+const OSM_URLS = [
+  'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+]
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 // Drone orthophoto bounds (EPSG:4326) extracted from bpi_map.tif
 const ORTHO_COORDINATES = [
@@ -35,6 +43,11 @@ const ORTHO_COORDINATES = [
   [122.58265914455501, 10.582684811249528], // bot-right [E, S]
   [122.57931578644222, 10.582684811249528], // bot-left  [W, S]
 ]
+
+const DEFAULT_ORTHOPHOTO_OVERLAY = {
+  url: '/ortho.png',
+  coordinates: ORTHO_COORDINATES,
+}
 
 const DEFAULT_LAT = 10.585
 const DEFAULT_LON = 122.580
@@ -54,14 +67,34 @@ const GIS_STATUS_COLORS = {
 const MAP_STYLE = {
   version: 8,
   sources: {
+    osm: {
+      type: 'raster',
+      tiles: OSM_URLS,
+      tileSize: 256,
+      // OSM serves tiles up to z19; MapLibre overzooms above that instead of
+      // requesting unavailable tiles, so the basemap never goes blank.
+      maxzoom: 19,
+      attribution: '&copy; OpenStreetMap contributors',
+    },
     satellite: {
       type: 'raster',
       tiles: [SATELLITE_URL],
       tileSize: 256,
+      // Esri World Imagery caps at ~z19 in rural Guimaras; tell MapLibre so
+      // it overzooms the z19 tile instead of showing "Map data not yet
+      // available" placeholders for z20+ requests.
+      maxzoom: 19,
       attribution: 'Tiles &copy; Esri',
     },
   },
   layers: [
+    {
+      id: 'osm',
+      type: 'raster',
+      source: 'osm',
+      minzoom: 0,
+      maxzoom: 22,
+    },
     {
       id: 'satellite',
       type: 'raster',
@@ -184,6 +217,23 @@ function pointBounds(points) {
   return bounds
 }
 
+function imageCoordinateBounds(coordinates) {
+  if (!validImageCoordinates(coordinates)) return null
+  const bounds = new maplibregl.LngLatBounds()
+  for (const point of coordinates) bounds.extend([Number(point[0]), Number(point[1])])
+  return bounds
+}
+
+function fitMapToBounds(map, bounds, duration = 450) {
+  if (!bounds) return false
+  map.fitBounds(bounds, {
+    padding: { top: 72, right: 96, bottom: 72, left: 72 },
+    maxZoom: 19,
+    duration,
+  })
+  return true
+}
+
 function markerPopupHtml(point) {
   const label = String(point.status).replace(/_/g, ' ')
   const riskLine = point.risk == null ? '' : `<br />Risk: ${(point.risk * 100).toFixed(0)}%`
@@ -221,6 +271,44 @@ function makeAlertMarker(alert) {
 function removeGrid(map) {
   if (map.getLayer('orchard-grid')) map.removeLayer('orchard-grid')
   if (map.getSource('orchard-grid')) map.removeSource('orchard-grid')
+}
+
+function validImageCoordinates(coordinates) {
+  return Array.isArray(coordinates)
+    && coordinates.length === 4
+    && coordinates.every((point) => (
+      Array.isArray(point)
+      && point.length >= 2
+      && Number.isFinite(Number(point[0]))
+      && Number.isFinite(Number(point[1]))
+    ))
+}
+
+function normalizedOverlay(overlay) {
+  if (overlay?.url && validImageCoordinates(overlay.coordinates)) {
+    return {
+      url: overlay.url,
+      coordinates: overlay.coordinates.map((point) => [Number(point[0]), Number(point[1])]),
+    }
+  }
+  return DEFAULT_ORTHOPHOTO_OVERLAY
+}
+
+async function resolveOverlayImageUrl(url) {
+  if (!url || !url.startsWith('/orchards/')) return { imageUrl: url, objectUrl: null }
+
+  const token = sessionStorage.getItem('access_token')
+  const assetUrl = API_BASE
+    ? `${API_BASE.replace(/\/$/, '')}${url}`
+    : url
+  const response = await fetch(assetUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: 'no-store',
+  })
+  if (!response.ok) throw new Error(`Unable to load orchard orthophoto (${response.status})`)
+
+  const objectUrl = URL.createObjectURL(await response.blob())
+  return { imageUrl: objectUrl, objectUrl }
 }
 
 // Primary: extract exact grid lines from simulation cell polygon boundaries
@@ -320,6 +408,9 @@ export default function RiskMap({
   baseGeojson,
   alerts = [],
   treeOverrides = {},
+  orthophotoOverlay = null,
+  viewportKey = 'default',
+  fitToOrthophoto = true,
   showGridOverlay = false,
   onTreeClick,
 }) {
@@ -329,6 +420,10 @@ export default function RiskMap({
   const mapLoadedRef = useRef(false)
 
   const activeGeojson = geojson?.features?.length ? geojson : baseGeojson
+  const activeOverlay = useMemo(
+    () => normalizedOverlay(orthophotoOverlay),
+    [orthophotoOverlay],
+  )
   const points = useMemo(
     () => normalizePoints(activeGeojson, treeOverrides),
     [activeGeojson, treeOverrides],
@@ -354,19 +449,6 @@ export default function RiskMap({
     map.once('load', () => {
       mapLoadedRef.current = true
 
-      // Drone orthophoto overlay (above satellite, below heatmap/markers)
-      map.addSource('ortho-src', {
-        type: 'image',
-        url: '/ortho.png',
-        coordinates: ORTHO_COORDINATES,
-      })
-      map.addLayer({
-        id: 'ortho-layer',
-        type: 'raster',
-        source: 'ortho-src',
-        paint: { 'raster-opacity': 0.92, 'raster-fade-duration': 0 },
-      })
-
       map.addSource('risk-heatmap-src', { type: 'geojson', data: EMPTY_FC })
       map.addLayer(HEATMAP_LAYER)
     })
@@ -384,6 +466,54 @@ export default function RiskMap({
       mapRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+
+    let cancelled = false
+    let objectUrl = null
+
+    const applyOverlay = async () => {
+      try {
+        if (map.getLayer('ortho-layer')) map.removeLayer('ortho-layer')
+        if (map.getSource('ortho-src')) map.removeSource('ortho-src')
+
+        const resolved = await resolveOverlayImageUrl(activeOverlay.url)
+        if (cancelled) {
+          if (resolved.objectUrl) URL.revokeObjectURL(resolved.objectUrl)
+          return
+        }
+
+        objectUrl = resolved.objectUrl
+
+        map.addSource('ortho-src', {
+          type: 'image',
+          url: resolved.imageUrl,
+          coordinates: activeOverlay.coordinates,
+        })
+        const overlayLayer = {
+          id: 'ortho-layer',
+          type: 'raster',
+          source: 'ortho-src',
+          paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 },
+        }
+        const beforeLayer = map.getLayer('risk-heatmap') ? 'risk-heatmap' : undefined
+        if (beforeLayer) map.addLayer(overlayLayer, beforeLayer)
+        else map.addLayer(overlayLayer)
+      } catch (error) {
+        console.warn('Orthophoto overlay unavailable:', error.message)
+      }
+    }
+
+    if (map.loaded()) applyOverlay()
+    else map.once('load', applyOverlay)
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [activeOverlay])
 
   useEffect(() => {
     const map = mapRef.current
@@ -426,26 +556,42 @@ export default function RiskMap({
       markersRef.current.push(marker)
     }
 
-    const fitMap = () => {
+  }, [points, alerts, onTreeClick])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+    const timers = []
+
+    const fitSelectedOrchard = () => {
       map.resize()
+      const overlayBounds = fitToOrthophoto
+        ? imageCoordinateBounds(activeOverlay.coordinates)
+        : null
+      if (fitMapToBounds(map, overlayBounds)) return
+
       if (points.length === 1) {
-        map.easeTo({ center: [points[0].lon, points[0].lat], zoom: DEFAULT_ZOOM, duration: 250 })
+        map.easeTo({ center: [points[0].lon, points[0].lat], zoom: DEFAULT_ZOOM, duration: 350 })
         return
       }
 
-      const bounds = pointBounds(points)
-      if (bounds) {
-        map.fitBounds(bounds, {
-          padding: { top: 72, right: 96, bottom: 72, left: 72 },
-          maxZoom: 19,
-          duration: 350,
-        })
-      }
+      fitMapToBounds(map, pointBounds(points))
     }
 
-    if (map.loaded()) fitMap()
-    else map.once('load', fitMap)
-  }, [points, alerts, onTreeClick])
+    const runFitSequence = () => {
+      fitSelectedOrchard()
+      timers.push(window.setTimeout(fitSelectedOrchard, 150))
+      timers.push(window.setTimeout(fitSelectedOrchard, 450))
+    }
+
+    if (map.loaded()) runFitSequence()
+    else map.once('load', runFitSequence)
+
+    return () => {
+      map.off('load', runFitSequence)
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [viewportKey, activeOverlay, fitToOrthophoto, points])
 
   // ── Heatmap data update ────────────────────────────────────────────────
   useEffect(() => {

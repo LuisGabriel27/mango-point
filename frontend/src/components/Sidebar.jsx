@@ -12,6 +12,7 @@ export default function Sidebar({
   selectedOrchardId,
   onOrchardSelect,
   onOrchardRefresh,
+  onOrchardUpload,
   orchardLoading,
   weather,
   manualWeather,
@@ -28,6 +29,7 @@ export default function Sidebar({
   alertLoading,
   onAlertRefresh,
   decisionMetrics,
+  defaultTreeCount = 0,
 }) {
   const [suggestedSimParams, setSuggestedSimParams] = useState(null)
 
@@ -39,7 +41,9 @@ export default function Sidebar({
           selectedId={selectedOrchardId}
           onSelect={onOrchardSelect}
           onRefresh={onOrchardRefresh}
+          onUpload={onOrchardUpload}
           loading={orchardLoading}
+          defaultTreeCount={defaultTreeCount}
         />
         <WeatherCard
           weather={weather}

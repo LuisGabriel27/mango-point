@@ -17,24 +17,6 @@ const SCENARIOS = [
     values: null, // means: don't override
   },
   {
-    key: 'hot_dry',
-    label: 'Hot & Dry',
-    icon: 'sun',
-    description: 'Typical dry season. High Fruit Fly risk.',
-    tag: 'Fruit Fly',
-    tagColor: 'warning',
-    values: { temperature_c: 33, wind_speed_ms: 2, wind_direction_deg: 90, rainfall_mm: 0 },
-  },
-  {
-    key: 'rainy',
-    label: 'Rainy',
-    icon: 'cloud-rain-heavy',
-    description: 'Active rainfall. Cecid Fly trigger accumulating.',
-    tag: 'Cecid Fly',
-    tagColor: 'primary',
-    values: { temperature_c: 27, wind_speed_ms: 2, wind_direction_deg: 90, rainfall_mm: 8 },
-  },
-  {
     key: 'after_rain',
     label: 'After Rain',
     icon: 'cloud-drizzle',
@@ -44,15 +26,6 @@ const SCENARIOS = [
     values: { temperature_c: 26, wind_speed_ms: 1.5, wind_direction_deg: 90, rainfall_mm: 0 },
   },
   {
-    key: 'windy',
-    label: 'Strong Wind',
-    icon: 'wind',
-    description: 'High winds. Pest movement suppressed for both species.',
-    tag: 'Low risk',
-    tagColor: 'secondary',
-    values: { temperature_c: 28, wind_speed_ms: 8, wind_direction_deg: 90, rainfall_mm: 0 },
-  },
-  {
     key: 'custom',
     label: 'Custom',
     icon: 'sliders',
@@ -60,6 +33,10 @@ const SCENARIOS = [
     values: 'custom',
   },
 ]
+
+const VISIBLE_SCENARIOS = SCENARIOS.filter((scenario) => (
+  scenario.key === 'live' || scenario.key === 'custom'
+))
 
 function WindCompass({ value, onChange }) {
   const current = toCardinal(value)
@@ -170,7 +147,7 @@ export default function WeatherCard({ weather, manualWeather, weatherOverrideAct
 
   const setField = (field, val) => onManualChange({ ...manualWeather, [field]: val })
 
-  const activeScenario = SCENARIOS.find((s) => s.key === scenarioKey) ?? SCENARIOS[0]
+  const activeScenario = VISIBLE_SCENARIOS.find((s) => s.key === scenarioKey) ?? VISIBLE_SCENARIOS[0]
   const isOverrideOn = scenarioKey !== 'live'
 
   return (
@@ -209,7 +186,7 @@ export default function WeatherCard({ weather, manualWeather, weatherOverrideAct
         <i className="bi bi-flask me-1" />Test a weather scenario
       </div>
       <div className="d-flex flex-column gap-1 mb-2">
-        {SCENARIOS.map((s) => (
+        {VISIBLE_SCENARIOS.map((s) => (
           <button
             key={s.key} type="button"
             className={`btn btn-sm text-start py-1 px-2 ${scenarioKey === s.key ? 'btn-primary' : 'btn-outline-secondary'}`}

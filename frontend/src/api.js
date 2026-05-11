@@ -49,6 +49,7 @@ const api = {
   // Orchards
   getOrchards: (params = {}) => client.get('/orchards', { params }),
   getOrchard: (id) => client.get(`/orchards/${id}`),
+  uploadOrchard: (formData) => client.post('/orchards/upload', formData, { timeout: 300000 }),
 
   // Simulation
   runSimulation: (body) => client.post('/simulation/run-simulation', body, { timeout: 180000 }),

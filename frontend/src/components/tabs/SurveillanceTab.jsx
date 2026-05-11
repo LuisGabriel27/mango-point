@@ -36,10 +36,29 @@ export default function SurveillanceTab({ monitoringData, simData, weather }) {
           { type: 'bar', x: xs, y: daily, name: 'New per step', marker: { color: 'rgba(251,146,60,0.5)' }, yaxis: 'y2' },
         ],
         layout: {
-          ...BASE_LAYOUT, height: 260,
-          xaxis: { title: 'Simulation hour', gridcolor: '#eee', tickangle: -30 },
-          yaxis: { title: 'Cumulative infested trees', gridcolor: '#eee' },
-          yaxis2: { title: 'New per step', overlaying: 'y', side: 'right', gridcolor: '#eee' },
+          ...BASE_LAYOUT,
+          height: 260,
+          // Roomier margins so the two y-axis titles and rotated hour labels
+          // no longer overlap with the tick numbers.
+          margin: { l: 70, r: 60, t: 34, b: 70 },
+          xaxis: {
+            title: { text: 'Simulation hour', standoff: 18 },
+            gridcolor: '#eee',
+            tickangle: -30,
+            automargin: true,
+          },
+          yaxis: {
+            title: { text: 'Cumulative infested trees', standoff: 12 },
+            gridcolor: '#eee',
+            automargin: true,
+          },
+          yaxis2: {
+            title: { text: 'New per step', standoff: 12 },
+            overlaying: 'y',
+            side: 'right',
+            gridcolor: '#eee',
+            automargin: true,
+          },
           legend: { orientation: 'h', yanchor: 'bottom', y: 1.03, xanchor: 'left', x: 0 },
         },
       }
@@ -56,10 +75,26 @@ export default function SurveillanceTab({ monitoringData, simData, weather }) {
         { type: 'bar', x: xs, y: daily, name: 'Daily New', marker: { color: 'rgba(251,146,60,0.5)' }, yaxis: 'y2' },
       ],
       layout: {
-        ...BASE_LAYOUT, height: 260,
-        xaxis: { title: 'Time', gridcolor: '#eee' },
-        yaxis: { title: 'Cumulative Infested Trees', gridcolor: '#eee' },
-        yaxis2: { title: 'Daily New Infested', overlaying: 'y', side: 'right', gridcolor: '#eee' },
+        ...BASE_LAYOUT,
+        height: 260,
+        margin: { l: 70, r: 60, t: 34, b: 60 },
+        xaxis: {
+          title: { text: 'Time', standoff: 14 },
+          gridcolor: '#eee',
+          automargin: true,
+        },
+        yaxis: {
+          title: { text: 'Cumulative Infested Trees', standoff: 12 },
+          gridcolor: '#eee',
+          automargin: true,
+        },
+        yaxis2: {
+          title: { text: 'Daily New Infested', standoff: 12 },
+          overlaying: 'y',
+          side: 'right',
+          gridcolor: '#eee',
+          automargin: true,
+        },
         legend: { orientation: 'h', yanchor: 'bottom', y: 1.03, xanchor: 'left', x: 0 },
       },
     }
@@ -79,11 +114,23 @@ export default function SurveillanceTab({ monitoringData, simData, weather }) {
           { type: 'scatter', x: xs, y: winds, mode: 'lines', name: 'Wind m/s', line: { color: '#3b82f6', width: 2, dash: 'dot' }, yaxis: 'y2' },
         ],
         layout: {
-          ...BASE_LAYOUT, height: 200,
-          margin: { l: 20, r: 40, t: 10, b: 30 },
-          xaxis: { gridcolor: '#eee', tickangle: -30 },
-          yaxis: { title: 'Temp (°C)', gridcolor: '#eee' },
-          yaxis2: { title: 'Wind (m/s)', overlaying: 'y', side: 'right' },
+          ...BASE_LAYOUT,
+          height: 200,
+          // Two-line datetimes (e.g. "12:00 / May 11, 2026") and the right-side
+          // axis title need extra room — bumped from { l:20, r:40, b:30 }.
+          margin: { l: 60, r: 60, t: 30, b: 60 },
+          xaxis: { gridcolor: '#eee', tickangle: -30, automargin: true },
+          yaxis: {
+            title: { text: 'Temp (°C)', standoff: 10 },
+            gridcolor: '#eee',
+            automargin: true,
+          },
+          yaxis2: {
+            title: { text: 'Wind (m/s)', standoff: 10 },
+            overlaying: 'y',
+            side: 'right',
+            automargin: true,
+          },
           legend: { orientation: 'h', yanchor: 'bottom', y: 1.03, xanchor: 'left', x: 0 },
         },
       }
@@ -98,11 +145,21 @@ export default function SurveillanceTab({ monitoringData, simData, weather }) {
         { type: 'scatter', x: xs, y: env.map((e) => e.humidity), mode: 'lines', name: 'Humidity %', line: { color: '#3b82f6', width: 2 }, yaxis: 'y2' },
       ],
       layout: {
-        ...BASE_LAYOUT, height: 200,
-        margin: { l: 20, r: 40, t: 10, b: 30 },
-        xaxis: { gridcolor: '#eee' },
-        yaxis: { title: 'Temp (°C)', gridcolor: '#eee' },
-        yaxis2: { title: 'Humidity (%)', overlaying: 'y', side: 'right' },
+        ...BASE_LAYOUT,
+        height: 200,
+        margin: { l: 60, r: 60, t: 30, b: 60 },
+        xaxis: { gridcolor: '#eee', automargin: true },
+        yaxis: {
+          title: { text: 'Temp (°C)', standoff: 10 },
+          gridcolor: '#eee',
+          automargin: true,
+        },
+        yaxis2: {
+          title: { text: 'Humidity (%)', standoff: 10 },
+          overlaying: 'y',
+          side: 'right',
+          automargin: true,
+        },
         legend: { orientation: 'h', yanchor: 'bottom', y: 1.03, xanchor: 'left', x: 0 },
       },
     }

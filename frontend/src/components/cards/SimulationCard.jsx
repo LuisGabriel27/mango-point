@@ -72,6 +72,46 @@ function manualWeatherPayload(weather) {
   }
 }
 
+function treatmentApplicationPayload(type, efficacy) {
+  if (type === 'protective_spray') {
+    return [{
+      treatment_type: type,
+      coverage: 'whole_orchard',
+      efficacy,
+      source_reduction: 0,
+      label: 'Protective spray scenario',
+    }]
+  }
+
+  if (type === 'sanitation') {
+    return [{
+      treatment_type: type,
+      coverage: 'targeted',
+      efficacy: 0,
+      source_reduction: efficacy,
+      label: 'Sanitation source-reduction scenario',
+    }]
+  }
+
+  if (type === 'combined') {
+    return [{
+      treatment_type: type,
+      coverage: 'whole_orchard',
+      efficacy,
+      source_reduction: efficacy,
+      label: 'Combined treatment scenario',
+    }]
+  }
+
+  return [{
+    treatment_type: type,
+    coverage: 'targeted',
+    efficacy,
+    source_reduction: efficacy,
+    label: 'Targeted source-tree treatment scenario',
+  }]
+}
+
 function SectionLabel({ iconName, text }) {
   return (
     <div className="section-label">
@@ -179,13 +219,7 @@ export default function SimulationCard({
         bagged_tree_ids: [],
         initial_infestation: [],
         treatment_applications: treatmentEnabled
-          ? [{
-              treatment_type: treatmentType,
-              coverage: 'whole_orchard',
-              efficacy: treatmentEfficacy,
-              source_reduction: treatmentEfficacy,
-              label: 'React treatment scenario',
-            }]
+          ? treatmentApplicationPayload(treatmentType, treatmentEfficacy)
           : [],
         random_seed: null,
         risk_threshold: 0.7,
@@ -392,6 +426,11 @@ export default function SimulationCard({
             marks={[{label:'0%'},{label:'50%'},{label:'95%'}]}
             onChange={setTreatmentEfficacy}
           />
+          {(treatmentType === 'targeted_spray' || treatmentType === 'sanitation') && (
+            <small className="text-muted d-block mb-2">
+              Applies to detected or seeded source trees unless specific targets are selected later.
+            </small>
+          )}
         </div>
       )}
 

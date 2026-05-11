@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Navbar from '../components/Navbar'
 import Sidebar from '../components/Sidebar'
 import LiveMapTab from '../components/tabs/LiveMapTab'
@@ -6,10 +6,9 @@ import OverviewTab from '../components/tabs/OverviewTab'
 import CropImpactTab from '../components/tabs/CropImpactTab'
 import SurveillanceTab from '../components/tabs/SurveillanceTab'
 import api from '../api'
-import fallbackTreeGeojsonRaw from '../../public/trees.geojson?raw'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
-const ALL_ID = '__all_orchards__'
+const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
 
 const DEFAULT_MANUAL_WEATHER = {
   temperature_c: 30,
@@ -19,7 +18,7 @@ const DEFAULT_MANUAL_WEATHER = {
   humidity: 75,
 }
 
-const fallbackTreeGeojson = JSON.parse(fallbackTreeGeojsonRaw)
+const fallbackTreeGeojson = { type: 'FeatureCollection', features: [] }
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live-map')
@@ -27,6 +26,7 @@ export default function DashboardPage() {
   // Orchard state
   const [orchards, setOrchards] = useState([])
   const [selectedOrchardId, setSelectedOrchardId] = useState(DEFAULT_ORCHARD_ID)
+  const selectedOrchardIdRef = useRef(DEFAULT_ORCHARD_ID)
   const [orchardLoading, setOrchardLoading] = useState(false)
 
   // Simulation / map state
@@ -34,6 +34,7 @@ export default function DashboardPage() {
   const [treeOverrides, setTreeOverrides] = useState({})
   const [playbackFrames, setPlaybackFrames] = useState([])
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0)
+  const [mapRefreshKey, setMapRefreshKey] = useState(0)
 
   // Monitoring state
   const [monitoringData, setMonitoringData] = useState(null)
@@ -53,6 +54,10 @@ export default function DashboardPage() {
   // Fallback GeoJSON from static file (mirrors Python app's DEFAULT_ORCHARD)
   const [fallbackGeojson, setFallbackGeojson] = useState(fallbackTreeGeojson)
   useEffect(() => {
+    selectedOrchardIdRef.current = selectedOrchardId
+  }, [selectedOrchardId])
+
+  useEffect(() => {
     fetch('/trees.geojson')
       .then((r) => {
         if (!r.ok) throw new Error(`Unable to load trees.geojson (${r.status})`)
@@ -65,14 +70,25 @@ export default function DashboardPage() {
   // ── Helpers ──────────────────────────────────────────────────────────
   const selectedOrchardRecord = orchards.find((o) => o.orchard_id === selectedOrchardId) ?? null
   const orchardGeojson =
-    selectedOrchardId === ALL_ID
-      ? { type: 'FeatureCollection', features: orchards.flatMap((o) => (o.geojson ?? fallbackGeojson)?.features ?? []) }
+    selectedOrchardId === DEFAULT_ORCHARD_ID
+      ? fallbackGeojson
       : (selectedOrchardRecord?.geojson ?? fallbackGeojson)
 
   const orchardName =
-    selectedOrchardId === ALL_ID
-      ? 'All registered orchards'
-      : selectedOrchardRecord?.name ?? 'Default Orchard'
+    selectedOrchardId === DEFAULT_ORCHARD_ID
+      ? DEFAULT_ORCHARD_LABEL
+      : selectedOrchardRecord?.name ?? DEFAULT_ORCHARD_LABEL
+  const orchardOrthophoto = useMemo(
+    () => (
+      selectedOrchardRecord?.orthophoto_url
+        ? {
+            url: selectedOrchardRecord.orthophoto_url,
+            coordinates: selectedOrchardRecord.orthophoto_coordinates,
+          }
+        : null
+    ),
+    [selectedOrchardId, selectedOrchardRecord],
+  )
 
   // Displayed geojson: current playback frame, or final sim snapshot, or null
   const currentFrame = playbackFrames.length > 0 ? (playbackFrames[currentFrameIdx] ?? null) : null
@@ -151,21 +167,40 @@ export default function DashboardPage() {
   }, [simData])
 
   // ── Data fetchers ─────────────────────────────────────────────────────
-  const fetchOrchards = useCallback(async () => {
+  const selectOrchardId = useCallback((orchardId) => {
+    selectedOrchardIdRef.current = orchardId
+    setSelectedOrchardId(orchardId)
+  }, [])
+
+  const fetchAlerts = useCallback(async () => {
+    setAlertLoading(true)
+    try {
+      const res = await api.getAlerts({ limit: 100 })
+      setAlerts(res.data.alerts ?? [])
+    } catch (_) {
+      /* ignore */
+    } finally {
+      setAlertLoading(false)
+    }
+  }, [])
+
+  const fetchOrchards = useCallback(async (selectedIdOverride = selectedOrchardIdRef.current) => {
     setOrchardLoading(true)
     try {
       const res = await api.getOrchards({ active_only: true, include_geojson: true })
       const list = res.data.orchards ?? []
       setOrchards(list)
-      if (list.length && !list.find((o) => o.orchard_id === selectedOrchardId)) {
-        setSelectedOrchardId(list[0].orchard_id)
+      const activeSelectedId = selectedIdOverride || DEFAULT_ORCHARD_ID
+      const selectedIsBuiltIn = activeSelectedId === DEFAULT_ORCHARD_ID
+      if (!selectedIsBuiltIn && !list.find((o) => o.orchard_id === activeSelectedId)) {
+        selectOrchardId(DEFAULT_ORCHARD_ID)
       }
       // After orchards load, check the 48 h weather forecast and create
       // rain-triggered pest alerts so growers are never caught off-guard.
-      const targetId = list.find((o) => o.orchard_id === selectedOrchardId)
-        ? selectedOrchardId
-        : list[0]?.orchard_id
-      if (targetId && targetId !== ALL_ID) {
+      const targetId = !selectedIsBuiltIn && list.find((o) => o.orchard_id === activeSelectedId)
+        ? activeSelectedId
+        : null
+      if (targetId) {
         const record = list.find((o) => o.orchard_id === targetId)
         api.checkWeatherForecast({
           orchard_id: targetId,
@@ -180,19 +215,44 @@ export default function DashboardPage() {
     } finally {
       setOrchardLoading(false)
     }
-  }, [selectedOrchardId])
+  }, [fetchAlerts, selectOrchardId])
 
-  const fetchAlerts = useCallback(async () => {
-    setAlertLoading(true)
-    try {
-      const res = await api.getAlerts({ limit: 100 })
-      setAlerts(res.data.alerts ?? [])
-    } catch (_) {
-      /* ignore */
-    } finally {
-      setAlertLoading(false)
-    }
-  }, [])
+  const handleOrchardUpload = useCallback(async ({ name, treeGeojson, orthophoto, dtm, dsm }) => {
+    const formData = new FormData()
+    formData.append('name', name)
+    formData.append('tree_geojson', treeGeojson)
+    formData.append('orthophoto', orthophoto)
+    if (dtm) formData.append('dtm', dtm)
+    if (dsm) formData.append('dsm', dsm)
+
+    const res = await api.uploadOrchard(formData)
+    const uploaded = res.data
+    setOrchards((prev) => {
+      const others = prev.filter((o) => o.orchard_id !== uploaded.orchard_id)
+      return [...others, uploaded].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    })
+    selectOrchardId(uploaded.orchard_id)
+    setSimData(null)
+    setTreeOverrides({})
+    setPlaybackFrames([])
+    setCurrentFrameIdx(0)
+    setMapRefreshKey((value) => value + 1)
+    return uploaded
+  }, [selectOrchardId])
+
+  const handleOrchardSelect = useCallback((orchardId) => {
+    selectOrchardId(orchardId)
+    setSimData(null)
+    setTreeOverrides({})
+    setPlaybackFrames([])
+    setCurrentFrameIdx(0)
+    setMapRefreshKey((value) => value + 1)
+  }, [selectOrchardId])
+
+  const handleOrchardRefresh = useCallback(async () => {
+    await fetchOrchards(selectedOrchardIdRef.current)
+    setMapRefreshKey((value) => value + 1)
+  }, [fetchOrchards])
 
   const fetchWeather = useCallback(async () => {
     try {
@@ -262,6 +322,9 @@ export default function DashboardPage() {
                   alerts={alerts.filter((a) => a.status === 'active')}
                   treeOverrides={treeOverrides}
                   orchardName={orchardName}
+                  orthophotoOverlay={orchardOrthophoto}
+                  viewportKey={`${selectedOrchardId}:${mapRefreshKey}`}
+                  fitToOrthophoto
                   currentFrame={currentFrame}
                   onTreeClick={handleTreeClick}
                 />
@@ -304,9 +367,11 @@ export default function DashboardPage() {
         <Sidebar
           orchards={orchards}
           selectedOrchardId={selectedOrchardId}
-          onOrchardSelect={setSelectedOrchardId}
-          onOrchardRefresh={fetchOrchards}
+          onOrchardSelect={handleOrchardSelect}
+          onOrchardRefresh={handleOrchardRefresh}
+          onOrchardUpload={handleOrchardUpload}
           orchardLoading={orchardLoading}
+          defaultTreeCount={fallbackGeojson?.features?.length ?? 0}
           weather={weather}
           manualWeather={manualWeather}
           weatherOverrideActive={weatherOverrideActive}

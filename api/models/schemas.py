@@ -182,6 +182,11 @@ class OrchardResponse(BaseModel):
     geojson: Optional[Dict[str, Any]] = None
     centroid_lon: Optional[float] = None
     centroid_lat: Optional[float] = None
+    orthophoto_url: Optional[str] = None
+    orthophoto_bounds: Optional[List[float]] = None
+    orthophoto_coordinates: Optional[List[List[float]]] = None
+    has_dtm: bool = False
+    has_dsm: bool = False
     description: Optional[str] = None
     is_active: bool
     monitoring_enabled: bool

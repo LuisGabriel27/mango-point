@@ -43,6 +43,9 @@ export default function LiveMapTab({
   alerts = [],
   treeOverrides = {},
   orchardName,
+  orthophotoOverlay = null,
+  viewportKey = 'default',
+  fitToOrthophoto = true,
   currentFrame,
   onTreeClick,
 }) {
@@ -76,6 +79,9 @@ export default function LiveMapTab({
             baseGeojson={baseGeojson}
             alerts={alerts}
             treeOverrides={treeOverrides}
+            orthophotoOverlay={orthophotoOverlay}
+            viewportKey={viewportKey}
+            fitToOrthophoto={fitToOrthophoto}
             showGridOverlay={showGrid}
             onTreeClick={onTreeClick}
           />

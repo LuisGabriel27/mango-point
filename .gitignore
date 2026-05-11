@@ -16,5 +16,6 @@ outputs/
 gcm-login*.txt
 
 data/*.tif
+data/orchards/
 node_modules/
 dist/

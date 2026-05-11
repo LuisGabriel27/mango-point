@@ -11,7 +11,9 @@ Requires: rasterio, Pillow (PIL)
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
+import os
 from pathlib import Path
 from typing import Tuple, Optional, Dict
 
@@ -28,10 +30,53 @@ if TYPE_CHECKING:
 _HAS_RASTERIO = False
 _HAS_PIL = False
 
+
+def _prefer_python_proj_data() -> None:
+    """
+    Keep rasterio from using PostGIS' bundled PROJ database on Windows.
+
+    PostgreSQL/PostGIS installers commonly set PROJ_LIB to a PostGIS folder.
+    Rasterio/GDAL can then fail with "DATABASE.LAYOUT.VERSION" errors because
+    that proj.db is older than the one expected by Python's geospatial wheels.
+    """
+    data_dir: Optional[Path] = None
+
+    rasterio_spec = importlib.util.find_spec("rasterio")
+    if rasterio_spec and rasterio_spec.origin:
+        candidate = Path(rasterio_spec.origin).resolve().parent / "proj_data"
+        if (candidate / "proj.db").exists():
+            data_dir = candidate
+
+    if data_dir is None:
+        try:
+            from pyproj import datadir
+        except ImportError:
+            return
+        pyproj_data = datadir.get_data_dir()
+        if pyproj_data:
+            data_dir = Path(pyproj_data)
+
+    if data_dir is None:
+        return
+
+    os.environ["PROJ_LIB"] = str(data_dir)
+    os.environ["PROJ_DATA"] = str(data_dir)
+
+
+def prefer_python_proj_data() -> None:
+    """Prefer the projection database bundled with Python geospatial wheels."""
+    _prefer_python_proj_data()
+
+
 try:
+    prefer_python_proj_data()
     import rasterio as rasterio  # noqa: F811
     import rasterio.enums  # noqa: F811
+    import rasterio._env as rasterio_env  # noqa: F811
     from rasterio.warp import transform_bounds  # noqa: F811
+    proj_data = os.environ.get("PROJ_DATA")
+    if proj_data:
+        rasterio_env.set_proj_data_search_path(proj_data)
     _HAS_RASTERIO = True
 except ImportError:
     pass
@@ -53,6 +98,62 @@ def _ensure_deps():
 # ─────────────────────────────────────────────
 #  Public API
 # ─────────────────────────────────────────────
+
+def _normalize_color_bands(data: np.ndarray) -> np.ndarray:
+    """Normalize raster color bands to uint8 without treating alpha as color."""
+    if data.dtype == np.uint8:
+        return data.astype(np.uint8, copy=False)
+
+    out = np.zeros_like(data, dtype=np.uint8)
+    for i in range(data.shape[0]):
+        band = data[i].astype(np.float64)
+        valid = band[np.isfinite(band) & (band != 0)]
+        if valid.size > 0:
+            lo, hi = np.percentile(valid, [2, 98])
+        else:
+            lo, hi = 0.0, 1.0
+        if hi <= lo:
+            hi = lo + 1
+        scaled = (band - lo) / (hi - lo) * 255
+        scaled = np.nan_to_num(scaled, nan=0.0, posinf=255.0, neginf=0.0)
+        out[i] = np.clip(scaled, 0, 255).astype(np.uint8)
+    return out
+
+
+def _alpha_to_uint8(alpha: np.ndarray) -> np.ndarray:
+    """Convert a raster alpha band to uint8 while preserving constant opacity."""
+    if alpha.dtype == np.uint8:
+        return alpha.astype(np.uint8, copy=False)
+
+    band = alpha.astype(np.float64)
+    band = np.nan_to_num(band, nan=0.0, posinf=0.0, neginf=0.0)
+    max_value = float(np.max(band)) if band.size else 0.0
+    if max_value <= 0:
+        scaled = band
+    elif max_value <= 1.0:
+        scaled = band * 255.0
+    elif max_value > 255.0:
+        scaled = band / max_value * 255.0
+    else:
+        scaled = band
+    return np.clip(scaled, 0, 255).astype(np.uint8)
+
+
+def _repair_empty_alpha(arr: np.ndarray) -> np.ndarray:
+    """Replace broken all-transparent alpha with an RGB-derived mask."""
+    if arr.ndim != 3 or arr.shape[2] < 4:
+        return arr
+    if int(np.max(arr[:, :, 3])) != 0:
+        return arr
+
+    visible = np.any(arr[:, :, :3] > 0, axis=2)
+    if not np.any(visible):
+        return arr
+
+    repaired = arr.copy()
+    repaired[:, :, 3] = np.where(visible, 255, 0).astype(np.uint8)
+    return repaired
+
 
 def load_raster_as_png_b64(
     tif_path: str | Path,
@@ -117,22 +218,12 @@ def load_raster_as_png_b64(
             west, south, east, north = src.bounds
 
     # --- convert to uint8 RGB(A) image --------------------------------
-    if data.dtype != np.uint8:
-        # normalise each band to 0-255 as float64 first, then cast
-        out = np.zeros_like(data, dtype=np.uint8)
-        for i in range(data.shape[0]):
-            band = data[i].astype(np.float64)
-            valid = band[np.isfinite(band) & (band != 0)]
-            if valid.size > 0:
-                lo, hi = np.percentile(valid, [2, 98])
-            else:
-                lo, hi = 0.0, 1.0
-            if hi <= lo:
-                hi = lo + 1
-            scaled = (band - lo) / (hi - lo) * 255
-            scaled = np.nan_to_num(scaled, nan=0.0, posinf=255.0, neginf=0.0)
-            out[i] = np.clip(scaled, 0, 255).astype(np.uint8)
-        data = out
+    if data.shape[0] >= 4:
+        color_data = _normalize_color_bands(data[:3])
+        alpha_data = _alpha_to_uint8(data[3])
+        data = np.concatenate([color_data, alpha_data[np.newaxis, :, :]], axis=0)
+    else:
+        data = _normalize_color_bands(data)
 
     if data.shape[0] == 1:
         # greyscale → RGB
@@ -143,6 +234,7 @@ def load_raster_as_png_b64(
         arr = np.moveaxis(data[:4], 0, -1)  # keep RGBA
     else:
         arr = np.moveaxis(data, 0, -1)
+    arr = _repair_empty_alpha(arr)
 
     img = Image.fromarray(arr)
     buf = io.BytesIO()

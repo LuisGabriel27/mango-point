@@ -72,9 +72,20 @@ export default function CropImpactTab({ monitoringData, simData }) {
         { type: 'scatter', x: xs, y: base, mode: 'lines+markers', name: 'Base (30%)', line: { color: '#f59e0b', width: 2.4 }, marker: { size: 5 } },
       ],
       layout: {
-        ...BASE_LAYOUT, height: 260,
+        ...BASE_LAYOUT,
+        height: 260,
+        // Widen the left margin so the rotated y-axis title and tick labels
+        // ("100k", "200k", …) stop colliding with each other.
+        margin: { ...BASE_LAYOUT.margin, l: 72 },
         xaxis: { title: simData?.time_series?.length ? 'Simulation Hour' : 'Time', gridcolor: '#eee' },
-        yaxis: { title: 'Estimated Loss at Risk (PHP)', gridcolor: '#eee', tickprefix: 'PHP ' },
+        yaxis: {
+          // The title already says "(PHP)", so no tickprefix — keeps the
+          // tick labels narrow ("100k" instead of "PHP 100k").
+          title: { text: 'Estimated Loss at Risk (PHP)', standoff: 12 },
+          gridcolor: '#eee',
+          tickformat: '~s',
+          automargin: true,
+        },
         legend: { orientation: 'h', yanchor: 'bottom', y: 1.03, xanchor: 'left', x: 0 },
       },
     }

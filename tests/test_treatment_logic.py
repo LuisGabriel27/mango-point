@@ -56,6 +56,48 @@ def test_grid_treatment_reduces_infested_source_pressure():
     assert treated.risk[2, 3] == pytest.approx(untreated.risk[2, 3] * 0.25)
 
 
+def test_grid_targeted_treatment_defaults_to_infested_sources():
+    grid = _grid_with_source_and_target()
+    service = SimulationService()
+    service._cell_state = CellState
+
+    summary = service._apply_treatments_to_grid(
+        grid,
+        [{
+            "coverage": "targeted",
+            "treatment_type": "targeted_spray",
+            "efficacy": 0.65,
+        }],
+    )
+
+    assert summary["application_count"] == 1
+    assert summary["treated_tree_count"] == 1
+    assert grid.treatment_active[2, 2]
+    assert not grid.treatment_active[2, 3]
+    assert grid.treatment_source_factor[2, 2] == pytest.approx(0.35)
+
+
+def test_grid_sanitation_can_reduce_source_without_susceptibility_effect():
+    grid = _grid_with_source_and_target()
+    service = SimulationService()
+    service._cell_state = CellState
+
+    summary = service._apply_treatments_to_grid(
+        grid,
+        [{
+            "coverage": "targeted",
+            "treatment_type": "sanitation",
+            "efficacy": 0.0,
+            "source_reduction": 0.80,
+        }],
+    )
+
+    assert summary["application_count"] == 1
+    assert summary["treated_tree_count"] == 1
+    assert grid.treatment_susceptibility_factor[2, 2] == pytest.approx(1.0)
+    assert grid.treatment_source_factor[2, 2] == pytest.approx(0.20)
+
+
 def test_tree_graph_treatment_reduces_target_risk():
     graph = TreeGraph(
         [
@@ -77,6 +119,32 @@ def test_tree_graph_treatment_reduces_target_risk():
 
     assert treated.graph.nodes[1].risk == pytest.approx(untreated_risk * 0.25)
     assert treated.graph.nodes[1].treatment_active is True
+
+
+def test_tree_graph_targeted_treatment_defaults_to_infested_sources():
+    graph = TreeGraph(
+        [
+            TreeNode(0, "src", 0.0, 0.0, 0.0, 0.0, 3.0, TreeState.INFESTED),
+            TreeNode(1, "dst", 0.0, 0.0, 2.0, 0.0, 3.0, TreeState.SUSCEPTIBLE),
+        ],
+        max_dist=10.0,
+    )
+    service = SimulationService()
+
+    summary = service._apply_treatments_to_tree_graph(
+        graph,
+        [{
+            "coverage": "targeted",
+            "treatment_type": "targeted_spray",
+            "efficacy": 0.65,
+        }],
+    )
+
+    assert summary["application_count"] == 1
+    assert summary["treated_tree_count"] == 1
+    assert graph.nodes[0].treatment_active is True
+    assert graph.nodes[1].treatment_active is False
+    assert graph.nodes[0].treatment_source_factor == pytest.approx(0.35)
 
 
 def test_simulation_response_reports_treatment_summary_and_feature_flags():

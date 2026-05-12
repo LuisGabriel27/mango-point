@@ -117,6 +117,26 @@ def _weather_source_from_data(
     return default
 
 
+def _required_stage_name_for_pest(pest_type: Optional[str]) -> Optional[str]:
+    """Return the phenology stage that can receive risk for the selected pest."""
+    pest = str(pest_type or "").strip().lower().replace("-", "_")
+    if pest in {"cecid", "cecid_fly", "cecid fly"}:
+        return "fruitlet"
+    if pest in {"fruitfly", "fruit_fly", "fruit fly"}:
+        return "mature"
+    return None
+
+
+def _required_stage_value_for_pest(pest_type: Optional[str]) -> Optional[int]:
+    stage = _required_stage_name_for_pest(pest_type)
+    return {
+        "dormant": 0,
+        "flowering": 1,
+        "fruitlet": 2,
+        "mature": 3,
+    }.get(stage)
+
+
 def _infer_weather_source(
     request: SimulationRequest,
     weather_data: Optional[List[Dict[str, Any]]],
@@ -395,11 +415,20 @@ async def check_alerts(
             "row" in f.get("properties", {}) and "col" in f.get("properties", {})
             for f in features
         ):
+            has_stage_context = any(
+                "stage" in (f.get("properties", {}) or {})
+                for f in features
+            )
             alerts = alert_service.check_tree_feature_alerts(
                 features=features,
                 orchard_id=orchard_id,
                 simulation_run_id=result.run_id,
                 risk_threshold=result.risk_threshold,
+                required_stage=(
+                    _required_stage_name_for_pest(pest_type)
+                    if has_stage_context
+                    else None
+                ),
             )
             await _persist_or_store_alerts(
                 alerts=alerts,
@@ -418,8 +447,11 @@ async def check_alerts(
         tree_ids = np.full((max_row + 1, max_col + 1), "", dtype=object)
         lon_grid = np.full((max_row + 1, max_col + 1), np.nan, dtype=float)
         lat_grid = np.full((max_row + 1, max_col + 1), np.nan, dtype=float)
+        stage_grid = np.full((max_row + 1, max_col + 1), -1, dtype=int)
+        has_stage_context = False
         
         state_map = {"empty": 0, "unbagged": 1, "bagged": 2, "infested": 3}
+        stage_map = {"dormant": 0, "flowering": 1, "fruitlet": 2, "mature": 3}
         
         for f in features:
             props = f["properties"]
@@ -427,6 +459,10 @@ async def check_alerts(
             risk_grid[row, col] = props["risk"]
             state_grid[row, col] = state_map.get(str(props["state"]).lower(), 0)
             tree_ids[row, col] = props.get("tree_id", "")
+            stage = stage_map.get(str(props.get("stage", "")).strip().lower())
+            if stage is not None:
+                stage_grid[row, col] = stage
+                has_stage_context = True
             centroid = _feature_centroid(f)
             if centroid is not None:
                 lon_grid[row, col], lat_grid[row, col] = centroid
@@ -441,6 +477,12 @@ async def check_alerts(
             risk_threshold=result.risk_threshold,
             lon_grid=lon_grid,
             lat_grid=lat_grid,
+            stage_grid=stage_grid if has_stage_context else None,
+            required_stage_value=(
+                _required_stage_value_for_pest(pest_type)
+                if has_stage_context
+                else None
+            ),
         )
         
         if alerts:

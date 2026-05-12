@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
-import MpSelect from '../MpSelect'
 import api, { apiErrorMessage } from '../../api'
 
 const STAGE_OPTIONS = [
@@ -162,6 +161,8 @@ export default function SimulationCard({
   orchardGeojson,
   orchardId,
   treeOverrides,
+  treeStageOverrides,
+  onClearTreeStageOverrides,
   onSimulationComplete,
   manualWeather,
   weatherOverrideActive,
@@ -171,8 +172,6 @@ export default function SimulationCard({
   const [simMode, setSimMode] = useState('grid')
   const [pestType, setPestType] = useState('fruitfly')
   const [orchardStage, setOrchardStage] = useState('mature')
-  const [quadrantMode, setQuadrantMode] = useState(false)
-  const [quadrantStages, setQuadrantStages] = useState({ nw: 'flowering', ne: 'fruitlet', sw: 'mature', se: 'dormant' })
   const [daysFlowering, setDaysFlowering] = useState(60)
   const [neighborThreat, setNeighborThreat] = useState(0)
   const [neighborDir, setNeighborDir] = useState('N')
@@ -204,7 +203,6 @@ export default function SimulationCard({
   }, [suggestedParams])
 
   const setImpactField = (k, v) => setImpact((p) => ({ ...p, [k]: v }))
-  const setQStage = (q, v) => setQuadrantStages((p) => ({ ...p, [q]: v }))
 
   const handleRun = async () => {
     setRunning(true)
@@ -234,8 +232,8 @@ export default function SimulationCard({
         body.neighbor_direction = neighborDir
       }
 
-      if (quadrantMode) {
-        body.quadrant_stages = quadrantStages
+      if (treeStageOverrides && Object.keys(treeStageOverrides).length > 0) {
+        body.tree_stage_overrides = treeStageOverrides
       }
 
       if (weatherOverrideActive) {
@@ -342,30 +340,15 @@ export default function SimulationCard({
       />
       <small className="text-muted d-block mb-2 mt-1">Fruitlet activates Cecid Fly · Mature activates Fruit Fly</small>
 
-      <label className="sim-toggle-row mb-1" htmlFor="quadrant-mode">
-        <div className="sim-toggle-body">
-          <i className="bi bi-grid-3x3 sim-toggle-icon" />
-          <span className="sim-toggle-label">Different stage per quadrant</span>
-        </div>
-        <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="quadrant-mode"
-          checked={quadrantMode} onChange={(e) => setQuadrantMode(e.target.checked)} />
-      </label>
-      {quadrantMode && (
-        <div className="mb-2">
-          <small className="text-muted d-block mb-2">Each quadrant has a dominant stage; 70% of trees follow it.</small>
-          <div className="row g-2">
-            {['nw','ne','sw','se'].map((q) => (
-              <div className="col-6" key={q}>
-                <label className="small fw-medium mb-1 d-block">{q.toUpperCase()}</label>
-                <MpSelect
-                  value={quadrantStages[q]}
-                  onChange={(v) => setQStage(q, v)}
-                  options={STAGE_OPTIONS}
-                  small
-                />
-              </div>
-            ))}
-          </div>
+      {treeStageOverrides && Object.keys(treeStageOverrides).length > 0 && (
+        <div className="alert alert-success py-1 px-2 mb-2 d-flex align-items-center gap-2" style={{ fontSize: '.78rem' }}>
+          <span className="flex-grow-1">
+            <i className="bi bi-map me-1" />
+            {Object.keys(treeStageOverrides).length} tree(s) use map-assigned stage zones.
+          </span>
+          <button type="button" className="btn btn-sm btn-outline-success py-0 px-2" onClick={onClearTreeStageOverrides}>
+            Clear
+          </button>
         </div>
       )}
 

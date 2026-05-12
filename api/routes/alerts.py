@@ -37,6 +37,7 @@ def _memory_alert_to_response(alert: dict) -> AlertResponse:
     """Convert an in-memory fallback alert to API response shape."""
     return AlertResponse(
         alert_id=alert["alert_id"],
+        simulation_run_id=alert.get("simulation_run_id"),
         triggered_at=alert["triggered_at"],
         severity=(
             AlertSeverityEnum(alert["severity"])
@@ -100,6 +101,7 @@ def _db_alert_to_response(alert) -> AlertResponse:
 
     return AlertResponse(
         alert_id=alert.alert_id,
+        simulation_run_id=alert.simulation_run_id,
         triggered_at=format_rfc3339(alert.triggered_at) if alert.triggered_at else "",
         severity=severity_map.get(alert.severity.value, AlertSeverityEnum.HIGH) if alert.severity else AlertSeverityEnum.HIGH,
         status=status_map.get(alert.status, AlertStatusEnum.ACTIVE) if alert.status else AlertStatusEnum.ACTIVE,

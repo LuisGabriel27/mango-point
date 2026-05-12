@@ -898,6 +898,11 @@ class TreeGraphEngine:
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
                     continue
+                if (
+                    self.stage_per_tree is not None
+                    and self.stage_per_tree[edge.dst] != required_stage_int
+                ):
+                    continue
 
                 prob = crown_spread_prob(
                     edge, wind_dir_rad,
@@ -954,6 +959,11 @@ class TreeGraphEngine:
             for edge in self.graph.neighbours(src_idx):
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
+                    continue
+                if (
+                    self.stage_per_tree is not None
+                    and self.stage_per_tree[edge.dst] != required_stage_int
+                ):
                     continue
 
                 prob = crown_spread_prob(

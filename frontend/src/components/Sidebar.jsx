@@ -21,6 +21,8 @@ export default function Sidebar({
   onWeatherOverrideToggle,
   orchardGeojson,
   treeOverrides,
+  treeStageOverrides,
+  onClearTreeStageOverrides,
   onSimulationComplete,
   playbackFrames,
   currentFrameIdx,
@@ -56,6 +58,8 @@ export default function Sidebar({
           orchardGeojson={orchardGeojson}
           orchardId={selectedOrchardId}
           treeOverrides={treeOverrides}
+          treeStageOverrides={treeStageOverrides}
+          onClearTreeStageOverrides={onClearTreeStageOverrides}
           onSimulationComplete={onSimulationComplete}
           manualWeather={manualWeather}
           weatherOverrideActive={weatherOverrideActive}

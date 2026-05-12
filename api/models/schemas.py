@@ -348,6 +348,11 @@ class SimulationRequest(BaseModel):
                     "spatial identifiability. When absent, all trees inherit `orchard_stage` "
                     "(backward compatible)."
     )
+    tree_stage_overrides: Optional[Dict[str, OrchardStageEnum]] = Field(
+        default=None,
+        description="Optional per-tree phenology map from tree_id to growth stage. "
+                    "Applied after the orchard-wide or quadrant stage assignment.",
+    )
     days_since_flowering: Optional[int] = Field(
         default=60,
         ge=0,
@@ -615,6 +620,7 @@ class SimulationMetadata(BaseModel):
     # flowering, fruitlet, mature. Feeds the dashboard phenology donut.
     stage_breakdown: Optional[Dict[str, int]] = None
     quadrant_stages: Optional[Dict[str, str]] = None
+    tree_stage_override_count: int = 0
 
 
 class SimulationResponse(BaseModel):
@@ -787,6 +793,7 @@ class AlertCreate(BaseModel):
 class AlertResponse(BaseModel):
     """Response schema for alert data."""
     alert_id: str
+    simulation_run_id: Optional[str] = None
     triggered_at: str
     severity: AlertSeverityEnum
     status: AlertStatusEnum

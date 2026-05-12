@@ -20,6 +20,89 @@ const DEFAULT_MANUAL_WEATHER = {
 
 const fallbackTreeGeojson = { type: 'FeatureCollection', features: [] }
 
+const PHENOLOGY_STAGE_OPTIONS = [
+  { label: 'Dormant', value: 'dormant' },
+  { label: 'Flowering', value: 'flowering' },
+  { label: 'Fruitlet', value: 'fruitlet' },
+  { label: 'Mature', value: 'mature' },
+]
+
+function averageCoordinates(coordinates) {
+  const points = coordinates
+    .filter((coord) => Array.isArray(coord) && coord.length >= 2)
+    .map((coord) => [Number(coord[0]), Number(coord[1])])
+    .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat))
+  if (!points.length) return null
+  const lon = points.reduce((sum, point) => sum + point[0], 0) / points.length
+  const lat = points.reduce((sum, point) => sum + point[1], 0) / points.length
+  return [lon, lat]
+}
+
+function geometryCenter(geometry) {
+  if (!geometry) return null
+  if (geometry.type === 'Point') {
+    const lon = Number(geometry.coordinates?.[0])
+    const lat = Number(geometry.coordinates?.[1])
+    return Number.isFinite(lon) && Number.isFinite(lat) ? [lon, lat] : null
+  }
+  if (geometry.type === 'Polygon') {
+    const ring = geometry.coordinates?.[0] || []
+    const openRing = ring.length > 1 && ring[0]?.[0] === ring.at(-1)?.[0] && ring[0]?.[1] === ring.at(-1)?.[1]
+      ? ring.slice(0, -1)
+      : ring
+    return averageCoordinates(openRing)
+  }
+  return null
+}
+
+function treePointsFromGeojson(geojson) {
+  const features = Array.isArray(geojson?.features) ? geojson.features : []
+  return features
+    .map((feature) => {
+      const center = geometryCenter(feature.geometry)
+      if (!center) return null
+      const props = feature.properties || {}
+      const treeId = props.tree_id ?? props.Tree_ID ?? props.fid ?? feature.id
+      if (treeId == null) return null
+      return { tree_id: String(treeId), lon: center[0], lat: center[1] }
+    })
+    .filter(Boolean)
+}
+
+function pointInPolygon(point, polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return false
+  const [x, y] = point
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i]
+    const [xj, yj] = polygon[j]
+    const intersects = ((yi > y) !== (yj > y))
+      && (x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi)
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
+function isActiveAlert(alert) {
+  return String(alert?.status ?? '').toLowerCase() === 'active'
+}
+
+function isConditionAlert(alert) {
+  const zone = String(alert?.zone_name ?? '').toLowerCase()
+  return zone.includes('weather forecast') || zone.includes('gate condition')
+}
+
+function isOrchardAlert(alert, orchardId) {
+  return String(alert?.orchard_id ?? '') === String(orchardId)
+}
+
+function isCurrentSimulationRiskAlert(alert, runId) {
+  return Boolean(runId)
+    && isActiveAlert(alert)
+    && !isConditionAlert(alert)
+    && String(alert?.simulation_run_id ?? '') === String(runId)
+}
+
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live-map')
 
@@ -32,6 +115,11 @@ export default function DashboardPage() {
   // Simulation / map state
   const [simData, setSimData] = useState(null)
   const [treeOverrides, setTreeOverrides] = useState({})
+  const [treeStageOverrides, setTreeStageOverrides] = useState({})
+  const [phenologyZones, setPhenologyZones] = useState([])
+  const [stageZoneDrawing, setStageZoneDrawing] = useState(false)
+  const [stageZoneStage, setStageZoneStage] = useState('mature')
+  const [stageZoneDraft, setStageZoneDraft] = useState([])
   const [playbackFrames, setPlaybackFrames] = useState([])
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0)
   const [mapRefreshKey, setMapRefreshKey] = useState(0)
@@ -78,23 +166,49 @@ export default function DashboardPage() {
     selectedOrchardId === DEFAULT_ORCHARD_ID
       ? DEFAULT_ORCHARD_LABEL
       : selectedOrchardRecord?.name ?? DEFAULT_ORCHARD_LABEL
+  const orchardTreePoints = useMemo(
+    () => treePointsFromGeojson(orchardGeojson),
+    [orchardGeojson],
+  )
+  // IMPORTANT: depend on the primitive URL + serialized coordinates instead
+  // of `selectedOrchardRecord`. Every `Refresh Orchards` click rebuilds the
+  // orchard list, so the record object identity changes even when the
+  // orthophoto did not — and the previous version of this memo invalidated
+  // on every refresh, which cancelled the in-flight image download for
+  // GWF and forced the fetch to restart from zero on each click. Comparing
+  // by value lets the existing download finish instead of restarting it.
+  const orthoUrl = selectedOrchardRecord?.orthophoto_url ?? null
+  const orthoCoordinatesKey = useMemo(
+    () => (selectedOrchardRecord?.orthophoto_coordinates
+      ? JSON.stringify(selectedOrchardRecord.orthophoto_coordinates)
+      : null),
+    [selectedOrchardRecord?.orthophoto_coordinates],
+  )
   const orchardOrthophoto = useMemo(
     () => (
-      selectedOrchardRecord?.orthophoto_url
-        ? {
-            url: selectedOrchardRecord.orthophoto_url,
-            coordinates: selectedOrchardRecord.orthophoto_coordinates,
-          }
+      orthoUrl && orthoCoordinatesKey
+        ? { url: orthoUrl, coordinates: JSON.parse(orthoCoordinatesKey) }
         : null
     ),
-    [selectedOrchardId, selectedOrchardRecord],
+    [orthoUrl, orthoCoordinatesKey],
   )
 
   // Displayed geojson: current playback frame, or final sim snapshot, or null
   const currentFrame = playbackFrames.length > 0 ? (playbackFrames[currentFrameIdx] ?? null) : null
   const mapGeojson = currentFrame?.risk_geojson ?? simData?.risk_geojson ?? null
 
-  const activeAlertCount = alerts.filter((a) => a.status === 'active').length
+  const activeOrchardAlerts = useMemo(
+    () => alerts.filter((alert) => isOrchardAlert(alert, selectedOrchardId)),
+    [alerts, selectedOrchardId],
+  )
+  const currentSimulationRunId = simData?.run_id ?? simData?.metadata?.run_id ?? null
+  const mapAlerts = useMemo(
+    () => activeOrchardAlerts.filter((alert) => (
+      isCurrentSimulationRiskAlert(alert, currentSimulationRunId)
+    )),
+    [activeOrchardAlerts, currentSimulationRunId],
+  )
+  const activeAlertCount = activeOrchardAlerts.filter(isActiveAlert).length
 
   // Build decision support metrics from simulation data
   // (SimulationResponse has no dedicated decision_support field — compute it here)
@@ -175,7 +289,8 @@ export default function DashboardPage() {
   const fetchAlerts = useCallback(async () => {
     setAlertLoading(true)
     try {
-      const res = await api.getAlerts({ limit: 100 })
+      const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+      const res = await api.getAlerts({ limit: 100, orchard_id: orchardId })
       setAlerts(res.data.alerts ?? [])
     } catch (_) {
       /* ignore */
@@ -234,20 +349,30 @@ export default function DashboardPage() {
     selectOrchardId(uploaded.orchard_id)
     setSimData(null)
     setTreeOverrides({})
+    setTreeStageOverrides({})
+    setPhenologyZones([])
+    setStageZoneDrawing(false)
+    setStageZoneDraft([])
     setPlaybackFrames([])
     setCurrentFrameIdx(0)
     setMapRefreshKey((value) => value + 1)
+    fetchAlerts()
     return uploaded
-  }, [selectOrchardId])
+  }, [fetchAlerts, selectOrchardId])
 
   const handleOrchardSelect = useCallback((orchardId) => {
     selectOrchardId(orchardId)
     setSimData(null)
     setTreeOverrides({})
+    setTreeStageOverrides({})
+    setPhenologyZones([])
+    setStageZoneDrawing(false)
+    setStageZoneDraft([])
     setPlaybackFrames([])
     setCurrentFrameIdx(0)
     setMapRefreshKey((value) => value + 1)
-  }, [selectOrchardId])
+    fetchAlerts()
+  }, [fetchAlerts, selectOrchardId])
 
   const handleOrchardRefresh = useCallback(async () => {
     await fetchOrchards(selectedOrchardIdRef.current)
@@ -288,6 +413,7 @@ export default function DashboardPage() {
     setPlaybackFrames(frames)
     setCurrentFrameIdx(0)
     fetchAlerts()
+    window.setTimeout(fetchAlerts, 1200)
     fetchMonitoring()
   }, [fetchAlerts, fetchMonitoring])
 
@@ -301,9 +427,54 @@ export default function DashboardPage() {
     setSelectedTree(null)
   }, [])
 
+  const handleStageZoneStart = useCallback(() => {
+    setStageZoneDraft([])
+    setStageZoneDrawing(true)
+  }, [])
+
+  const handleStageZoneCancel = useCallback(() => {
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+  }, [])
+
+  const handleStageZoneMapClick = useCallback((coordinate) => {
+    setStageZoneDraft((prev) => [...prev, coordinate])
+  }, [])
+
+  const handleStageZoneFinish = useCallback(() => {
+    if (stageZoneDraft.length < 3) return
+    const targetIds = orchardTreePoints
+      .filter((point) => pointInPolygon([point.lon, point.lat], stageZoneDraft))
+      .map((point) => point.tree_id)
+
+    setPhenologyZones((prev) => ([
+      ...prev,
+      {
+        id: `stage-zone-${Date.now()}`,
+        stage: stageZoneStage,
+        coordinates: stageZoneDraft,
+        tree_count: targetIds.length,
+      },
+    ]))
+    setTreeStageOverrides((prev) => {
+      const next = { ...prev }
+      for (const id of targetIds) next[id] = stageZoneStage
+      return next
+    })
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+  }, [orchardTreePoints, stageZoneDraft, stageZoneStage])
+
+  const handleStageZoneClear = useCallback(() => {
+    setPhenologyZones([])
+    setTreeStageOverrides({})
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+  }, [])
+
   return (
     <div className="app-shell">
-      <Navbar alertCount={activeAlertCount} alerts={alerts} activeTab={activeTab} onTabChange={setActiveTab} />
+      <Navbar alertCount={activeAlertCount} alerts={activeOrchardAlerts} activeTab={activeTab} onTabChange={setActiveTab} />
 
       <div className="viewport-layout">
         {/* ── Main content area (map + tabs) ── */}
@@ -319,8 +490,20 @@ export default function DashboardPage() {
                 <LiveMapTab
                   geojson={mapGeojson}
                   baseGeojson={orchardGeojson}
-                  alerts={alerts.filter((a) => a.status === 'active')}
+                  alerts={mapAlerts}
                   treeOverrides={treeOverrides}
+                  stageOverrides={treeStageOverrides}
+                  stageZones={phenologyZones}
+                  stageZoneDrawing={stageZoneDrawing}
+                  stageZoneStage={stageZoneStage}
+                  stageZoneDraft={stageZoneDraft}
+                  stageOptions={PHENOLOGY_STAGE_OPTIONS}
+                  onStageZoneStageChange={setStageZoneStage}
+                  onStageZoneStart={handleStageZoneStart}
+                  onStageZoneCancel={handleStageZoneCancel}
+                  onStageZoneFinish={handleStageZoneFinish}
+                  onStageZoneClear={handleStageZoneClear}
+                  onStageZoneMapClick={handleStageZoneMapClick}
                   orchardName={orchardName}
                   orthophotoOverlay={orchardOrthophoto}
                   viewportKey={`${selectedOrchardId}:${mapRefreshKey}`}
@@ -379,11 +562,13 @@ export default function DashboardPage() {
           onWeatherOverrideToggle={setWeatherOverrideActive}
           orchardGeojson={orchardGeojson}
           treeOverrides={treeOverrides}
+          treeStageOverrides={treeStageOverrides}
+          onClearTreeStageOverrides={handleStageZoneClear}
           onSimulationComplete={handleSimulationComplete}
           playbackFrames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
           onFrameSeek={setCurrentFrameIdx}
-          alerts={alerts}
+          alerts={activeOrchardAlerts}
           alertLoading={alertLoading}
           onAlertRefresh={fetchAlerts}
           decisionMetrics={decisionMetrics}

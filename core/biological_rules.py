@@ -209,6 +209,8 @@ class DispersalGate:
                 grid, src_r, src_c,
                 wind_speed_ms, wind_dir_deg, temperature_c,
                 rainfall_mm, rainfall_history, self.REQUIRED_STAGE, sugar_index,
+                target_stage_grid=stage_grid,
+                required_stage_int=required_int,
             )
 
     def _spread_from(
@@ -223,6 +225,8 @@ class DispersalGate:
         rainfall_history: Optional[deque] = None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
+        target_stage_grid: Optional[np.ndarray] = None,
+        required_stage_int: Optional[int] = None,
     ) -> None:
         raise NotImplementedError
 
@@ -313,6 +317,8 @@ class CecidFlyGate(DispersalGate):
         rainfall_history: Optional[deque] = None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
+        target_stage_grid: Optional[np.ndarray] = None,
+        required_stage_int: Optional[int] = None,
     ) -> None:
         wind_factor = max(0.0, 1.0 - wind_speed_ms / (self.wind_threshold_ms * 2))
         dispersal_factor = 0.5 + 0.5 * wind_factor
@@ -326,6 +332,12 @@ class CecidFlyGate(DispersalGate):
             if not (0 <= tr < grid.rows and 0 <= tc < grid.cols):
                 continue
             if grid.state[tr, tc] in (CellState.EMPTY, CellState.INFESTED, CellState.DEAD):
+                continue
+            if (
+                target_stage_grid is not None
+                and required_stage_int is not None
+                and int(target_stage_grid[tr, tc]) != required_stage_int
+            ):
                 continue
 
             prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
@@ -411,6 +423,8 @@ class FruitFlyGate(DispersalGate):
         rainfall_history: Optional[deque] = None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
+        target_stage_grid: Optional[np.ndarray] = None,
+        required_stage_int: Optional[int] = None,
     ) -> None:
         """Use the smaller of infected sources or susceptible targets."""
         if not self.is_open(
@@ -454,6 +468,8 @@ class FruitFlyGate(DispersalGate):
         rainfall_history: Optional[deque] = None,
         orchard_stage: OrchardStage = OrchardStage.MATURE,
         sugar_index: float = 0.5,
+        target_stage_grid: Optional[np.ndarray] = None,
+        required_stage_int: Optional[int] = None,
     ) -> None:
         temp_factor = min(1.5, (temperature_c - self.temp_threshold_c) / 10.0 + 1.0)
         sugar_factor = sugar_index / FRUIT_FLY_SUGAR_INDEX_MAX
@@ -465,6 +481,12 @@ class FruitFlyGate(DispersalGate):
             if not (0 <= tr < grid.rows and 0 <= tc < grid.cols):
                 continue
             if grid.state[tr, tc] in (CellState.EMPTY, CellState.INFESTED, CellState.DEAD):
+                continue
+            if (
+                target_stage_grid is not None
+                and required_stage_int is not None
+                and int(target_stage_grid[tr, tc]) != required_stage_int
+            ):
                 continue
 
             prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))

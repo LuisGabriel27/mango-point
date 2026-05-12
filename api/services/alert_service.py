@@ -211,6 +211,8 @@ class AlertService:
         risk_threshold: Optional[float] = None,
         lon_grid: Optional[Any] = None,  # numpy array
         lat_grid: Optional[Any] = None,  # numpy array
+        stage_grid: Optional[Any] = None,
+        required_stage_value: Optional[int] = None,
     ) -> List[AlertCreate]:
         """
         Check simulation results for alert conditions.
@@ -250,6 +252,8 @@ class AlertService:
         
         # Find high-risk unbagged cells
         high_risk_unbagged = (risk_grid >= threshold) & (state_grid == cell_state_unbagged)
+        if stage_grid is not None and required_stage_value is not None:
+            high_risk_unbagged = high_risk_unbagged & (stage_grid == int(required_stage_value))
         
         if not high_risk_unbagged.any():
             return alerts
@@ -324,6 +328,7 @@ class AlertService:
         orchard_id: str,
         simulation_run_id: Optional[str] = None,
         risk_threshold: Optional[float] = None,
+        required_stage: Optional[str] = None,
     ) -> List[AlertCreate]:
         """
         Check point-based tree simulation output for alert conditions.
@@ -339,9 +344,19 @@ class AlertService:
         threshold = self.risk_threshold if risk_threshold is None else float(risk_threshold)
 
         susceptible_states = {"unbagged", "susceptible", "healthy"}
+        required_stage_norm = (
+            str(required_stage).strip().lower().replace(" ", "_")
+            if required_stage
+            else None
+        )
 
         for feature in features:
             props = feature.get("properties", {}) or {}
+
+            if required_stage_norm:
+                feature_stage = str(props.get("stage", "")).strip().lower().replace(" ", "_")
+                if feature_stage and feature_stage != required_stage_norm:
+                    continue
 
             try:
                 risk = float(props.get("risk", 0.0) or 0.0)

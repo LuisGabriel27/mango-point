@@ -12,6 +12,7 @@ Covers:
 """
 
 import sys
+import math
 from pathlib import Path
 
 import numpy as np
@@ -242,6 +243,61 @@ class TestRequiredStage:
         assert g_fruitlet.risk.sum() == 0.0
         assert mature_total > 0.0
 
+    def test_compute_dispersal_per_cell_filters_target_stage(self):
+        """
+        With mixed phenology, non-matching target trees must not accumulate risk.
+        Fruit Fly can move from a mature source only into mature targets.
+        """
+        from core.grid import OrchardGrid
+        from core.biological_rules import FruitFlyGate
+        from collections import deque
+
+        g = OrchardGrid(rows=5, cols=5, cell_size_m=1.0)
+        g.state[:, :] = int(CellState.EMPTY)
+        g.state[2, 2] = int(CellState.INFESTED)
+        g.state[2, 1] = int(CellState.UNBAGGED)
+        g.state[2, 3] = int(CellState.UNBAGGED)
+
+        stage_grid = np.full((5, 5), int(OrchardStage.DORMANT), dtype=np.int32)
+        stage_grid[2, 2] = int(OrchardStage.MATURE)
+        stage_grid[2, 3] = int(OrchardStage.MATURE)
+
+        FruitFlyGate().compute_dispersal_per_cell(
+            g,
+            stage_grid=stage_grid,
+            hour=12, wind_speed_ms=1.0, wind_dir_deg=0.0,
+            temperature_c=30.0,
+            rainfall_mm=0.0,
+            rainfall_history=deque([0.0] * 24, maxlen=24),
+            sugar_index=0.9,
+        )
+
+        assert g.risk[2, 1] == 0.0
+        assert g.risk[2, 3] > 0.0
+
+    def test_tree_graph_spread_filters_target_stage(self):
+        from core.tree_graph_model import TreeGraph, TreeGraphEngine, TreeNode, TreeState
+        from utils.weather import WeatherTimeSeries
+
+        graph = TreeGraph(
+            [
+                TreeNode(0, "src", 0.0, 0.0, 0.0, 0.0, 3.0, TreeState.INFESTED),
+                TreeNode(1, "dormant", 0.0, 0.0, 2.0, 0.0, 3.0, TreeState.SUSCEPTIBLE),
+                TreeNode(2, "mature", 0.0, 0.0, -2.0, 0.0, 3.0, TreeState.SUSCEPTIBLE),
+            ],
+            max_dist=10.0,
+        )
+        engine = TreeGraphEngine(
+            graph,
+            weather=WeatherTimeSeries.synthetic(hours=1),
+            stage_per_tree=[OrchardStage.MATURE, OrchardStage.DORMANT, OrchardStage.MATURE],
+        )
+
+        engine._spread_fruitfly(math.radians(0.0), temperature_c=30.0)
+
+        assert engine.graph.nodes[1].risk == 0.0
+        assert engine.graph.nodes[2].risk > 0.0
+
 
 # ═════════════════════════════════════════════
 # 3. End-to-end through the simulation service
@@ -359,3 +415,29 @@ class TestServiceIntegration:
         r1 = _run_sync(kwargs)
         r2 = _run_sync(kwargs)
         assert r1.metadata.stage_breakdown == r2.metadata.stage_breakdown
+
+    def test_tree_stage_overrides_allow_grid_seed_in_matching_stage_zone(self):
+        resp = _run_sync({
+            **_BASE_REQUEST_KWARGS,
+            "simulation_mode": "grid",
+            "orchard_stage": "fruitlet",
+            "tree_stage_overrides": {"T1": "mature"},
+        })
+
+        assert resp.metadata.tree_stage_override_count == 1
+        assert resp.metadata.stage_breakdown["mature"] == 1
+        assert resp.metadata.initial_seed_count == 1
+        assert resp.metadata.initial_seed_strategy != "none_inactive_stage"
+
+    def test_tree_stage_overrides_allow_tree_graph_seed_in_matching_stage_zone(self):
+        resp = _run_sync({
+            **_BASE_REQUEST_KWARGS,
+            "simulation_mode": "tree_graph",
+            "orchard_stage": "fruitlet",
+            "tree_stage_overrides": {"T1": "mature"},
+        })
+
+        assert resp.metadata.tree_stage_override_count == 1
+        assert resp.metadata.stage_breakdown["mature"] == 1
+        assert resp.metadata.initial_seed_count == 1
+        assert resp.metadata.initial_seed_strategy != "none_inactive_stage"

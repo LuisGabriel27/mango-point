@@ -97,12 +97,78 @@ class SimulationService:
 
     def _pest_is_active_for_stage(self, pest_type: PestTypeEnum, orchard_stage: str) -> bool:
         """Return whether the selected pest can biologically activate at the given stage."""
+        pest_value = self._enum_value(pest_type)
         stage = (orchard_stage or "").lower()
-        if pest_type == PestTypeEnum.CECID:
+        if pest_value == PestTypeEnum.CECID.value:
             return stage == "fruitlet"
-        if pest_type == PestTypeEnum.FRUITFLY:
+        if pest_value == PestTypeEnum.FRUITFLY.value:
             return stage == "mature"
         return False
+
+    def _required_stage_value_for_pest(self, pest_type: PestTypeEnum) -> Optional[int]:
+        """Return the stage enum integer required for the selected pest to spread."""
+        if self._orchard_stage_enum is None:
+            return None
+        pest_value = self._enum_value(pest_type)
+        if pest_value == PestTypeEnum.CECID.value:
+            return int(self._orchard_stage_enum.FRUITLET)
+        if pest_value == PestTypeEnum.FRUITFLY.value:
+            return int(self._orchard_stage_enum.MATURE)
+        return None
+
+    @staticmethod
+    def _tree_stage_overrides_to_dict(overrides: Optional[Dict[str, Any]]) -> Dict[str, str]:
+        """Normalize tree_id -> phenology stage overrides from request data."""
+        if not overrides:
+            return {}
+        valid = {"dormant", "flowering", "fruitlet", "mature"}
+        resolved: Dict[str, str] = {}
+        for tree_id, raw_stage in dict(overrides).items():
+            stage = raw_stage.value if hasattr(raw_stage, "value") else str(raw_stage)
+            stage = stage.strip().lower()
+            if stage in valid:
+                resolved[str(tree_id)] = stage
+        return resolved
+
+    def _apply_tree_stage_overrides_to_grid(
+        self,
+        stage_grid: np.ndarray,
+        grid,
+        tree_stage_overrides: Dict[str, str],
+    ) -> int:
+        """Apply per-tree phenology overrides to the grid stage matrix."""
+        if not tree_stage_overrides:
+            return 0
+        from core.phenology_zones import coerce_stage
+
+        applied = 0
+        for r in range(grid.rows):
+            for c in range(grid.cols):
+                tree_id = str(grid.tree_ids[r, c])
+                if tree_id in tree_stage_overrides:
+                    stage_grid[r, c] = int(coerce_stage(tree_stage_overrides[tree_id]))
+                    applied += 1
+        return applied
+
+    def _apply_tree_stage_overrides_to_tree_graph(
+        self,
+        stages: List[Any],
+        graph,
+        tree_stage_overrides: Dict[str, str],
+    ) -> Tuple[List[Any], int]:
+        """Apply per-tree phenology overrides to a tree-graph stage list."""
+        if not tree_stage_overrides:
+            return stages, 0
+        from core.phenology_zones import coerce_stage
+
+        resolved = list(stages)
+        applied = 0
+        for idx, node in enumerate(graph.nodes):
+            stage = tree_stage_overrides.get(str(node.tree_id))
+            if stage is not None:
+                resolved[idx] = coerce_stage(stage)
+                applied += 1
+        return resolved, applied
 
     def _has_manual_infestation_source(self, tree_overrides: Optional[Dict[str, str]]) -> bool:
         """Check whether manual tree overrides already define infested source trees."""
@@ -204,16 +270,17 @@ class SimulationService:
         tree_overrides: Optional[Dict[str, str]] = None,
         neighbor_threat: float = 0.0,
         neighbor_direction: Optional[str] = None,
+        stage_grid: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """
         Auto-seed infestation sources for demo runs when biologically appropriate.
 
         Returns seed metadata for response traceability.
         """
-        if not self._pest_is_active_for_stage(pest_type, orchard_stage):
+        if stage_grid is None and not self._pest_is_active_for_stage(pest_type, orchard_stage):
             logger.info(
                 "Skipping auto-seeding: pest=%s is inactive during stage=%s",
-                pest_type.value,
+                self._enum_value(pest_type),
                 orchard_stage,
             )
             return self._empty_seed_result("none_inactive_stage")
@@ -222,7 +289,19 @@ class SimulationService:
             logger.info("Skipping auto-seeding: manual infected tree overrides already provided")
             return self._empty_seed_result("manual_tree_overrides")
 
-        tree_cells = list(zip(*np.where(grid.susceptible_mask)))
+        seed_candidate_mask = grid.susceptible_mask
+        required_stage = self._required_stage_value_for_pest(pest_type)
+        if stage_grid is not None and required_stage is not None:
+            seed_candidate_mask = seed_candidate_mask & (stage_grid == required_stage)
+
+        tree_cells = list(zip(*np.where(seed_candidate_mask)))
+        if stage_grid is not None and required_stage is not None and not tree_cells:
+            logger.info(
+                "Skipping auto-seeding: no susceptible trees match required stage for pest=%s",
+                self._enum_value(pest_type),
+            )
+            return self._empty_seed_result("none_no_active_stage_trees")
+
         if not tree_cells:
             center_r, center_c = grid.rows // 2, grid.cols // 2
             grid.infest(center_r, center_c)
@@ -318,6 +397,9 @@ class SimulationService:
         quadrant_stages_dict = self._quadrant_stages_to_dict(
             getattr(request, 'quadrant_stages', None)
         )
+        tree_stage_overrides = self._tree_stage_overrides_to_dict(
+            getattr(request, 'tree_stage_overrides', None)
+        )
         days_since_flowering = getattr(request, 'days_since_flowering', 60) or 60
         neighbor_threat = getattr(request, 'neighbor_threat', 0.0) or 0.0
         neighbor_direction = getattr(request, 'neighbor_direction', None)
@@ -350,6 +432,7 @@ class SimulationService:
                 neighbor_threat=neighbor_threat,
                 neighbor_direction=neighbor_direction,
                 quadrant_stages_dict=quadrant_stages_dict,
+                tree_stage_overrides=tree_stage_overrides,
             )
 
         try:
@@ -364,6 +447,35 @@ class SimulationService:
             tree_overrides = getattr(request, 'tree_overrides', None)
             if tree_overrides:
                 self._apply_tree_overrides(grid, tree_overrides)
+
+            # Resolve per-cell phenology before auto-seeding so mixed stages
+            # determine where pest sources can biologically start.
+            orchard_stage_map = {
+                'dormant': self._orchard_stage_enum.DORMANT,
+                'flowering': self._orchard_stage_enum.FLOWERING,
+                'fruitlet': self._orchard_stage_enum.FRUITLET,
+                'mature': self._orchard_stage_enum.MATURE,
+            }
+            orchard_stage = orchard_stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
+            from core.phenology_zones import (
+                assign_stages_for_grid,
+                uniform_stage_grid,
+                stage_breakdown_from_grid,
+            )
+            if quadrant_stages_dict is not None:
+                stage_grid = assign_stages_for_grid(
+                    grid.rows, grid.cols,
+                    quadrant_stages=quadrant_stages_dict,
+                    seed=random_seed,
+                    fallback=orchard_stage,
+                )
+            else:
+                stage_grid = uniform_stage_grid(grid.rows, grid.cols, orchard_stage)
+            tree_stage_override_count = self._apply_tree_stage_overrides_to_grid(
+                stage_grid,
+                grid,
+                tree_stage_overrides,
+            )
 
             seed_metadata = self._empty_seed_result("none")
 
@@ -390,6 +502,7 @@ class SimulationService:
                     tree_overrides=tree_overrides,
                     neighbor_threat=neighbor_threat,
                     neighbor_direction=neighbor_direction,
+                    stage_grid=stage_grid,
                 )
 
             treatment_summary = self._apply_treatments_to_grid(
@@ -410,14 +523,6 @@ class SimulationService:
             gates = self._get_gates(request.pest_type, gate_params)
             
             # Convert orchard stage string to enum
-            orchard_stage_map = {
-                'dormant': self._orchard_stage_enum.DORMANT,
-                'flowering': self._orchard_stage_enum.FLOWERING,
-                'fruitlet': self._orchard_stage_enum.FRUITLET,
-                'mature': self._orchard_stage_enum.MATURE,
-            }
-            orchard_stage = orchard_stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
-            
             # Apply neighbor threat — directional gradient when direction is given,
             # uniform otherwise (preserves original behaviour for existing callers).
             if neighbor_threat > 0:
@@ -432,24 +537,6 @@ class SimulationService:
                 else:
                     grid.set_neighbor_threat_uniform(neighbor_threat)
             
-            # Resolve per-cell phenology (quadrant → stage grid). When
-            # `quadrant_stages_dict` is absent, every cell inherits the scalar
-            # stage so behaviour is identical to pre-phenology runs.
-            from core.phenology_zones import (
-                assign_stages_for_grid,
-                uniform_stage_grid,
-                stage_breakdown_from_grid,
-            )
-            if quadrant_stages_dict is not None:
-                stage_grid = assign_stages_for_grid(
-                    grid.rows, grid.cols,
-                    quadrant_stages=quadrant_stages_dict,
-                    seed=random_seed,
-                    fallback=orchard_stage,
-                )
-            else:
-                stage_grid = uniform_stage_grid(grid.rows, grid.cols, orchard_stage)
-
             # Breakdown counts real trees only (non-empty cells).
             tree_mask = grid.state != int(self._cell_state.EMPTY)
             stage_breakdown = stage_breakdown_from_grid(stage_grid, mask=tree_mask)
@@ -474,13 +561,14 @@ class SimulationService:
             duration = (completed_at - started_at).total_seconds()
             
             include_time_series = bool(getattr(request, "include_time_series", True))
-            time_series = self._result_to_time_series(result, origin) if include_time_series else []
+            time_series = self._result_to_time_series(result, origin, stage_grid=stage_grid) if include_time_series else []
             
             # Final risk GeoJSON
             risk_geojson = self._grid_to_geojson(
                 result.grid, 
                 result.snapshots[-1]["risk"],
                 origin,
+                stage_grid=stage_grid,
             )
             
             # Calculate summary statistics
@@ -522,6 +610,7 @@ class SimulationService:
                 treatment_summary=treatment_summary,
                 stage_breakdown=stage_breakdown,
                 quadrant_stages=quadrant_stages_dict,
+                tree_stage_override_count=tree_stage_override_count,
             )
 
             logger.info(
@@ -902,6 +991,7 @@ class SimulationService:
         self,
         result,
         origin: Tuple[float, float],
+        stage_grid: Optional[np.ndarray] = None,
     ) -> List[TimeSeriesSnapshot]:
         """Convert simulation result to time-series snapshots."""
         time_series = []
@@ -926,6 +1016,7 @@ class SimulationService:
                 snap["risk"],
                 origin,
                 state_override=snap["state"],
+                stage_grid=stage_grid,
             )
 
             dt = snap["datetime"]
@@ -955,6 +1046,7 @@ class SimulationService:
         risk: np.ndarray,
         origin: Tuple[float, float],
         state_override: Optional[np.ndarray] = None,
+        stage_grid: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """Convert grid risk to GeoJSON FeatureCollection.
         
@@ -987,7 +1079,30 @@ class SimulationService:
                 
                 # Cell state
                 state_name = self._cell_state(state[r, c]).name.lower()
+                stage_name = None
+                if stage_grid is not None and self._orchard_stage_enum is not None:
+                    try:
+                        stage_name = self._orchard_stage_enum(int(stage_grid[r, c])).name.lower()
+                    except (TypeError, ValueError):
+                        stage_name = None
                 
+                properties = {
+                    "row": r,
+                    "col": c,
+                    "risk": float(risk[r, c]),
+                    "state": state_name,
+                    "tree_id": str(grid.tree_ids[r, c]) if grid.tree_ids[r, c] else None,
+                    "treated": bool(getattr(grid, "treatment_active", np.zeros_like(state, dtype=bool))[r, c]),
+                    "treatment_susceptibility_factor": float(
+                        getattr(grid, "treatment_susceptibility_factor", np.ones_like(risk))[r, c]
+                    ),
+                    "treatment_source_factor": float(
+                        getattr(grid, "treatment_source_factor", np.ones_like(risk))[r, c]
+                    ),
+                }
+                if stage_name:
+                    properties["stage"] = stage_name
+
                 feature = {
                     "type": "Feature",
                     "geometry": {
@@ -1000,20 +1115,7 @@ class SimulationService:
                             [lon_min, lat_min],
                         ]],
                     },
-                    "properties": {
-                        "row": r,
-                        "col": c,
-                        "risk": float(risk[r, c]),
-                        "state": state_name,
-                        "tree_id": str(grid.tree_ids[r, c]) if grid.tree_ids[r, c] else None,
-                        "treated": bool(getattr(grid, "treatment_active", np.zeros_like(state, dtype=bool))[r, c]),
-                        "treatment_susceptibility_factor": float(
-                            getattr(grid, "treatment_susceptibility_factor", np.ones_like(risk))[r, c]
-                        ),
-                        "treatment_source_factor": float(
-                            getattr(grid, "treatment_source_factor", np.ones_like(risk))[r, c]
-                        ),
-                    },
+                    "properties": properties,
                 }
                 features.append(feature)
         
@@ -1040,6 +1142,7 @@ class SimulationService:
         neighbor_threat: float,
         neighbor_direction: Optional[str] = None,
         quadrant_stages_dict: Optional[Dict[str, str]] = None,
+        tree_stage_overrides: Optional[Dict[str, str]] = None,
     ) -> SimulationResponse:
         """Execute the crown-aware tree-graph simulation."""
         self._load_modules()
@@ -1134,6 +1237,38 @@ class SimulationService:
                         )
 
         # ── seed initial infestation ──────────────────────────────
+        assert self._orchard_stage_enum is not None
+        stage_map = {
+            "dormant":   self._orchard_stage_enum.DORMANT,
+            "flowering": self._orchard_stage_enum.FLOWERING,
+            "fruitlet":  self._orchard_stage_enum.FRUITLET,
+            "mature":    self._orchard_stage_enum.MATURE,
+        }
+        orchard_stage = stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
+
+        from core.phenology_zones import (
+            assign_stages_for_points,
+            stage_breakdown,
+        )
+        bbox = (min(lons), min(lats), max(lons), max(lats))
+        tree_coords = list(zip(lons, lats))
+        if quadrant_stages_dict is not None:
+            stage_per_tree = assign_stages_for_points(
+                tree_coords=tree_coords,
+                quadrant_stages=quadrant_stages_dict,
+                bbox=bbox,
+                seed=random_seed,
+                fallback=orchard_stage,
+            )
+        else:
+            stage_per_tree = [orchard_stage] * len(graph.nodes)
+        stage_per_tree, tree_stage_override_count = self._apply_tree_stage_overrides_to_tree_graph(
+            stage_per_tree,
+            graph,
+            tree_stage_overrides or {},
+        )
+        stage_counts = stage_breakdown(stage_per_tree)
+
         seed_metadata = self._empty_seed_result("none")
         seed_ids = list(request.initial_infestation_tree_ids or [])
         if seed_ids:
@@ -1163,6 +1298,7 @@ class SimulationService:
                 tree_overrides=tree_overrides,
                 neighbor_threat=neighbor_threat,
                 neighbor_direction=neighbor_direction,
+                stage_per_tree=stage_per_tree,
             )
             logger.info(
                 "tree_graph auto-seeded %d infested tree(s) using %s",
@@ -1185,15 +1321,6 @@ class SimulationService:
             "fruit_fly_base_dispersal_prob": request.fruit_fly_base_dispersal_prob,
         }
         gates   = self._get_gates(request.pest_type, gate_params)
-
-        assert self._orchard_stage_enum is not None
-        stage_map = {
-            "dormant":   self._orchard_stage_enum.DORMANT,
-            "flowering": self._orchard_stage_enum.FLOWERING,
-            "fruitlet":  self._orchard_stage_enum.FRUITLET,
-            "mature":    self._orchard_stage_enum.MATURE,
-        }
-        orchard_stage = stage_map.get(orchard_stage_str, self._orchard_stage_enum.MATURE)
 
         # ── per-tree phenology (quadrant-based mixed stages) ──────
         # Using the already-computed lon/lat extents from the tree features as
@@ -1219,6 +1346,13 @@ class SimulationService:
         stage_counts = stage_breakdown(stage_per_tree)
 
         # ── run engine ────────────────────────────────────────────
+        stage_per_tree, tree_stage_override_count = self._apply_tree_stage_overrides_to_tree_graph(
+            stage_per_tree,
+            graph,
+            tree_stage_overrides or {},
+        )
+        stage_counts = stage_breakdown(stage_per_tree)
+
         engine = TreeGraphEngine(
             graph=graph,
             weather=weather,
@@ -1234,7 +1368,7 @@ class SimulationService:
             neighbor_threat=neighbor_threat,
             neighbor_direction=neighbor_direction,
             initial_rainfall_history=getattr(request, "manual_weather_prefix_rain", None),
-            stage_per_tree=stage_per_tree if quadrant_stages_dict is not None else None,
+            stage_per_tree=stage_per_tree if (quadrant_stages_dict is not None or tree_stage_override_count > 0) else None,
         )
         result = engine.run(n_steps=request.hours, progress=False)
 
@@ -1251,11 +1385,12 @@ class SimulationService:
 
         # ── convert to time-series ────────────────────────────────
         include_time_series = bool(getattr(request, "include_time_series", True))
-        time_series = self._tg_result_to_time_series(result, graph) if include_time_series else []
+        time_series = self._tg_result_to_time_series(result, graph, stage_per_tree=stage_per_tree) if include_time_series else []
         risk_geojson = self._tg_snapshot_to_geojson(
             graph=result.graph or graph,
             states=result.snapshots[-1]["states"] if result.snapshots else [],
             risks=result.snapshots[-1]["risks"] if result.snapshots else [],
+            stage_per_tree=stage_per_tree,
         )
 
         timesteps = [
@@ -1297,6 +1432,7 @@ class SimulationService:
             tg_default_crown_radius_m=crown_fallback,
             stage_breakdown=stage_counts,
             quadrant_stages=quadrant_stages_dict,
+            tree_stage_override_count=tree_stage_override_count,
         )
 
         logger.info(
@@ -1333,11 +1469,12 @@ class SimulationService:
         tree_overrides: Optional[Dict[str, str]],
         neighbor_threat: float = 0.0,
         neighbor_direction: Optional[str] = None,
+        stage_per_tree: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """Auto-seed infestation for tree_graph mode with traceable source selection."""
         from core.tree_graph_model import TreeState
 
-        if not self._pest_is_active_for_stage(pest_type, orchard_stage):
+        if stage_per_tree is None and not self._pest_is_active_for_stage(pest_type, orchard_stage):
             return self._empty_seed_result("none_inactive_stage")
         if self._has_manual_infestation_source(tree_overrides):
             return self._empty_seed_result("manual_tree_overrides")
@@ -1345,6 +1482,14 @@ class SimulationService:
         susceptible = [
             n for n in graph.nodes if n.state == TreeState.SUSCEPTIBLE
         ]
+        required_stage = self._required_stage_value_for_pest(pest_type)
+        if stage_per_tree is not None and required_stage is not None:
+            susceptible = [
+                node for node in susceptible
+                if node.index < len(stage_per_tree) and int(stage_per_tree[node.index]) == required_stage
+            ]
+            if not susceptible:
+                return self._empty_seed_result("none_no_active_stage_trees")
         if not susceptible:
             # Fallback: infest first node if no susceptible trees
             if graph.nodes:
@@ -1392,6 +1537,7 @@ class SimulationService:
         self,
         result,
         graph,
+        stage_per_tree: Optional[List[Any]] = None,
     ) -> List[TimeSeriesSnapshot]:
         """Convert TreeGraphResult snapshots to TimeSeriesSnapshot list."""
         time_series: List[TimeSeriesSnapshot] = []
@@ -1415,6 +1561,7 @@ class SimulationService:
                 graph=result.graph or graph,
                 states=snap["states"],
                 risks=snap["risks"],
+                stage_per_tree=stage_per_tree,
             )
             time_series.append(TimeSeriesSnapshot(
                 timestep=snap["timestep"],
@@ -1438,6 +1585,7 @@ class SimulationService:
         graph,
         states: List[int],
         risks: List[float],
+        stage_per_tree: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         """
         Render a tree_graph snapshot as a GeoJSON FeatureCollection of Points.
@@ -1459,26 +1607,41 @@ class SimulationService:
             idx = node.index
             state_val = states[idx] if idx < len(states) else node.state
             risk_val  = risks[idx]  if idx < len(risks)  else 0.0
+            stage_name = None
+            if stage_per_tree is not None and idx < len(stage_per_tree):
+                stage = stage_per_tree[idx]
+                stage_name = stage.name.lower() if hasattr(stage, "name") else str(stage).lower()
+                if stage_name.startswith("orchardstage."):
+                    stage_name = stage_name.split(".", 1)[1]
+                if stage_name.isdigit() and self._orchard_stage_enum is not None:
+                    try:
+                        stage_name = self._orchard_stage_enum(int(stage_name)).name.lower()
+                    except (TypeError, ValueError):
+                        stage_name = None
+            properties = {
+                "tree_id":       node.tree_id,
+                "risk":          round(float(risk_val), 6),
+                "state":         state_names.get(state_val, "unknown"),
+                "crown_radius_m": node.crown_radius,
+                "index":         idx,
+                "treated":       bool(getattr(node, "treatment_active", False)),
+                "treatment_susceptibility_factor": float(
+                    getattr(node, "treatment_susceptibility_factor", 1.0)
+                ),
+                "treatment_source_factor": float(
+                    getattr(node, "treatment_source_factor", 1.0)
+                ),
+            }
+            if stage_name:
+                properties["stage"] = stage_name
+
             features.append({
                 "type": "Feature",
                 "geometry": {
                     "type": "Point",
                     "coordinates": [node.lon, node.lat],
                 },
-                "properties": {
-                    "tree_id":       node.tree_id,
-                    "risk":          round(float(risk_val), 6),
-                    "state":         state_names.get(state_val, "unknown"),
-                    "crown_radius_m": node.crown_radius,
-                    "index":         idx,
-                    "treated":       bool(getattr(node, "treatment_active", False)),
-                    "treatment_susceptibility_factor": float(
-                        getattr(node, "treatment_susceptibility_factor", 1.0)
-                    ),
-                    "treatment_source_factor": float(
-                        getattr(node, "treatment_source_factor", 1.0)
-                    ),
-                },
+                "properties": properties,
             })
 
         return {"type": "FeatureCollection", "features": features}

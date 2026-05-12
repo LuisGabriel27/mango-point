@@ -101,6 +101,26 @@ def test_tree_feature_alerts_can_use_simulation_threshold_override():
     assert "Alert threshold: 50%" in alerts[0].message
 
 
+def test_tree_feature_alerts_filter_required_stage_when_available():
+    service = AlertService()
+    service.risk_threshold = 0.50
+
+    mature = _tree_feature("mature-1", 0.80)
+    mature["properties"]["stage"] = "mature"
+    fruitlet = _tree_feature("fruitlet-1", 0.95, lon=124.0, lat=12.0)
+    fruitlet["properties"]["stage"] = "fruitlet"
+
+    alerts = service.check_tree_feature_alerts(
+        features=[mature, fruitlet],
+        orchard_id="orchard-a",
+        required_stage="mature",
+    )
+
+    assert len(alerts) == 1
+    assert alerts[0].affected_tree_ids == ["mature-1"]
+    assert alerts[0].risk_value == 0.80
+
+
 def test_grid_alerts_use_threshold_override_and_cell_centroid():
     service = AlertService()
     service.risk_threshold = 0.75
@@ -129,6 +149,29 @@ def test_grid_alerts_use_threshold_override_and_cell_centroid():
     assert alert.centroid_lat == 11.0
     assert alert.recommended_actions
     assert "Inspect 1 flagged tree" in alert.recommended_actions[0]
+
+
+def test_grid_alerts_filter_required_stage_when_available():
+    service = AlertService()
+    service.risk_threshold = 0.50
+
+    risk_grid = np.array([[0.8, 0.9]])
+    state_grid = np.array([[1, 1]])
+    tree_ids = np.array([["T-mature", "T-fruitlet"]], dtype=object)
+    stage_grid = np.array([[3, 2]])
+
+    alerts = service.check_for_alerts(
+        risk_grid=risk_grid,
+        state_grid=state_grid,
+        tree_ids=tree_ids,
+        orchard_id="orchard-a",
+        stage_grid=stage_grid,
+        required_stage_value=3,
+    )
+
+    assert len(alerts) == 1
+    assert alerts[0].affected_tree_ids == ["T-mature"]
+    assert alerts[0].risk_value == 0.80
 
 
 def test_gate_condition_alerts_fire_when_biological_gate_opens():
@@ -367,6 +410,7 @@ async def test_alert_list_includes_memory_fallback_when_database_is_available(mo
     assert response.active_count == 1
     assert len(response.alerts) == 1
     assert response.alerts[0].alert_id == "alert-memory-1"
+    assert response.alerts[0].simulation_run_id == "run-1"
     assert response.alerts[0].centroid_lon == 122.5
     assert response.alerts[0].affected_tree_ids == ["T1"]
     assert response.alerts[0].recommended_actions == ["Inspect tree T1"]

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
@@ -62,6 +62,73 @@ const GIS_STATUS_COLORS = {
   dead: '#424242',
   history_infected: '#ff9800',
   suspect: '#9c27b0',
+}
+
+const STAGE_ZONE_FILL_LAYER = {
+  id: 'stage-zones-fill',
+  type: 'fill',
+  source: 'stage-zones-src',
+  paint: {
+    'fill-color': [
+      'match', ['get', 'stage'],
+      'dormant', '#64748b',
+      'flowering', '#ec4899',
+      'fruitlet', '#f59e0b',
+      'mature', '#16a34a',
+      '#0f5132',
+    ],
+    'fill-opacity': 0.18,
+  },
+}
+
+const STAGE_ZONE_LINE_LAYER = {
+  id: 'stage-zones-line',
+  type: 'line',
+  source: 'stage-zones-src',
+  paint: {
+    'line-color': [
+      'match', ['get', 'stage'],
+      'dormant', '#64748b',
+      'flowering', '#ec4899',
+      'fruitlet', '#f59e0b',
+      'mature', '#16a34a',
+      '#0f5132',
+    ],
+    'line-width': 2,
+    'line-opacity': 0.9,
+  },
+}
+
+const STAGE_DRAFT_LINE_LAYER = {
+  id: 'stage-zone-draft-line',
+  type: 'line',
+  source: 'stage-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'LineString'],
+  paint: {
+    'line-color': '#0f5132',
+    'line-width': 2,
+    'line-dasharray': [2, 1],
+  },
+}
+
+const STAGE_DRAFT_VERTEX_LAYER = {
+  id: 'stage-zone-draft-vertices',
+  type: 'circle',
+  source: 'stage-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'Point'],
+  paint: {
+    'circle-radius': 5,
+    'circle-color': '#ffffff',
+    'circle-stroke-color': '#0f5132',
+    'circle-stroke-width': 2,
+  },
+}
+
+const STAGE_COLORS = {
+  dormant: '#64748b',
+  flowering: '#ec4899',
+  fruitlet: '#f59e0b',
+  mature: '#16a34a',
 }
 
 const MAP_STYLE = {
@@ -170,7 +237,7 @@ function geometryCenter(geometry) {
   return null
 }
 
-function normalizePoints(geojson, treeOverrides = {}) {
+function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
   const features = Array.isArray(geojson?.features) ? geojson.features : []
 
   return features
@@ -187,6 +254,8 @@ function normalizePoints(geojson, treeOverrides = {}) {
       const rawStatus = props.status ?? props.Status ?? props.state ?? 'healthy'
       const treeIdStr = String(treeId)
       const overrideStatus = treeOverrides[treeIdStr]
+      const overrideStage = stageOverrides[treeIdStr] ?? null
+      const stage = overrideStage ?? props.stage ?? props.Stage ?? null
       const status = normalizeStatus(overrideStatus ?? rawStatus)
       const crown = Number.parseFloat(props.crown_size ?? props.Crown_Width ?? 5)
       const riskValue = Number(props.risk)
@@ -205,6 +274,8 @@ function normalizePoints(geojson, treeOverrides = {}) {
         risk,
         crown: Number.isFinite(crown) ? crown : 5,
         color,
+        stage,
+        stage_color: STAGE_COLORS[String(overrideStage ?? '').toLowerCase()] ?? null,
       }
     })
     .filter(Boolean)
@@ -237,12 +308,14 @@ function fitMapToBounds(map, bounds, duration = 450) {
 function markerPopupHtml(point) {
   const label = String(point.status).replace(/_/g, ' ')
   const riskLine = point.risk == null ? '' : `<br />Risk: ${(point.risk * 100).toFixed(0)}%`
+  const stageLine = point.stage == null ? '' : `<br />Stage: ${escapeHtml(String(point.stage))}`
 
   return `
     <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
     Status: ${escapeHtml(label)}<br />
     Crown: ${escapeHtml(point.crown.toFixed(1))} m
     ${riskLine}
+    ${stageLine}
   `
 }
 
@@ -253,6 +326,11 @@ function makeTreeMarker(point) {
   el.style.setProperty('--marker-color', point.color)
   el.setAttribute('aria-label', `Tree ${point.tree_id}`)
   el.title = `Tree ${point.tree_id}`
+
+  if (point.stage_color) {
+    el.classList.add('map-tree-marker-stage')
+    el.style.setProperty('--stage-color', point.stage_color)
+  }
 
   if (point.risk != null && point.risk >= 0.5) {
     el.classList.add('map-tree-marker-risk')
@@ -292,6 +370,70 @@ function normalizedOverlay(overlay) {
     }
   }
   return DEFAULT_ORTHOPHOTO_OVERLAY
+}
+
+function closedRing(coordinates) {
+  if (!Array.isArray(coordinates) || coordinates.length < 3) return []
+  const first = coordinates[0]
+  const last = coordinates[coordinates.length - 1]
+  const ring = coordinates.map((point) => [Number(point[0]), Number(point[1])])
+  if (first?.[0] !== last?.[0] || first?.[1] !== last?.[1]) {
+    ring.push([Number(first[0]), Number(first[1])])
+  }
+  return ring
+}
+
+function stageZoneGeojson(zones) {
+  return {
+    type: 'FeatureCollection',
+    features: (zones || [])
+      .map((zone) => {
+        const ring = closedRing(zone.coordinates)
+        if (ring.length < 4) return null
+        return {
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [ring] },
+          properties: {
+            id: zone.id,
+            stage: zone.stage,
+            tree_count: zone.tree_count ?? 0,
+          },
+        }
+      })
+      .filter(Boolean),
+  }
+}
+
+function stageDraftGeojson(draft) {
+  const coords = Array.isArray(draft) ? draft : []
+  const features = coords.map((coord, index) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: coord },
+    properties: { index },
+  }))
+  if (coords.length >= 2) {
+    const lineCoords = coords.length >= 3 ? [...coords, coords[0]] : coords
+    features.unshift({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: lineCoords },
+      properties: {},
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
+function ensureStageZoneLayers(map) {
+  if (!map.getSource('stage-zones-src')) {
+    map.addSource('stage-zones-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('stage-zones-fill')) map.addLayer(STAGE_ZONE_FILL_LAYER)
+  if (!map.getLayer('stage-zones-line')) map.addLayer(STAGE_ZONE_LINE_LAYER)
+
+  if (!map.getSource('stage-zone-draft-src')) {
+    map.addSource('stage-zone-draft-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('stage-zone-draft-line')) map.addLayer(STAGE_DRAFT_LINE_LAYER)
+  if (!map.getLayer('stage-zone-draft-vertices')) map.addLayer(STAGE_DRAFT_VERTEX_LAYER)
 }
 
 async function resolveOverlayImageUrl(url) {
@@ -408,6 +550,11 @@ export default function RiskMap({
   baseGeojson,
   alerts = [],
   treeOverrides = {},
+  stageOverrides = {},
+  stageZones = [],
+  stageZoneDrawing = false,
+  stageZoneDraft = [],
+  onStageZoneMapClick,
   orthophotoOverlay = null,
   viewportKey = 'default',
   fitToOrthophoto = true,
@@ -418,6 +565,10 @@ export default function RiskMap({
   const mapRef = useRef(null)
   const markersRef = useRef([])
   const mapLoadedRef = useRef(false)
+  // Tracks whether the orthophoto image is currently being fetched/applied,
+  // so the UI can render a spinner. The GWF overlay is ~6 MB and used to
+  // appear "broken" while it silently downloaded.
+  const [overlayLoading, setOverlayLoading] = useState(false)
 
   const activeGeojson = geojson?.features?.length ? geojson : baseGeojson
   const activeOverlay = useMemo(
@@ -425,8 +576,8 @@ export default function RiskMap({
     [orthophotoOverlay],
   )
   const points = useMemo(
-    () => normalizePoints(activeGeojson, treeOverrides),
-    [activeGeojson, treeOverrides],
+    () => normalizePoints(activeGeojson, treeOverrides, stageOverrides),
+    [activeGeojson, treeOverrides, stageOverrides],
   )
 
   useEffect(() => {
@@ -451,6 +602,7 @@ export default function RiskMap({
 
       map.addSource('risk-heatmap-src', { type: 'geojson', data: EMPTY_FC })
       map.addLayer(HEATMAP_LAYER)
+      ensureStageZoneLayers(map)
     })
 
     const resizeObserver = new ResizeObserver(() => map.resize())
@@ -475,6 +627,13 @@ export default function RiskMap({
     let objectUrl = null
 
     const applyOverlay = async () => {
+      // Show the spinner only when we actually need to fetch the image over
+      // the network. Static `/ortho.png` (BPI default) resolves instantly,
+      // so flashing a spinner would be noise.
+      const needsNetworkFetch = typeof activeOverlay.url === 'string'
+        && activeOverlay.url.startsWith('/orchards/')
+      if (needsNetworkFetch) setOverlayLoading(true)
+
       try {
         if (map.getLayer('ortho-layer')) map.removeLayer('ortho-layer')
         if (map.getSource('ortho-src')) map.removeSource('ortho-src')
@@ -503,6 +662,8 @@ export default function RiskMap({
         else map.addLayer(overlayLayer)
       } catch (error) {
         console.warn('Orthophoto overlay unavailable:', error.message)
+      } finally {
+        if (!cancelled) setOverlayLoading(false)
       }
     }
 
@@ -514,6 +675,43 @@ export default function RiskMap({
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [activeOverlay])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+
+    const updateStageZones = () => {
+      ensureStageZoneLayers(map)
+      map.getSource('stage-zones-src')?.setData(stageZoneGeojson(stageZones))
+      map.getSource('stage-zone-draft-src')?.setData(stageDraftGeojson(stageZoneDraft))
+    }
+
+    if (map.loaded()) updateStageZones()
+    else map.once('load', updateStageZones)
+
+    return () => map.off('load', updateStageZones)
+  }, [stageZones, stageZoneDraft])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !stageZoneDrawing) return undefined
+
+    const handleMapClick = (event) => {
+      onStageZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
+    }
+
+    const canvas = map.getCanvas()
+    const previousCursor = canvas.style.cursor
+    canvas.style.cursor = 'crosshair'
+    map.doubleClickZoom.disable()
+    map.on('click', handleMapClick)
+
+    return () => {
+      map.off('click', handleMapClick)
+      map.doubleClickZoom.enable()
+      canvas.style.cursor = previousCursor
+    }
+  }, [stageZoneDrawing, onStageZoneMapClick])
 
   useEffect(() => {
     const map = mapRef.current
@@ -653,6 +851,12 @@ export default function RiskMap({
       {!points.length && (
         <div className="risk-map-empty">
           Loading orchard map...
+        </div>
+      )}
+      {overlayLoading && (
+        <div className="risk-map-overlay-loading" role="status" aria-live="polite">
+          <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />
+          Loading orchard imagery…
         </div>
       )}
     </div>

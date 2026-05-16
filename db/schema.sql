@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS simulation_run (
     orchard_geojson  JSONB,
     bagged_tree_ids  JSONB,
     treatment_applications JSONB,
+    simulation_mode  VARCHAR(50)   DEFAULT 'grid',
     hours            INTEGER       DEFAULT 48,
 
     -- Reproducibility
@@ -222,6 +223,12 @@ CREATE TABLE IF NOT EXISTS simulation_run (
 
     -- Results
     output_geojson   JSONB,
+    request_payload  JSONB,
+    response_payload JSONB,
+    result_metadata  JSONB,
+    time_series      JSONB,
+    timesteps        JSONB,
+    impact_assumptions JSONB,
     peak_risk        DOUBLE PRECISION,
     cells_at_risk    INTEGER,
     n_infested_final INTEGER,

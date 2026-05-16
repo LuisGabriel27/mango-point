@@ -248,7 +248,8 @@ class ManualWeather(BaseModel):
     temperature_c: Optional[float] = Field(default=None, description="Air temperature in °C.")
     wind_speed_ms: Optional[float] = Field(default=None, ge=0.0, description="Wind speed (m/s). Must be ≥ 0.")
     wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0,
-                                           description="Wind direction in degrees [0, 360]. "
+                                           description="Meteorological wind-from direction in degrees [0, 360]. "
+                                                       "0 means wind coming from north; 90 means from east. "
                                                        "Values equal to 360 are normalized to 0 downstream.")
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall (mm/h). Must be ≥ 0.")
 
@@ -258,7 +259,7 @@ class ManualWeatherEntry(BaseModel):
     missing keys inherit from the previous hour (defaults for hour 0)."""
     temperature_c: Optional[float] = Field(default=None, description="Air temperature in °C.")
     wind_speed_ms: Optional[float] = Field(default=None, ge=0.0, description="Wind speed in m/s.")
-    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0, description="Wind direction (0=N, 90=E).")
+    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0, description="Meteorological wind-from direction (0=N/from north, 90=E/from east).")
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall in mm for this hour.")
 
 
@@ -292,7 +293,12 @@ class ManualWeatherBlock(BaseModel):
     end_hour:   int = Field(..., gt=0, description="One past the last hour the block applies to (exclusive).")
     temperature_c: Optional[float] = Field(default=None)
     wind_speed_ms: Optional[float] = Field(default=None, ge=0.0)
-    wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0)
+    wind_dir_deg:  Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=360.0,
+        description="Meteorological wind-from direction (0=N/from north, 90=E/from east).",
+    )
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0)
 
     @field_validator("end_hour")
@@ -527,6 +533,18 @@ class SimulationRequest(BaseModel):
                     "`time_series` and `timesteps`. Use this for dashboards that only "
                     "need the final `risk_geojson` so simulation results return faster.",
     )
+    impact_assumptions: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional dashboard economic-impact assumptions used when the run "
+                    "was started. Stored with the simulation so historical runs can "
+                    "restore Crop Impact estimates exactly.",
+    )
+    dashboard_state: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional UI state snapshot, such as selected sensitivity preset "
+                    "and toggles. It does not affect the simulation engine directly, "
+                    "but is saved for dashboard history/template restore.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -663,11 +681,11 @@ class SimulationResponse(BaseModel):
 class WeatherData(BaseModel):
     """Current weather data."""
     wind_speed_ms: float = Field(..., description="Wind speed in m/s")
-    wind_direction_deg: float = Field(..., description="Wind direction in degrees (0=N, 90=E)")
+    wind_direction_deg: float = Field(..., description="Meteorological wind-from direction in degrees (0=N/from north, 90=E/from east)")
     temperature_c: float = Field(..., description="Temperature in Celsius")
     humidity: Optional[float] = Field(None, description="Relative humidity percentage")
     datetime: str = Field(..., description="Observation timestamp")
-    source: str = Field(default="openweathermap", description="Data source")
+    source: str = Field(default="open-meteo", description="Data source")
 
 
 class WeatherResponse(BaseModel):

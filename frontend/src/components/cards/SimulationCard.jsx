@@ -43,7 +43,7 @@ const SENSITIVITY_PRESETS = {
   standard: {
     label: 'Standard',
     icon: 'bullseye',
-    description: 'Based on 2022–2025 Iloilo orchard data. Best default for most situations.',
+    description: 'Based on 2022–2025 BPI orchard data. Best default for most situations.',
     cecid_rainfall_threshold_mm: null,
     cecid_base_dispersal_prob: null,
     fruit_fly_temp_threshold_c: null,
@@ -162,12 +162,14 @@ export default function SimulationCard({
   orchardId,
   treeOverrides,
   treeStageOverrides,
+  phenologyZones,
   onClearTreeStageOverrides,
   onSimulationComplete,
   manualWeather,
   weatherOverrideActive,
   suggestedParams,
   onClearSuggested,
+  loadedParams,
 }) {
   const [simMode, setSimMode] = useState('grid')
   const [pestType, setPestType] = useState('fruitfly')
@@ -202,6 +204,51 @@ export default function SimulationCard({
     setPrefixRain(suggestedParams.manual_weather_prefix_rain ?? null)
   }, [suggestedParams])
 
+  useEffect(() => {
+    if (!loadedParams || !Object.keys(loadedParams).length) return
+
+    const normalizePest = (value) => {
+      const v = String(value ?? '').toLowerCase()
+      if (v.includes('fruit')) return 'fruitfly'
+      if (v.includes('cecid')) return 'cecid'
+      return value || 'fruitfly'
+    }
+    const firstTreatment = Array.isArray(loadedParams.treatment_applications)
+      ? loadedParams.treatment_applications[0]
+      : null
+    const dashboardState = loadedParams.dashboard_state ?? {}
+
+    if (loadedParams.simulation_mode) setSimMode(loadedParams.simulation_mode)
+    if (loadedParams.pest_type) setPestType(normalizePest(loadedParams.pest_type))
+    if (loadedParams.orchard_stage) setOrchardStage(loadedParams.orchard_stage)
+    if (loadedParams.days_since_flowering != null) setDaysFlowering(Number(loadedParams.days_since_flowering))
+    if (loadedParams.neighbor_threat != null) setNeighborThreat(Number(loadedParams.neighbor_threat))
+    if (loadedParams.neighbor_direction) setNeighborDir(loadedParams.neighbor_direction)
+    if (loadedParams.hours != null) setSimHours(String(loadedParams.hours))
+    if (loadedParams.manual_weather_prefix_rain != null) setPrefixRain(loadedParams.manual_weather_prefix_rain)
+
+    setTreatmentEnabled(Boolean(firstTreatment))
+    if (firstTreatment?.treatment_type) setTreatmentType(firstTreatment.treatment_type)
+    if (firstTreatment) {
+      const restoredEfficacy = firstTreatment.treatment_type === 'sanitation'
+        ? firstTreatment.source_reduction
+        : (firstTreatment.efficacy ?? firstTreatment.source_reduction)
+      setTreatmentEfficacy(Number(restoredEfficacy ?? 0.65))
+    }
+
+    if (loadedParams.impact_assumptions) {
+      setImpact({ ...DEFAULTS, ...loadedParams.impact_assumptions })
+    }
+
+    setUseObsSeeds(Boolean(loadedParams.use_observations_as_seeds))
+    if (loadedParams.observations_lookback_days != null) {
+      setObsLookbackDays(Number(loadedParams.observations_lookback_days))
+    }
+    if (dashboardState.sensitivity) setSensitivity(dashboardState.sensitivity)
+
+    setStatus({ type: 'info', msg: 'Loaded saved simulation parameters into the controls.' })
+  }, [loadedParams])
+
   const setImpactField = (k, v) => setImpact((p) => ({ ...p, [k]: v }))
 
   const handleRun = async () => {
@@ -226,6 +273,18 @@ export default function SimulationCard({
         neighbor_threat: neighborThreat,
         simulation_mode: simMode,
         include_time_series: true,
+        impact_assumptions: impact,
+        dashboard_state: {
+          sensitivity,
+          treatment_enabled: treatmentEnabled,
+          treatment_type: treatmentType,
+          treatment_efficacy: treatmentEfficacy,
+          use_observations_as_seeds: useObsSeeds,
+          observations_lookback_days: obsLookbackDays,
+          weather_override_active: weatherOverrideActive,
+          impact_assumptions: impact,
+          phenology_zones: phenologyZones ?? [],
+        },
       }
 
       if (neighborThreat > 0 && neighborDir) {
@@ -274,7 +333,12 @@ export default function SimulationCard({
         type: 'success',
         msg: `Done — peak risk: ${peakPct}, ${nInfested} infested · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
       })
-      onSimulationComplete?.(res.data)
+      onSimulationComplete?.({
+        ...res.data,
+        impact_assumptions: impact,
+        request_payload: body,
+        input_parameters: body,
+      })
     } catch (err) {
       const msg = apiErrorMessage(err, 'Simulation failed.')
       setStatus({ type: 'danger', msg })

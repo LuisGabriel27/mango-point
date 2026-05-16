@@ -69,6 +69,11 @@ def _angular_diff(a: float, b: float) -> float:
     return d if d <= 180 else 360 - d
 
 
+def _wind_toward_deg(wind_from_deg: float) -> float:
+    """Convert meteorological wind-from degrees to the direction wind blows toward."""
+    return (wind_from_deg + 180.0) % 360.0
+
+
 def _chebyshev_offsets(max_range: int, include_angle: bool = False) -> tuple:
     """Precompute fixed neighbourhood offsets used by grid dispersal."""
     offsets = []
@@ -491,8 +496,11 @@ class FruitFlyGate(DispersalGate):
 
             prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
 
-            # Wind-direction bias: target_angle is precomputed for this offset.
-            ang_diff = _angular_diff(wind_dir_deg, target_angle)
+            # Wind-direction bias: weather uses meteorological wind-FROM
+            # degrees, while target_angle is the spread direction. Convert to
+            # wind-TOWARD degrees before testing whether the target is downwind.
+            downwind_deg = _wind_toward_deg(wind_dir_deg)
+            ang_diff = _angular_diff(downwind_deg, target_angle)
 
             # Boost when target is downwind (small angular difference)
             if ang_diff < 45:
@@ -543,7 +551,8 @@ class FruitFlyGate(DispersalGate):
             source_factor = grid.get_source_treatment_factor(src_r, src_c)
             prob = self.base_dispersal_prob * (self.distance_decay ** (dist - 1))
 
-            ang_diff = _angular_diff(wind_dir_deg, target_angle)
+            downwind_deg = _wind_toward_deg(wind_dir_deg)
+            ang_diff = _angular_diff(downwind_deg, target_angle)
             if ang_diff < 45:
                 prob += self.wind_boost * (1.0 - ang_diff / 45.0)
 

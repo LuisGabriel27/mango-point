@@ -113,6 +113,67 @@ async def _normalize_user_role_enum(conn) -> None:
     """))
 
 
+async def _normalize_pesttype_enum(conn) -> None:
+    """Normalize legacy pest enum labels to the schema's lowercase labels."""
+    await conn.execute(text("""
+        DO $$
+        BEGIN
+            IF to_regtype('pesttype') IS NOT NULL THEN
+                IF EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'pesttype'::regtype
+                      AND enumlabel = 'CECID_FLY'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'pesttype'::regtype
+                      AND enumlabel = 'cecid'
+                ) THEN
+                    ALTER TYPE pesttype RENAME VALUE 'CECID_FLY' TO 'cecid';
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'pesttype'::regtype
+                      AND enumlabel = 'FRUIT_FLY'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_enum
+                    WHERE enumtypid = 'pesttype'::regtype
+                      AND enumlabel = 'fruitfly'
+                ) THEN
+                    ALTER TYPE pesttype RENAME VALUE 'FRUIT_FLY' TO 'fruitfly';
+                END IF;
+            END IF;
+        END $$;
+    """))
+
+
+async def _ensure_simulation_id_sequence(conn) -> None:
+    """Ensure simulation_run.simulation_id auto-generates values on old DBs."""
+    await conn.execute(text("""
+        CREATE SEQUENCE IF NOT EXISTS simulation_run_simulation_id_seq;
+    """))
+    await conn.execute(text("""
+        SELECT setval(
+            'simulation_run_simulation_id_seq',
+            GREATEST(
+                COALESCE((SELECT MAX(simulation_id) FROM simulation_run), 0),
+                1
+            ),
+            COALESCE((SELECT MAX(simulation_id) FROM simulation_run), 0) > 0
+        )
+        WHERE to_regclass('simulation_run') IS NOT NULL;
+    """))
+    await conn.execute(text("""
+        ALTER TABLE IF EXISTS simulation_run
+        ALTER COLUMN simulation_id
+        SET DEFAULT nextval('simulation_run_simulation_id_seq');
+    """))
+    await conn.execute(text("""
+        ALTER SEQUENCE simulation_run_simulation_id_seq
+        OWNED BY simulation_run.simulation_id;
+    """))
+
+
 def is_database_unavailable(exc: Exception) -> bool:
     """Return True when an exception indicates a database connectivity issue."""
     if isinstance(exc, DATABASE_ERROR_TYPES):
@@ -160,6 +221,8 @@ async def init_db():
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         await conn.run_sync(Base.metadata.create_all)
         await _normalize_user_role_enum(conn)
+        await _normalize_pesttype_enum(conn)
+        await _ensure_simulation_id_sequence(conn)
         # Backward-compatible migration for older installs: field
         # observations are ground truth and do not belong to a simulation run.
         await conn.execute(text(
@@ -198,6 +261,13 @@ async def init_db():
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS treatment_applications JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS simulation_mode VARCHAR(50) DEFAULT 'grid';"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS request_payload JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS response_payload JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS result_metadata JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS time_series JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS timesteps JSONB;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS impact_assumptions JSONB;"))
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS recommended_actions JSONB;"))
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_status VARCHAR(50) NOT NULL DEFAULT 'pending';"))
         await conn.execute(text("ALTER TABLE IF EXISTS alert ADD COLUMN IF NOT EXISTS action_assigned_to VARCHAR(100);"))

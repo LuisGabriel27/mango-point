@@ -6,6 +6,7 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'crop-impact', label: 'Crop Impact' },
   { id: 'spread-weather', label: 'Spread & Weather' },
+  { id: 'history', label: 'History' },
 ]
 
 const SEV_COLOR = { critical: '#dc2626', high: '#d97706', medium: '#2563eb', low: '#6b7280' }

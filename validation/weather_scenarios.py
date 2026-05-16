@@ -483,6 +483,87 @@ class HistoricalWeatherGenerator:
         selected.attrs["weather_rows_available"] = int(len(month_rows))
         selected.attrs["weather_coverage_status"] = "ready"
         return selected.reset_index(drop=True)
+
+    def generate_monthly_windows(
+        self,
+        year: int,
+        month: int,
+        window_hours: int = 48,
+        n_windows: int = 4,
+        scenario: str = "typical",
+    ) -> list[pd.DataFrame]:
+        """
+        Generate several forecast-sized weather windows across one month.
+
+        BPI observations are monthly aggregates, while MangoPoint forecasts a
+        shorter operational window. This helper keeps the simulator's 48-hour
+        forecast shape but samples several windows from the historical month so
+        validation can be summarized at monthly scale.
+        """
+        n_windows = max(1, int(n_windows))
+        if n_windows == 1:
+            return [
+                self.generate(
+                    year=year,
+                    month=month,
+                    hours=window_hours,
+                    scenario=scenario,
+                )
+            ]
+
+        coverage = self.get_case_coverage(year, month, window_hours)
+        self._raise_if_required_weather_missing(coverage)
+
+        if self._historical_weather is None or not coverage.ready:
+            return [
+                self.generate(
+                    year=year,
+                    month=month,
+                    hours=window_hours,
+                    scenario=scenario,
+                )
+                for _ in range(n_windows)
+            ]
+
+        month_rows = self._historical_weather[
+            (self._historical_weather["datetime"].dt.year == year)
+            & (self._historical_weather["datetime"].dt.month == month)
+        ].sort_values("datetime").reset_index(drop=True)
+
+        max_start = max(0, len(month_rows) - window_hours)
+        if max_start == 0:
+            starts = [0]
+        else:
+            starts = np.linspace(0, max_start, num=n_windows)
+            starts = sorted({int(round(start)) for start in starts})
+
+        windows = []
+        for index, start in enumerate(starts):
+            selected = month_rows.iloc[start:start + window_hours].copy()
+            if len(selected) < window_hours:
+                continue
+            selected.attrs["source"] = "historical_weather_csv"
+            selected.attrs["scenario"] = scenario
+            selected.attrs["historical_weather_path"] = str(self.historical_weather_path)
+            selected.attrs["weather_rows_available"] = int(len(month_rows))
+            selected.attrs["weather_coverage_status"] = "ready"
+            selected.attrs["monthly_window_index"] = index + 1
+            selected.attrs["monthly_windows_requested"] = n_windows
+            selected.attrs["window_start_datetime"] = selected["datetime"].iloc[0].isoformat()
+            selected.attrs["window_end_datetime"] = selected["datetime"].iloc[-1].isoformat()
+            windows.append(selected.reset_index(drop=True))
+
+        if windows:
+            return windows
+
+        return [
+            self.generate(
+                year=year,
+                month=month,
+                hours=window_hours,
+                scenario=scenario,
+            )
+        ]
     
     def get_profile(self, month: int) -> SeasonalWeatherProfile:
         """
@@ -784,6 +865,9 @@ class HistoricalWeatherGenerator:
             "wind_mean_ms": float(df["wind_speed_ms"].mean()),
             "wind_max_ms": float(df["wind_speed_ms"].max()),
         }
+        if "humidity_pct" in df.columns:
+            stats["humidity_mean_pct"] = float(df["humidity_pct"].mean())
+            stats["humidity_max_pct"] = float(df["humidity_pct"].max())
         stats.update({
             "source": df.attrs.get("source", "unknown"),
             "scenario": df.attrs.get("scenario", "unknown"),
@@ -795,6 +879,10 @@ class HistoricalWeatherGenerator:
             "weather_coverage_status",
             "weather_max_gap_hours",
             "fallback_reason",
+            "monthly_window_index",
+            "monthly_windows_requested",
+            "window_start_datetime",
+            "window_end_datetime",
         ):
             if key in df.attrs:
                 stats[key] = df.attrs[key]

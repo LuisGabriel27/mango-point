@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Optional, List, Any, Dict
 from sqlalchemy import (
     Integer, Float, String, Text, DateTime, Numeric,
-    Boolean, ForeignKey, Enum as SQLEnum, JSON, Index,
+    Boolean, ForeignKey, Enum as SQLEnum, JSON, Index, Sequence,
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.pool import Pool
@@ -31,6 +31,9 @@ import enum
 
 from api.core.database import Base
 from utils.datetime_utils import utcnow_naive
+
+
+SIMULATION_ID_SEQ = Sequence("simulation_run_simulation_id_seq")
 
 
 # ─────────────────────────────────────────────
@@ -273,7 +276,11 @@ class SimulationRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     simulation_id: Mapped[int] = mapped_column(
-        Integer, autoincrement=True, unique=True, nullable=False,
+        Integer,
+        SIMULATION_ID_SEQ,
+        server_default=SIMULATION_ID_SEQ.next_value(),
+        unique=True,
+        nullable=False,
     )
     run_id: Mapped[str] = mapped_column(
         String(100), unique=True, nullable=False, index=True,
@@ -281,7 +288,13 @@ class SimulationRun(Base):
 
     # Input parameters
     pest_type: Mapped[PestType] = mapped_column(
-        SQLEnum(PestType), nullable=False,
+        SQLEnum(
+            PestType,
+            name="pesttype",
+            create_type=False,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
     )
     orchard_id: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True, index=True,
@@ -295,6 +308,7 @@ class SimulationRun(Base):
     treatment_applications: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
         JSON, nullable=True,
     )
+    simulation_mode: Mapped[str] = mapped_column(String(50), default="grid")
     hours: Mapped[int] = mapped_column(Integer, default=48)
 
     # Reproducibility
@@ -309,6 +323,24 @@ class SimulationRun(Base):
 
     # Results
     output_geojson: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    request_payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    response_payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    result_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    time_series: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    timesteps: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
+        JSON, nullable=True,
+    )
+    impact_assumptions: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSON, nullable=True,
     )
     peak_risk: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

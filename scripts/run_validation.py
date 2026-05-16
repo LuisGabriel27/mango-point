@@ -238,6 +238,62 @@ Examples:
         help="Grid dimension (default: 20x20)"
     )
     parser.add_argument(
+        "--enhanced-validation",
+        action="store_true",
+        help=(
+            "Use the thesis-defense validation settings: monthly windows, "
+            "composite CA scoring, and previous-month BPI carryover."
+        ),
+    )
+    parser.add_argument(
+        "--monthly-windows",
+        type=int,
+        default=1,
+        help=(
+            "Number of forecast-sized windows sampled across each historical "
+            "month (default: 1; recommended: 4 for monthly BPI comparison)."
+        ),
+    )
+    parser.add_argument(
+        "--score-mode",
+        choices=["mean_risk", "composite"],
+        default="mean_risk",
+        help=(
+            "Validation risk score mode. mean_risk preserves the legacy CA "
+            "average-risk score; composite combines spatial, weather, and "
+            "carryover features."
+        ),
+    )
+    parser.add_argument(
+        "--carryover-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for previous-month BPI pest pressure in composite scoring "
+            "(default: 0.0; recommended: 0.30)."
+        ),
+    )
+    parser.add_argument(
+        "--fruitfly-carryover-weight",
+        type=float,
+        default=None,
+        help="Fruit Fly-specific previous-month carryover weight.",
+    )
+    parser.add_argument(
+        "--cecid-carryover-weight",
+        type=float,
+        default=None,
+        help="Cecid Fly-specific previous-month carryover weight.",
+    )
+    parser.add_argument(
+        "--class-calibration",
+        action="store_true",
+        help=(
+            "Fit pest-specific raw-score class cut-points on the calibration "
+            "split while retaining affine numeric risk calibration."
+        ),
+    )
+    parser.add_argument(
         "--seed", "-s",
         type=int,
         default=42,
@@ -435,6 +491,27 @@ def run_validation(args: argparse.Namespace) -> None:
     test_years = _parse_years(args.test_years)
     has_split = args.split_year is not None or bool(test_years)
     calibration_requested = _should_apply_calibration(args, has_split)
+    monthly_windows = max(1, args.monthly_windows)
+    score_mode = args.score_mode
+    carryover_weight = max(0.0, min(1.0, args.carryover_weight))
+    fruitfly_carryover_weight = args.fruitfly_carryover_weight
+    cecid_carryover_weight = args.cecid_carryover_weight
+    class_calibration = args.class_calibration
+    if args.enhanced_validation:
+        monthly_windows = max(monthly_windows, 4)
+        if score_mode == "mean_risk":
+            score_mode = "composite"
+        if carryover_weight == 0.0:
+            carryover_weight = 0.30
+        if fruitfly_carryover_weight is None:
+            fruitfly_carryover_weight = 0.10
+        if cecid_carryover_weight is None:
+            cecid_carryover_weight = 0.65
+        class_calibration = True
+    if fruitfly_carryover_weight is not None:
+        fruitfly_carryover_weight = max(0.0, min(1.0, fruitfly_carryover_weight))
+    if cecid_carryover_weight is not None:
+        cecid_carryover_weight = max(0.0, min(1.0, cecid_carryover_weight))
     
     print("\n" + "=" * 60)
     print("MANGOPOINT MODEL VALIDATION")
@@ -447,6 +524,12 @@ def run_validation(args: argparse.Namespace) -> None:
     print(f"  Simulation hours: {args.hours}")
     print(f"  Monte Carlo runs: {args.monte_carlo}")
     print(f"  Grid size: {args.grid_size}x{args.grid_size}")
+    print(f"  Monthly windows: {monthly_windows}")
+    print(f"  Validation score mode: {score_mode}")
+    print(f"  Previous-month carryover weight: {carryover_weight:.2f}")
+    print(f"  Fruit Fly carryover weight: {fruitfly_carryover_weight if fruitfly_carryover_weight is not None else 'default'}")
+    print(f"  Cecid Fly carryover weight: {cecid_carryover_weight if cecid_carryover_weight is not None else 'default'}")
+    print(f"  Class calibration: {'enabled' if class_calibration else 'disabled'}")
     print(f"  Random seed: {args.seed}")
     print(f"  Historical weather CSV: {args.historical_weather_csv or 'not provided'}")
     print(f"  Require historical weather: {'yes' if args.require_historical_weather else 'no'}")
@@ -511,6 +594,11 @@ def run_validation(args: argparse.Namespace) -> None:
         hours=args.hours,
         monte_carlo_runs=args.monte_carlo,
         grid_size=args.grid_size,
+        monthly_windows=monthly_windows,
+        score_mode=score_mode,
+        carryover_weight=carryover_weight,
+        fruitfly_carryover_weight=fruitfly_carryover_weight,
+        cecid_carryover_weight=cecid_carryover_weight,
         progress_callback=progress_callback,
     )
     
@@ -520,7 +608,10 @@ def run_validation(args: argparse.Namespace) -> None:
     if calibration_requested:
         calibration_source_split = "calibration" if has_split else None
         try:
-            calibration = runner.fit_calibration(split=calibration_source_split)
+            calibration = runner.fit_calibration(
+                split=calibration_source_split,
+                optimize_level_thresholds=class_calibration,
+            )
             results = runner.apply_calibration(calibration)
             print("\nApplied risk-score calibration:")
             for pest_type, curve in sorted(calibration.curves.items()):
@@ -528,7 +619,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     f"  {pest_type}: scale={curve.scale:.3f}, "
                     f"intercept={curve.intercept:.3f}, "
                     f"cases={curve.n_cases}, "
-                    f"MAE {curve.mae_before:.3f}->{curve.mae_after:.3f}"
+                    f"MAE {curve.mae_before:.3f}->{curve.mae_after:.3f}, "
+                    f"level={curve.level_method}"
                 )
         except ValueError as exc:
             print(f"\nCalibration skipped: {exc}")
@@ -619,6 +711,15 @@ def run_validation(args: argparse.Namespace) -> None:
             "bootstrap": {
                 "iterations": args.bootstrap,
                 "confidence": args.confidence,
+            },
+            "validation_scoring": {
+                "enhanced_validation": args.enhanced_validation,
+                "monthly_windows": monthly_windows,
+                "score_mode": score_mode,
+                "carryover_weight": carryover_weight,
+                "fruitfly_carryover_weight": fruitfly_carryover_weight,
+                "cecid_carryover_weight": cecid_carryover_weight,
+                "class_calibration": class_calibration,
             },
             "calibration": (
                 calibration.to_dict()

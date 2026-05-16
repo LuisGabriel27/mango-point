@@ -48,6 +48,7 @@ from .metrics import (
     bootstrap_confidence_intervals,
     compute_full_metrics,
     risk_score_to_level,
+    risk_score_to_pest_level,
     normalize_pest_value_to_risk,
 )
 
@@ -94,6 +95,8 @@ class ValidationCase:
     season: str = ""
     split: str = "evaluation"
     source_record: Optional[HistoricalRecord] = field(default=None, repr=False)
+    previous_actual_risk: float = 0.0
+    previous_actual_level: str = "Low"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -109,6 +112,8 @@ class ValidationCase:
             "weather_scenario": self.weather_scenario,
             "season": self.season,
             "split": self.split,
+            "previous_actual_risk": self.previous_actual_risk,
+            "previous_actual_level": self.previous_actual_level,
         }
 
 
@@ -148,6 +153,7 @@ class ValidationResult:
     raw_predicted_level: Optional[str] = None
     calibration_applied: bool = False
     calibration_method: Optional[str] = None
+    risk_features: Dict[str, Any] = field(default_factory=dict)
     
     # Error for regression analysis
     error: float = 0.0
@@ -203,6 +209,7 @@ class ValidationResult:
             "raw_predicted_level": self.raw_predicted_level,
             "calibration_applied": self.calibration_applied,
             "calibration_method": self.calibration_method,
+            "risk_features": self.risk_features,
         }
     
     def to_metrics_dict(self) -> Dict[str, Any]:
@@ -360,6 +367,30 @@ class ValidationRunner:
         """
         self.data_loader.ensure_loaded()
         records = self.data_loader.records
+        records_by_month = {
+            (record.year, record.month): record
+            for record in self.data_loader.records
+        }
+
+        def previous_month_record(record: HistoricalRecord) -> Optional[HistoricalRecord]:
+            prev_year = record.year if record.month > 1 else record.year - 1
+            prev_month = record.month - 1 if record.month > 1 else 12
+            return records_by_month.get((prev_year, prev_month))
+
+        def previous_pest_context(
+            record: HistoricalRecord,
+            pest_type: str,
+        ) -> Tuple[float, str]:
+            previous = previous_month_record(record)
+            if previous is None:
+                return 0.0, "Low"
+            if pest_type == "fruitfly":
+                value = previous.fruit_fly_managed_cptd
+                level = previous.get_fruit_fly_risk_level(True).value
+            else:
+                value = previous.cecid_fly_infestation_pct
+                level = previous.get_cecid_fly_risk_level().value
+            return normalize_pest_value_to_risk(value, pest_type), level
         
         # Filter by years if specified
         if years:
@@ -376,6 +407,10 @@ class ValidationRunner:
             # Generate Fruit Fly cases (when biologically relevant)
             if include_fruitfly and record.mango_stage == "mature":
                 case_counter += 1
+                previous_risk, previous_level = previous_pest_context(
+                    record,
+                    "fruitfly",
+                )
                 case = ValidationCase(
                     case_id=f"FF-{record.year}-{record.month:02d}",
                     year=record.year,
@@ -388,6 +423,8 @@ class ValidationRunner:
                     weather_scenario="typical",
                     season=record.season,
                     source_record=record,
+                    previous_actual_risk=previous_risk,
+                    previous_actual_level=previous_level,
                 )
                 cases.append(case)
                 
@@ -399,6 +436,10 @@ class ValidationRunner:
                 case_counter += 1
                 # Cecid Fly needs rainfall-triggered emergence
                 weather_scenario = "rainy" if record.cecid_fly_infestation_pct > 0 else "typical"
+                previous_risk, previous_level = previous_pest_context(
+                    record,
+                    "cecid",
+                )
                 
                 case = ValidationCase(
                     case_id=f"CF-{record.year}-{record.month:02d}",
@@ -412,6 +453,8 @@ class ValidationRunner:
                     weather_scenario=weather_scenario,
                     season=record.season,
                     source_record=record,
+                    previous_actual_risk=previous_risk,
+                    previous_actual_level=previous_level,
                 )
                 cases.append(case)
                 
@@ -459,6 +502,243 @@ class ValidationRunner:
             "mature": self._OrchardStage.MATURE,
         }
         return stage_map.get(stage_str, self._OrchardStage.MATURE)
+
+    @staticmethod
+    def _clip01(value: float) -> float:
+        """Clamp a numeric value to the risk-score interval."""
+        return max(0.0, min(1.0, float(value)))
+
+    @staticmethod
+    def _days_since_flowering(stage: str) -> int:
+        """Return a representative days-since-flowering value for a stage."""
+        days_flowering_map = {
+            "dormant": 0,
+            "flowering": 10,
+            "fruitlet": 30,
+            "mature": 75,
+        }
+        return days_flowering_map.get(stage, 60)
+
+    def _case_seed(self, case: ValidationCase, offset: int = 0) -> int:
+        """Return a deterministic integer seed for one validation case."""
+        case_hash = hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()
+        return self.seed + int(case_hash[:8], 16) % 10000 + offset
+
+    def _seed_positions(
+        self,
+        case: ValidationCase,
+        grid_size: int,
+        carryover_weight: float,
+        offset: int = 0,
+    ) -> List[Tuple[int, int]]:
+        """
+        Create deterministic initial seed positions.
+
+        When carryover is enabled, the previous month's BPI activity increases
+        the number of initial sources. This represents residual orchard pressure
+        from the last monitoring period without inventing treatment or neighbor
+        records.
+        """
+        rng = np.random.default_rng(self._case_seed(case, offset))
+        base_seeds = int(rng.integers(1, 4))
+        if carryover_weight > 0:
+            carryover_seeds = 1 + int(round(case.previous_actual_risk * 6))
+            n_seeds = max(base_seeds, carryover_seeds)
+        else:
+            n_seeds = base_seeds
+        n_seeds = min(8, max(1, n_seeds))
+
+        flat_positions = rng.choice(
+            grid_size * grid_size,
+            size=n_seeds,
+            replace=False,
+        )
+        return [
+            (int(pos // grid_size), int(pos % grid_size))
+            for pos in flat_positions
+        ]
+
+    @staticmethod
+    def _effective_carryover_weight(
+        case: ValidationCase,
+        carryover_weight: float,
+        fruitfly_carryover_weight: Optional[float] = None,
+        cecid_carryover_weight: Optional[float] = None,
+    ) -> float:
+        """Return the pest-specific carryover weight for a validation case."""
+        if case.pest_type == "fruitfly" and fruitfly_carryover_weight is not None:
+            return max(0.0, min(1.0, float(fruitfly_carryover_weight)))
+        if case.pest_type == "cecid" and cecid_carryover_weight is not None:
+            return max(0.0, min(1.0, float(cecid_carryover_weight)))
+        return max(0.0, min(1.0, float(carryover_weight)))
+
+    def _weather_suitability_score(
+        self,
+        case: ValidationCase,
+        weather_stats: Dict[str, Any],
+    ) -> float:
+        """Compute a pest-specific 0-1 weather suitability score."""
+        temp_mean = float(weather_stats.get("temp_mean_c", 0.0))
+        humidity_mean = float(weather_stats.get("humidity_mean_pct", 75.0))
+        rainfall_mean = float(weather_stats.get("rainfall_total_mm", 0.0))
+        rainfall_peak = float(weather_stats.get("rainfall_peak_window_mm", rainfall_mean))
+        wind_mean = float(weather_stats.get("wind_mean_ms", 0.0))
+
+        humidity_score = self._clip01((humidity_mean - 60.0) / 35.0)
+        low_wind_score = 1.0 - self._clip01((wind_mean - 1.0) / 7.0)
+
+        if case.pest_type == "fruitfly":
+            temp_score = self._clip01((temp_mean - 24.0) / 8.0)
+            rain_penalty = 1.0 - self._clip01(rainfall_mean / 80.0)
+            return self._clip01(
+                0.50 * temp_score
+                + 0.25 * humidity_score
+                + 0.15 * rain_penalty
+                + 0.10 * low_wind_score
+            )
+
+        rain_score = self._clip01(max(rainfall_mean, rainfall_peak * 0.7) / 25.0)
+        return self._clip01(
+            0.60 * rain_score
+            + 0.25 * humidity_score
+            + 0.15 * low_wind_score
+        )
+
+    @staticmethod
+    def _aggregate_weather_stats(
+        weather_stats_by_window: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Aggregate several 48-hour weather windows into month-scale stats."""
+        if not weather_stats_by_window:
+            return {}
+
+        def mean_for(key: str) -> float:
+            values = [
+                float(stats[key])
+                for stats in weather_stats_by_window
+                if key in stats and stats[key] is not None
+            ]
+            return float(np.mean(values)) if values else 0.0
+
+        rainfall_totals = [
+            float(stats.get("rainfall_total_mm", 0.0))
+            for stats in weather_stats_by_window
+        ]
+        sources = sorted({
+            str(stats.get("source", "unknown"))
+            for stats in weather_stats_by_window
+        })
+        scenarios = sorted({
+            str(stats.get("scenario", "unknown"))
+            for stats in weather_stats_by_window
+        })
+
+        return {
+            "source": ",".join(sources),
+            "scenario": ",".join(scenarios),
+            "hours": int(sum(int(stats.get("hours", 0)) for stats in weather_stats_by_window)),
+            "monthly_windows": len(weather_stats_by_window),
+            "temp_mean_c": mean_for("temp_mean_c"),
+            "humidity_mean_pct": mean_for("humidity_mean_pct"),
+            "rainfall_total_mm": float(np.mean(rainfall_totals)) if rainfall_totals else 0.0,
+            "rainfall_peak_window_mm": max(rainfall_totals) if rainfall_totals else 0.0,
+            "rainfall_hours": int(sum(int(stats.get("rainfall_hours", 0)) for stats in weather_stats_by_window)),
+            "wind_mean_ms": mean_for("wind_mean_ms"),
+            "wind_max_ms": max(
+                float(stats.get("wind_max_ms", 0.0))
+                for stats in weather_stats_by_window
+            ),
+        }
+
+    def _risk_features_from_grid(self, mean_risk: np.ndarray) -> Dict[str, Any]:
+        """Derive non-saturated CA features from a Monte Carlo risk grid."""
+        return {
+            "mean_risk": float(mean_risk.mean()),
+            "peak_risk": float(mean_risk.max()),
+            "p90_risk": float(np.percentile(mean_risk, 90)),
+            "p75_risk": float(np.percentile(mean_risk, 75)),
+            "risk_area_10": float((mean_risk >= 0.10).mean()),
+            "risk_area_30": float((mean_risk >= 0.30).mean()),
+            "risk_area_50": float((mean_risk >= 0.50).mean()),
+            "n_at_risk": int((mean_risk >= 0.30).sum()),
+        }
+
+    @staticmethod
+    def _aggregate_risk_features(
+        features_by_window: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Aggregate several 48-hour CA feature sets into a monthly summary."""
+        if not features_by_window:
+            return {}
+
+        numeric_keys = [
+            "mean_risk",
+            "peak_risk",
+            "p90_risk",
+            "p75_risk",
+            "risk_area_10",
+            "risk_area_30",
+            "risk_area_50",
+            "n_at_risk",
+        ]
+        aggregated: Dict[str, Any] = {"monthly_windows": len(features_by_window)}
+        for key in numeric_keys:
+            values = [float(features.get(key, 0.0)) for features in features_by_window]
+            aggregated[f"mean_{key}"] = float(np.mean(values))
+            aggregated[f"peak_{key}"] = float(max(values))
+        return aggregated
+
+    def _score_from_features(
+        self,
+        case: ValidationCase,
+        risk_features: Dict[str, Any],
+        weather_stats: Dict[str, Any],
+        score_mode: str,
+        carryover_weight: float,
+        fruitfly_carryover_weight: Optional[float] = None,
+        cecid_carryover_weight: Optional[float] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """Convert simulation/weather features into a validation risk score."""
+        if score_mode == "mean_risk":
+            score = float(risk_features.get("mean_mean_risk", 0.0))
+            return self._clip01(score), {
+                "score_mode": score_mode,
+                "spatial_score": score,
+                "weather_suitability": None,
+                "carryover_weight": 0.0,
+            }
+
+        spatial_score = self._clip01(
+            0.25 * float(risk_features.get("mean_mean_risk", 0.0))
+            + 0.25 * float(risk_features.get("mean_p90_risk", 0.0))
+            + 0.20 * float(risk_features.get("peak_mean_risk", 0.0))
+            + 0.15 * float(risk_features.get("mean_risk_area_30", 0.0))
+            + 0.15 * float(risk_features.get("peak_risk_area_50", 0.0))
+        )
+        weather_suitability = self._weather_suitability_score(case, weather_stats)
+        carryover_weight = self._effective_carryover_weight(
+            case,
+            carryover_weight,
+            fruitfly_carryover_weight=fruitfly_carryover_weight,
+            cecid_carryover_weight=cecid_carryover_weight,
+        )
+        simulation_score = self._clip01(
+            0.70 * spatial_score
+            + 0.30 * weather_suitability
+        )
+        score = self._clip01(
+            (1.0 - carryover_weight) * simulation_score
+            + carryover_weight * case.previous_actual_risk
+        )
+        return score, {
+            "score_mode": score_mode,
+            "spatial_score": spatial_score,
+            "weather_suitability": weather_suitability,
+            "simulation_score_before_carryover": simulation_score,
+            "carryover_weight": carryover_weight,
+            "previous_actual_risk": case.previous_actual_risk,
+            "previous_actual_level": case.previous_actual_level,
+        }
     
     def _run_single_validation(
         self,
@@ -466,6 +746,11 @@ class ValidationRunner:
         hours: int = DEFAULT_HOURS,
         monte_carlo_runs: int = DEFAULT_MONTE_CARLO_RUNS,
         grid_size: int = DEFAULT_GRID_SIZE,
+        monthly_windows: int = 1,
+        score_mode: str = "mean_risk",
+        carryover_weight: float = 0.0,
+        fruitfly_carryover_weight: Optional[float] = None,
+        cecid_carryover_weight: Optional[float] = None,
     ) -> ValidationResult:
         """
         Run a single validation case.
@@ -491,90 +776,107 @@ class ValidationRunner:
         self._load_simulation_modules()
         
         start_time = time.time()
-        
-        # Create weather for this case
-        weather_df = self.weather_generator.generate(
+        effective_carryover_weight = self._effective_carryover_weight(
+            case,
+            carryover_weight,
+            fruitfly_carryover_weight=fruitfly_carryover_weight,
+            cecid_carryover_weight=cecid_carryover_weight,
+        )
+
+        window_count = max(1, int(monthly_windows))
+        weather_windows = self.weather_generator.generate_monthly_windows(
             year=case.year,
             month=case.month,
-            hours=hours,
+            window_hours=hours,
+            n_windows=window_count,
             scenario=case.weather_scenario,
         )
-        weather = self._WeatherTimeSeries.from_dataframe(weather_df)
-        weather_stats = self.weather_generator.get_summary_stats(weather_df)
-        
-        # Create grid with some initial infestation
-        grid = self._OrchardGrid(rows=grid_size, cols=grid_size)
-        
-        # Plant trees (full grid for simplicity)
-        tree_mask = np.ones((grid_size, grid_size), dtype=bool)
-        grid.plant_trees(tree_mask, self._CellState.UNBAGGED)
-        
-        # Seed initial infestation (1-3 random cells)
-        case_seed = int(hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:8], 16)
-        np.random.seed(self.seed + case_seed % 10000)
-        n_seeds = np.random.randint(1, 4)
-        seed_positions = [
-            (np.random.randint(0, grid_size), np.random.randint(0, grid_size))
-            for _ in range(n_seeds)
-        ]
-        grid.seed_infestation(seed_positions)
-        
-        # Select appropriate gate based on pest type
+
+        risk_features_by_window: List[Dict[str, Any]] = []
+        weather_stats_by_window: List[Dict[str, Any]] = []
+
+        # Select appropriate gate based on pest type.
         if case.pest_type == "cecid":
             gates = [self._CecidFlyGate()]
         else:
             gates = [self._FruitFlyGate()]
-        
-        # Map orchard stage
+
         orchard_stage = self._map_stage_to_enum(case.orchard_stage)
-        
-        # Determine days since flowering for sugar index
-        # Mature stage: 60-90 days post-flowering
-        days_flowering_map = {
-            "dormant": 0,
-            "flowering": 10,
-            "fruitlet": 30,
-            "mature": 75,
-        }
-        days_since_flowering = days_flowering_map.get(case.orchard_stage, 60)
-        
-        # Run Monte Carlo simulation for risk estimation
-        try:
-            mean_risk = self._SimulationEngine.monte_carlo(
-                grid=grid,
-                weather=weather,
-                n_runs=monte_carlo_runs,
-                n_steps=hours,
-                seed=self.seed,
-                gates=gates,
-                orchard_stage=orchard_stage,
-                days_since_flowering=days_since_flowering,
-                progress=False,
+        days_since_flowering = self._days_since_flowering(case.orchard_stage)
+
+        for window_index, weather_df in enumerate(weather_windows):
+            weather = self._WeatherTimeSeries.from_dataframe(weather_df)
+            weather_stats_by_window.append(
+                self.weather_generator.get_summary_stats(weather_df)
             )
-            
-            # Compute summary statistics
-            # Peak risk: maximum value in the mean risk grid
-            peak_risk = float(mean_risk.max())
-            
-            # Average risk across all non-empty cells
-            avg_risk = float(mean_risk.mean())
-            
-            # Count "at risk" cells (risk > 0.3)
-            n_at_risk = int((mean_risk > 0.3).sum())
-            
-            # Use average risk as the predicted risk score
-            predicted_risk = avg_risk
-            
-        except Exception as e:
-            logger.warning(f"Simulation failed for case {case.case_id}: {e}")
+
+            grid = self._OrchardGrid(rows=grid_size, cols=grid_size)
+            tree_mask = np.ones((grid_size, grid_size), dtype=bool)
+            grid.plant_trees(tree_mask, self._CellState.UNBAGGED)
+            grid.seed_infestation(
+                self._seed_positions(
+                    case=case,
+                    grid_size=grid_size,
+                    carryover_weight=effective_carryover_weight,
+                    offset=window_index * 1000,
+                )
+            )
+
+            try:
+                mean_risk = self._SimulationEngine.monte_carlo(
+                    grid=grid,
+                    weather=weather,
+                    n_runs=monte_carlo_runs,
+                    n_steps=hours,
+                    seed=self.seed + window_index * 1000,
+                    gates=gates,
+                    orchard_stage=orchard_stage,
+                    days_since_flowering=days_since_flowering,
+                    progress=False,
+                )
+                risk_features_by_window.append(
+                    self._risk_features_from_grid(mean_risk)
+                )
+            except Exception as e:
+                logger.warning(
+                    "Simulation failed for case %s window %s: %s",
+                    case.case_id,
+                    window_index + 1,
+                    e,
+                )
+
+        weather_stats = self._aggregate_weather_stats(weather_stats_by_window)
+        risk_features = self._aggregate_risk_features(risk_features_by_window)
+
+        if risk_features:
+            predicted_risk, score_features = self._score_from_features(
+                case=case,
+                risk_features=risk_features,
+                weather_stats=weather_stats,
+                score_mode=score_mode,
+                carryover_weight=effective_carryover_weight,
+                fruitfly_carryover_weight=fruitfly_carryover_weight,
+                cecid_carryover_weight=cecid_carryover_weight,
+            )
+            risk_features.update(score_features)
+            peak_risk = float(risk_features.get("peak_peak_risk", predicted_risk))
+            n_at_risk = int(round(float(risk_features.get("peak_n_at_risk", 0.0))))
+        else:
             predicted_risk = 0.0
             peak_risk = 0.0
             n_at_risk = 0
+            risk_features = {
+                "score_mode": score_mode,
+                "monthly_windows": window_count,
+                "carryover_weight": effective_carryover_weight,
+                "previous_actual_risk": case.previous_actual_risk,
+                "previous_actual_level": case.previous_actual_level,
+            }
         
         elapsed_time = time.time() - start_time
         
         # Convert risk to categorical level
-        predicted_level = risk_score_to_level(predicted_risk)
+        predicted_level = risk_score_to_pest_level(predicted_risk, case.pest_type)
         
         # Check if prediction matches actual
         match = predicted_level == case.actual_level
@@ -588,6 +890,7 @@ class ValidationRunner:
             peak_risk=peak_risk,
             n_infested=n_at_risk,
             weather_stats=weather_stats,
+            risk_features=risk_features,
         )
     
     def run_validation(
@@ -596,6 +899,11 @@ class ValidationRunner:
         hours: int = DEFAULT_HOURS,
         monte_carlo_runs: int = DEFAULT_MONTE_CARLO_RUNS,
         grid_size: int = DEFAULT_GRID_SIZE,
+        monthly_windows: int = 1,
+        score_mode: str = "mean_risk",
+        carryover_weight: float = 0.0,
+        fruitfly_carryover_weight: Optional[float] = None,
+        cecid_carryover_weight: Optional[float] = None,
         progress_callback: Optional[callable] = None,
     ) -> List[ValidationResult]:
         """
@@ -611,6 +919,17 @@ class ValidationRunner:
             Number of Monte Carlo runs
         grid_size : int
             Grid dimension
+        monthly_windows : int
+            Number of 48-hour windows sampled across each historical month.
+        score_mode : str
+            "mean_risk" preserves the legacy score; "composite" uses spatial,
+            weather, and carryover features for BPI-monthly validation.
+        carryover_weight : float
+            Weight given to previous-month BPI pest pressure in composite mode.
+        fruitfly_carryover_weight : float, optional
+            Optional Fruit Fly-specific carryover override.
+        cecid_carryover_weight : float, optional
+            Optional Cecid Fly-specific carryover override.
         progress_callback : callable, optional
             Callback function(current, total) for progress updates
         
@@ -642,6 +961,11 @@ class ValidationRunner:
                 hours=hours,
                 monte_carlo_runs=monte_carlo_runs,
                 grid_size=grid_size,
+                monthly_windows=monthly_windows,
+                score_mode=score_mode,
+                carryover_weight=carryover_weight,
+                fruitfly_carryover_weight=fruitfly_carryover_weight,
+                cecid_carryover_weight=cecid_carryover_weight,
             )
             self.results.append(result)
             
@@ -667,6 +991,11 @@ class ValidationRunner:
         hours: int = DEFAULT_HOURS,
         monte_carlo_runs: int = DEFAULT_MONTE_CARLO_RUNS,
         grid_size: int = DEFAULT_GRID_SIZE,
+        monthly_windows: int = 1,
+        score_mode: str = "mean_risk",
+        carryover_weight: float = 0.0,
+        fruitfly_carryover_weight: Optional[float] = None,
+        cecid_carryover_weight: Optional[float] = None,
     ) -> List[ValidationResult]:
         """
         Run complete validation pipeline.
@@ -691,6 +1020,16 @@ class ValidationRunner:
             Number of Monte Carlo runs
         grid_size : int
             Grid dimension
+        monthly_windows : int
+            Number of forecast-sized windows sampled across each month
+        score_mode : str
+            Validation score mode ("mean_risk" or "composite")
+        carryover_weight : float
+            Previous-month BPI pressure weight for composite scoring
+        fruitfly_carryover_weight : float, optional
+            Fruit Fly-specific previous-month pressure override
+        cecid_carryover_weight : float, optional
+            Cecid Fly-specific previous-month pressure override
         
         Returns
         -------
@@ -712,6 +1051,11 @@ class ValidationRunner:
             hours=hours,
             monte_carlo_runs=monte_carlo_runs,
             grid_size=grid_size,
+            monthly_windows=monthly_windows,
+            score_mode=score_mode,
+            carryover_weight=carryover_weight,
+            fruitfly_carryover_weight=fruitfly_carryover_weight,
+            cecid_carryover_weight=cecid_carryover_weight,
         )
     
     def compute_metrics(
@@ -773,6 +1117,7 @@ class ValidationRunner:
         self,
         split: Optional[str] = "calibration",
         min_cases: int = 2,
+        optimize_level_thresholds: bool = False,
     ):
         """
         Fit pest-specific risk calibration from completed validation results.
@@ -800,6 +1145,7 @@ class ValidationRunner:
             selected_results,
             source_split=split or "all_results",
             min_cases=min_cases,
+            optimize_level_thresholds=optimize_level_thresholds,
         )
         return self.calibration
 
@@ -827,6 +1173,7 @@ class ValidationRunner:
             calibrated_level = calibration.predict_level(
                 calibrated_risk,
                 result.case.pest_type,
+                raw_score=raw_score,
             )
             result.apply_calibrated_prediction(
                 calibrated_risk,

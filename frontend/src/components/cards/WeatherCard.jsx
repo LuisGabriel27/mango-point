@@ -166,7 +166,7 @@ export default function WeatherCard({ weather, manualWeather, weatherOverrideAct
               <i className="bi bi-droplet me-1" />Humidity: {current.humidity}%
             </div>
             <div className="col-6">
-              <i className="bi bi-wind me-1" />{current.wind_speed_ms?.toFixed(1)} m/s {toCardinal(current.wind_direction_deg ?? 0)}
+              <i className="bi bi-wind me-1" />{current.wind_speed_ms?.toFixed(1)} m/s from {toCardinal(current.wind_direction_deg ?? 0)}
             </div>
           </div>
         </div>

@@ -145,6 +145,43 @@ def test_historical_weather_coverage_summary_reports_fallback_cases(tmp_path):
     assert summary["status_counts"] == {"ready": 1, "missing_month": 1}
 
 
+def test_historical_weather_generator_can_sample_monthly_windows(tmp_path):
+    weather_path = tmp_path / "weather.csv"
+    start = datetime(2024, 5, 1, 0)
+    rows = ["datetime,temperature_c,wind_speed_ms,wind_dir_deg,rainfall_mm,humidity_pct"]
+    for hour in range(24 * 10):
+        ts = start + timedelta(hours=hour)
+        rows.append(f"{ts.isoformat()},{28 + hour % 4},1.5,90,0,{75 + hour % 5}")
+    weather_path.write_text("\n".join(rows), encoding="utf-8")
+
+    generator = HistoricalWeatherGenerator(
+        seed=1,
+        historical_weather_path=weather_path,
+    )
+    windows = generator.generate_monthly_windows(
+        year=2024,
+        month=5,
+        window_hours=48,
+        n_windows=4,
+    )
+
+    assert len(windows) == 4
+    assert all(len(window) == 48 for window in windows)
+    assert windows[0].attrs["source"] == "historical_weather_csv"
+    assert windows[-1]["datetime"].iloc[0] > windows[0]["datetime"].iloc[0]
+
+
+def test_validation_cases_include_previous_month_pest_context():
+    runner = ValidationRunner(seed=1)
+    cases = runner.generate_validation_cases(years=[2022, 2023])
+    cases_by_id = {case.case_id: case for case in cases}
+
+    assert cases_by_id["FF-2022-05"].previous_actual_risk == pytest.approx(9.17 / 40.0)
+    assert cases_by_id["FF-2022-05"].previous_actual_level == "Medium"
+    assert cases_by_id["CF-2023-03"].previous_actual_risk == pytest.approx(27.40 / 100.0)
+    assert cases_by_id["CF-2023-03"].previous_actual_level == "High"
+
+
 def test_validation_runner_assigns_splits_and_computes_split_metrics():
     runner = ValidationRunner(seed=1)
     calibration_case = ValidationCase(
@@ -272,3 +309,57 @@ def test_validation_runner_fits_and_applies_bpi_calibration():
     assert testing_result.predicted_risk == pytest.approx(0.75)
     assert testing_result.predicted_level == "High"
     assert testing_result.match is True
+
+
+def test_validation_calibration_maps_constant_raw_scores_to_calibration_median():
+    runner = ValidationRunner(seed=1)
+    medium_case = ValidationCase(
+        case_id="FF-2024-05-medium",
+        year=2024,
+        month=5,
+        date_str="2024-05",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=10.0,
+        actual_level="Medium",
+        weather_scenario="typical",
+        split="calibration",
+    )
+    second_medium_case = ValidationCase(
+        case_id="FF-2024-06-medium",
+        year=2024,
+        month=6,
+        date_str="2024-06",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=15.0,
+        actual_level="Medium",
+        weather_scenario="typical",
+        split="calibration",
+    )
+    testing_case = ValidationCase(
+        case_id="FF-2025-06-medium",
+        year=2025,
+        month=6,
+        date_str="2025-06",
+        pest_type="fruitfly",
+        orchard_stage="mature",
+        actual_value=15.0,
+        actual_level="Medium",
+        weather_scenario="typical",
+        split="testing",
+    )
+    runner.results = [
+        ValidationResult(medium_case, predicted_risk=1.0, predicted_level="High", match=False),
+        ValidationResult(second_medium_case, predicted_risk=1.0, predicted_level="High", match=False),
+        ValidationResult(testing_case, predicted_risk=1.0, predicted_level="High", match=False),
+    ]
+
+    calibration = runner.fit_calibration(split="calibration")
+    runner.apply_calibration(calibration)
+
+    curve = calibration.curves["fruitfly"]
+    assert curve.method == "constant_raw_scores_clamped_to_median"
+    assert curve.scale == pytest.approx(0.0)
+    assert curve.intercept == pytest.approx(0.3125)
+    assert runner.results[-1].predicted_level == "Medium"

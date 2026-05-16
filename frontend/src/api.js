@@ -55,6 +55,10 @@ const api = {
   runSimulation: (body) => client.post('/simulation/run-simulation', body, { timeout: 180000 }),
   getSimulationRuns: (params = {}) => client.get('/simulation/runs', { params }),
   getSimulationRun: (runId) => client.get(`/simulation/runs/${runId}`),
+  exportSimulationRuns: (params = {}) =>
+    client.get('/simulation/runs/export', { params, responseType: 'blob', timeout: 180000 }),
+  exportSimulationRun: (runId) =>
+    client.get(`/simulation/runs/${runId}/export`, { responseType: 'blob', timeout: 180000 }),
 
   // Monitoring
   getMonitoringMetrics: () => client.get('/monitoring/metrics'),

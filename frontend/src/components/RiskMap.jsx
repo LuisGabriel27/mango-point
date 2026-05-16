@@ -77,7 +77,7 @@ const STAGE_ZONE_FILL_LAYER = {
       'mature', '#16a34a',
       '#0f5132',
     ],
-    'fill-opacity': 0.18,
+    'fill-opacity': 0.28,
   },
 }
 
@@ -94,7 +94,7 @@ const STAGE_ZONE_LINE_LAYER = {
       'mature', '#16a34a',
       '#0f5132',
     ],
-    'line-width': 2,
+    'line-width': 3,
     'line-opacity': 0.9,
   },
 }
@@ -684,6 +684,10 @@ export default function RiskMap({
       ensureStageZoneLayers(map)
       map.getSource('stage-zones-src')?.setData(stageZoneGeojson(stageZones))
       map.getSource('stage-zone-draft-src')?.setData(stageDraftGeojson(stageZoneDraft))
+      if (map.getLayer('stage-zones-fill')) map.moveLayer('stage-zones-fill')
+      if (map.getLayer('stage-zones-line')) map.moveLayer('stage-zones-line')
+      if (map.getLayer('stage-zone-draft-line')) map.moveLayer('stage-zone-draft-line')
+      if (map.getLayer('stage-zone-draft-vertices')) map.moveLayer('stage-zone-draft-vertices')
     }
 
     if (map.loaded()) updateStageZones()

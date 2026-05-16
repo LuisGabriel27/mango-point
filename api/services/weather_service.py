@@ -95,8 +95,9 @@ class WeatherService:
         Returns
         -------
         dict
-            Weather data with keys: wind_speed_ms, wind_direction_deg,
-            temperature_c, humidity, datetime, source, cached
+            Weather data with keys: wind_speed_ms, wind_dir_deg,
+            temperature_c, humidity, datetime, source, cached. wind_dir_deg
+            follows the meteorological wind-from convention.
         """
         # Check cache first
         if use_cache:
@@ -151,7 +152,7 @@ class WeatherService:
         }
         
         logger.info(f"Fetched current weather: {weather['temperature_c']:.1f}°C, "
-                   f"wind {weather['wind_speed_ms']:.1f}m/s @ {weather['wind_dir_deg']:.0f}°")
+                   f"wind {weather['wind_speed_ms']:.1f}m/s from {weather['wind_dir_deg']:.0f}°")
         
         return weather
     

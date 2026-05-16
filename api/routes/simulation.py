@@ -5,11 +5,17 @@ POST /run-simulation endpoint for pest risk simulations.
 """
 
 import logging
-from datetime import datetime
+import io
+import json
+import re
+import zipfile
+from datetime import datetime, timezone
+from xml.sax.saxutils import escape as xml_escape
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
-from sqlalchemy import select
+from fastapi.responses import StreamingResponse
+from sqlalchemy import extract, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
@@ -19,7 +25,7 @@ from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
 from ..core.config import settings
-from utils.datetime_utils import format_rfc3339
+from utils.datetime_utils import format_rfc3339, parse_rfc3339
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +160,187 @@ def _infer_weather_source(
         return "manual"
 
     return _weather_source_from_data(weather_data, default="open-meteo")
+
+
+def _model_to_json_dict(model: Any) -> Dict[str, Any]:
+    """Serialize Pydantic v1/v2 models to plain JSON-compatible dicts."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump(mode="json")
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
+
+
+def _timestamp_for_db(value: Optional[str]) -> Optional[datetime]:
+    """Parse an RFC3339 timestamp and store it as naive UTC."""
+    if not value:
+        return None
+    dt = parse_rfc3339(value)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _xlsx_col_name(index: int) -> str:
+    """Return the Excel column name for a zero-based index."""
+    name = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _safe_sheet_name(name: str) -> str:
+    cleaned = re.sub(r"[\[\]\:\*\?\/\\]", " ", str(name or "Sheet")).strip()
+    return (cleaned or "Sheet")[:31]
+
+
+def _cell_xml(value: Any, row_idx: int, col_idx: int) -> str:
+    ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
+    if value is None:
+        return f'<c r="{ref}"/>'
+    if isinstance(value, bool):
+        return f'<c r="{ref}" t="b"><v>{1 if value else 0}</v></c>'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f'<c r="{ref}"><v>{value}</v></c>'
+    if isinstance(value, datetime):
+        value = format_rfc3339(value)
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    text = xml_escape(str(value))
+    return f'<c r="{ref}" t="inlineStr"><is><t>{text}</t></is></c>'
+
+
+def _sheet_xml(rows: List[List[Any]]) -> str:
+    row_xml = []
+    for r_idx, row in enumerate(rows, start=1):
+        cells = "".join(_cell_xml(value, r_idx, c_idx) for c_idx, value in enumerate(row))
+        row_xml.append(f'<row r="{r_idx}">{cells}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        '</worksheet>'
+    )
+
+
+def _build_xlsx(sheets: List[Tuple[str, List[List[Any]]]]) -> bytes:
+    """Build a simple XLSX workbook without external dependencies."""
+    clean_sheets = [(_safe_sheet_name(name), rows or [["No data"]]) for name, rows in sheets]
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            + "".join(
+                f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                for i in range(1, len(clean_sheets) + 1)
+            )
+            + "</Types>",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>",
+        )
+        zf.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            "<sheets>"
+            + "".join(
+                f'<sheet name="{xml_escape(name)}" sheetId="{i}" r:id="rId{i}"/>'
+                for i, (name, _) in enumerate(clean_sheets, start=1)
+            )
+            + "</sheets></workbook>",
+        )
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(
+                f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>'
+                for i in range(1, len(clean_sheets) + 1)
+            )
+            + "</Relationships>",
+        )
+        for i, (_, rows) in enumerate(clean_sheets, start=1):
+            zf.writestr(f"xl/worksheets/sheet{i}.xml", _sheet_xml(rows))
+    return output.getvalue()
+
+
+def _xlsx_response(filename: str, sheets: List[Tuple[str, List[List[Any]]]]) -> StreamingResponse:
+    data = _build_xlsx(sheets)
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("_") or "export.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return format_rfc3339(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _kv_rows(data: Dict[str, Any]) -> List[List[Any]]:
+    rows = [["Field", "Value"]]
+    for key, value in (data or {}).items():
+        rows.append([key, _jsonish(value)])
+    return rows
+
+
+def _run_summary_row(run: SimulationRun) -> Dict[str, Any]:
+    metadata = run.result_metadata or {}
+    request_payload = run.request_payload or {}
+    pest_value = run.pest_type.value if hasattr(run.pest_type, "value") else run.pest_type
+    return {
+        "run_id": run.run_id,
+        "started_at": format_rfc3339(run.started_at) if run.started_at else None,
+        "completed_at": format_rfc3339(run.completed_at) if run.completed_at else None,
+        "orchard_id": run.orchard_id,
+        "pest_type": pest_value,
+        "simulation_mode": run.simulation_mode or metadata.get("simulation_mode") or request_payload.get("simulation_mode"),
+        "hours": run.hours,
+        "status": run.status,
+        "peak_risk": run.peak_risk,
+        "peak_risk_percent": round(run.peak_risk * 100, 2) if run.peak_risk is not None else None,
+        "cells_at_risk": run.cells_at_risk,
+        "n_infested_final": run.n_infested_final,
+        "weather_source": run.weather_source,
+        "orchard_stage": metadata.get("orchard_stage") or request_payload.get("orchard_stage"),
+        "days_since_flowering": metadata.get("days_since_flowering") or request_payload.get("days_since_flowering"),
+        "neighbor_threat": metadata.get("neighbor_threat") or request_payload.get("neighbor_threat"),
+        "neighbor_direction": metadata.get("neighbor_direction") or request_payload.get("neighbor_direction"),
+        "initial_seed_strategy": metadata.get("initial_seed_strategy"),
+        "initial_seed_count": metadata.get("initial_seed_count"),
+        "treatment_summary": metadata.get("treatment_summary"),
+        "time_series_frames": len(run.time_series or []),
+    }
+
+
+def _dict_rows(dicts: List[Dict[str, Any]], headers: Optional[List[str]] = None) -> List[List[Any]]:
+    if not dicts:
+        return [["No data"]]
+    if headers is None:
+        headers = []
+        for row in dicts:
+            for key in row:
+                if key not in headers:
+                    headers.append(key)
+    return [headers] + [[_jsonish(row.get(header)) for header in headers] for row in dicts]
 
 
 @router.post(
@@ -345,6 +532,13 @@ async def save_simulation_run(
                 "cecid": PestType.CECID_FLY,
                 "fruitfly": PestType.FRUIT_FLY,
             }
+            request_payload = _model_to_json_dict(request)
+            response_payload = _model_to_json_dict(result)
+            result_metadata = response_payload.get("metadata") or {}
+            impact_assumptions = (
+                request_payload.get("impact_assumptions")
+                or (request_payload.get("dashboard_state") or {}).get("impact_assumptions")
+            )
             
             run = SimulationRun(
                 run_id=result.run_id,
@@ -356,17 +550,24 @@ async def save_simulation_run(
                     t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t)
                     for t in (request.treatment_applications or [])
                 ],
+                simulation_mode=request.simulation_mode.value,
                 hours=request.hours,
                 random_seed=result.random_seed,
                 risk_threshold=result.risk_threshold,
                 weather_source=_infer_weather_source(request, weather_data, weather_source),
                 weather_data=weather_data,
                 output_geojson=result.risk_geojson,
+                request_payload=request_payload,
+                response_payload=response_payload,
+                result_metadata=result_metadata,
+                time_series=response_payload.get("time_series") or [],
+                timesteps=response_payload.get("timesteps") or [],
+                impact_assumptions=impact_assumptions,
                 peak_risk=result.peak_risk,
                 cells_at_risk=result.cells_at_risk,
                 n_infested_final=result.n_infested_final,
-                started_at=datetime.fromisoformat(result.started_at.replace("Z", "+00:00")),
-                completed_at=datetime.fromisoformat(result.completed_at.replace("Z", "+00:00")) if result.completed_at else None,
+                started_at=_timestamp_for_db(result.started_at),
+                completed_at=_timestamp_for_db(result.completed_at),
                 status="completed",
             )
             
@@ -586,16 +787,169 @@ async def list_simulation_runs(
                 "run_id": r.run_id,
                 "pest_type": r.pest_type.value,
                 "orchard_id": r.orchard_id,
+                "simulation_mode": (
+                    r.simulation_mode
+                    or (r.result_metadata or {}).get("simulation_mode")
+                    or (r.request_payload or {}).get("simulation_mode")
+                    or "grid"
+                ),
                 "hours": r.hours,
                 "started_at": format_rfc3339(r.started_at) if r.started_at else None,
                 "status": r.status,
                 "peak_risk": r.peak_risk,
                 "cells_at_risk": r.cells_at_risk,
+                "n_infested_final": r.n_infested_final,
+                "weather_source": r.weather_source,
+                "has_time_series": bool(r.time_series or (r.response_payload or {}).get("time_series")),
             }
             for r in runs
         ],
         "total": len(runs),
     }
+
+
+@router.get(
+    "/runs/export",
+    summary="Export simulation run history",
+    description="Export saved simulation history as an Excel workbook.",
+)
+async def export_simulation_runs(
+    orchard_id: Optional[str] = Query(None, description="Filter by orchard ID. Omit for all orchards."),
+    period: str = Query("all", pattern="^(all|month)$", description="Export all dates or a specific month."),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    limit: int = Query(5000, ge=1, le=10000),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export saved run summaries with reproducibility fields."""
+    query = select(SimulationRun)
+    if orchard_id:
+        query = query.where(SimulationRun.orchard_id == orchard_id)
+
+    period_label = "all"
+    if period == "month":
+        if year is None or month is None:
+            raise HTTPException(status_code=400, detail="year and month are required when period=month")
+        query = query.where(
+            extract("year", SimulationRun.started_at) == year,
+            extract("month", SimulationRun.started_at) == month,
+        )
+        period_label = f"{year}-{month:02d}"
+
+    query = query.order_by(SimulationRun.started_at.desc()).limit(limit)
+    runs = (await db.execute(query)).scalars().all()
+
+    summary_rows = [_run_summary_row(run) for run in runs]
+    summary_headers = [
+        "run_id", "started_at", "completed_at", "orchard_id", "pest_type",
+        "simulation_mode", "hours", "status", "peak_risk", "peak_risk_percent",
+        "cells_at_risk", "n_infested_final", "weather_source", "orchard_stage",
+        "days_since_flowering", "neighbor_threat", "neighbor_direction",
+        "initial_seed_strategy", "initial_seed_count", "treatment_summary",
+        "time_series_frames",
+    ]
+    filter_rows = [
+        ["Export Field", "Value"],
+        ["Generated at", format_rfc3339(datetime.now(timezone.utc))],
+        ["Orchard filter", orchard_id or "All orchards"],
+        ["Period", period_label],
+        ["Rows exported", len(runs)],
+    ]
+    filename = f"mangopoint_simulation_history_{orchard_id or 'all_orchards'}_{period_label}.xlsx"
+    return _xlsx_response(
+        filename,
+        [
+            ("History Summary", _dict_rows(summary_rows, summary_headers)),
+            ("Export Filters", filter_rows),
+        ],
+    )
+
+
+@router.get(
+    "/runs/{run_id}/export",
+    summary="Export one simulation run",
+    description="Export one saved simulation with inputs, outputs, weather, and timeline.",
+)
+async def export_simulation_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export a single saved run as a multi-sheet Excel workbook."""
+    run = (await db.execute(select(SimulationRun).where(SimulationRun.run_id == run_id))).scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Simulation run not found")
+
+    response_payload = run.response_payload or {}
+    metadata = run.result_metadata or response_payload.get("metadata") or {}
+    request_payload = run.request_payload or {}
+    time_series = run.time_series or response_payload.get("time_series") or []
+    weather_data = run.weather_data or []
+    risk_features = (run.output_geojson or response_payload.get("risk_geojson") or {}).get("features", [])
+
+    summary = _run_summary_row(run)
+    summary.update({
+        "random_seed": run.random_seed,
+        "risk_threshold": run.risk_threshold,
+        "duration_seconds": run.duration_seconds,
+        "loaded_from_history": True,
+    })
+
+    time_rows = [[
+        "hour", "datetime", "n_infested", "n_new", "temperature_c", "humidity",
+        "rainfall_mm", "wind_speed_ms", "wind_dir_deg",
+    ]]
+    for frame in time_series:
+        weather = frame.get("weather") or {}
+        time_rows.append([
+            frame.get("hour"),
+            frame.get("datetime"),
+            frame.get("n_infested"),
+            frame.get("n_new"),
+            weather.get("temperature_c") or weather.get("temp_c"),
+            weather.get("humidity"),
+            weather.get("rainfall_mm") or weather.get("rain_mm"),
+            weather.get("wind_speed_ms") or weather.get("wind_ms"),
+            weather.get("wind_dir_deg") or weather.get("wind_direction_deg"),
+        ])
+    if len(time_rows) == 1:
+        time_rows.append(["No time series saved", None, None, None, None, None, None, None, None])
+
+    weather_rows = _dict_rows(weather_data if isinstance(weather_data, list) else [])
+
+    feature_rows = [[
+        "index", "tree_id", "risk", "state", "stage", "row", "col",
+        "lon", "lat", "geometry_type",
+    ]]
+    for idx, feature in enumerate(risk_features[:10000], start=1):
+        props = feature.get("properties") or {}
+        centroid = _feature_centroid(feature)
+        feature_rows.append([
+            idx,
+            props.get("tree_id") or props.get("Tree_ID") or feature.get("id"),
+            props.get("risk"),
+            props.get("state"),
+            props.get("stage"),
+            props.get("row"),
+            props.get("col"),
+            centroid[0] if centroid else None,
+            centroid[1] if centroid else None,
+            (feature.get("geometry") or {}).get("type"),
+        ])
+    if len(feature_rows) == 1:
+        feature_rows.append(["No final risk features saved", None, None, None, None, None, None, None, None, None])
+
+    filename = f"mangopoint_simulation_{run.run_id}.xlsx"
+    return _xlsx_response(
+        filename,
+        [
+            ("Summary", _kv_rows(summary)),
+            ("Input Parameters", _kv_rows(request_payload)),
+            ("Result Metadata", _kv_rows(metadata)),
+            ("Time Series", time_rows),
+            ("Weather Data", weather_rows),
+            ("Final Risk Features", feature_rows),
+        ],
+    )
 
 
 @router.get(
@@ -616,19 +970,78 @@ async def get_simulation_run(
     
     if not run:
         raise HTTPException(status_code=404, detail="Simulation run not found")
-    
-    return {
+
+    request_payload = run.request_payload or {}
+    response_payload = dict(run.response_payload or {})
+    if response_payload:
+        payload = response_payload
+    else:
+        metadata = run.result_metadata or {}
+        if metadata:
+            metadata = {
+                **metadata,
+                "simulation_mode": metadata.get("simulation_mode") or run.simulation_mode or "grid",
+            }
+        payload = {
+            "run_id": run.run_id,
+            "pest_type": run.pest_type.value,
+            "hours": run.hours,
+            "started_at": format_rfc3339(run.started_at) if run.started_at else None,
+            "completed_at": format_rfc3339(run.completed_at) if run.completed_at else None,
+            "duration_seconds": run.duration_seconds,
+            "status": run.status,
+            "peak_risk": run.peak_risk,
+            "cells_at_risk": run.cells_at_risk,
+            "n_infested_final": run.n_infested_final,
+            "random_seed": run.random_seed,
+            "risk_threshold": run.risk_threshold,
+            "metadata": metadata,
+            "time_series": run.time_series or [],
+            "timesteps": run.timesteps or [],
+            "risk_geojson": run.output_geojson,
+        }
+
+    payload.setdefault("run_id", run.run_id)
+    payload.setdefault("pest_type", run.pest_type.value)
+    payload.setdefault("orchard_id", run.orchard_id)
+    payload.setdefault("hours", run.hours)
+    payload.setdefault("started_at", format_rfc3339(run.started_at) if run.started_at else None)
+    payload.setdefault("completed_at", format_rfc3339(run.completed_at) if run.completed_at else None)
+    payload.setdefault("duration_seconds", run.duration_seconds)
+    payload.setdefault("status", run.status)
+    payload.setdefault("peak_risk", run.peak_risk)
+    payload.setdefault("cells_at_risk", run.cells_at_risk)
+    payload.setdefault("n_infested_final", run.n_infested_final)
+    payload.setdefault("random_seed", run.random_seed)
+    payload.setdefault("risk_threshold", run.risk_threshold)
+    payload.setdefault("risk_geojson", run.output_geojson)
+    payload.setdefault("time_series", run.time_series or [])
+    payload.setdefault("timesteps", run.timesteps or [])
+
+    metadata = payload.get("metadata") or run.result_metadata or {}
+    if isinstance(metadata, dict):
+        metadata.setdefault("simulation_mode", run.simulation_mode or request_payload.get("simulation_mode") or "grid")
+        payload["metadata"] = metadata
+
+    payload["loaded_from_history"] = True
+    payload["history"] = {
         "run_id": run.run_id,
-        "pest_type": run.pest_type.value,
         "orchard_id": run.orchard_id,
-        "hours": run.hours,
         "started_at": format_rfc3339(run.started_at) if run.started_at else None,
         "completed_at": format_rfc3339(run.completed_at) if run.completed_at else None,
         "duration_seconds": run.duration_seconds,
         "status": run.status,
-        "peak_risk": run.peak_risk,
-        "cells_at_risk": run.cells_at_risk,
-        "n_infested_final": run.n_infested_final,
         "weather_source": run.weather_source,
-        "risk_geojson": run.output_geojson,
     }
+    payload["orchard_id"] = run.orchard_id
+    payload["weather_source"] = run.weather_source
+    payload["weather_data"] = run.weather_data
+    payload["request_payload"] = request_payload
+    payload["input_parameters"] = request_payload
+    payload["impact_assumptions"] = (
+        run.impact_assumptions
+        or request_payload.get("impact_assumptions")
+        or (request_payload.get("dashboard_state") or {}).get("impact_assumptions")
+    )
+
+    return payload

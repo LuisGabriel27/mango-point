@@ -24,11 +24,11 @@ router = APIRouter(prefix="/weather", tags=["Weather"])
     response_model=WeatherResponse,
     summary="Get live weather data",
     description="""
-    Fetch real-time weather data from OpenWeatherMap API.
+    Fetch real-time weather data from Open-Meteo.
     
     **Returns:**
     - `wind_speed_ms`: Wind speed in meters/second
-    - `wind_direction_deg`: Wind direction in degrees (0=N, 90=E)
+    - `wind_direction_deg`: Meteorological wind-from direction in degrees (0=N/from north, 90=E/from east)
     - `temperature_c`: Temperature in Celsius
     - `humidity`: Relative humidity percentage
     

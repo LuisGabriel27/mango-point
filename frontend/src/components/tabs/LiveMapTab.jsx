@@ -188,6 +188,7 @@ export default function LiveMapTab({
 
         <div className="map-card">
           <RiskMap
+            key={viewportKey}
             geojson={geojson}
             baseGeojson={baseGeojson}
             alerts={alerts}

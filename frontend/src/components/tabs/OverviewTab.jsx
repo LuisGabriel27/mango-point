@@ -30,6 +30,10 @@ function riskBadge(score) {
 
 export default function OverviewTab({ monitoringData, simData, totalTrees: totalTreesProp = 0 }) {
   const m = monitoringData ?? {}
+  const impact = simData?.impact_assumptions ?? {}
+  const yieldKg = Number(impact.yield_per_tree_kg ?? 45)
+  const pricePhp = Number(impact.farmgate_price_php_per_kg ?? 60)
+  const baseDamage = Number(impact.damage_base ?? 30) / 100
 
   // Simulation data takes priority over monitoring DB data
   const infestedFinal = simData?.n_infested_final ?? null
@@ -52,7 +56,7 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
   const activeAlerts = m.alert_summary?.active ?? 0
 
   const lossBase = infestedFinal != null
-    ? `PHP ${((infestedFinal * 45 * 60 * 0.30) / 1000).toFixed(0)}K (est.)`
+    ? `PHP ${((infestedFinal * yieldKg * pricePhp * baseDamage) / 1000).toFixed(0)}K (est.)`
     : '—'
 
   // Susceptible stage: prefer sim metadata stage_breakdown, fallback to monitoring phenology

@@ -5,6 +5,7 @@ import LiveMapTab from '../components/tabs/LiveMapTab'
 import OverviewTab from '../components/tabs/OverviewTab'
 import CropImpactTab from '../components/tabs/CropImpactTab'
 import SurveillanceTab from '../components/tabs/SurveillanceTab'
+import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
 import api from '../api'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
@@ -83,6 +84,108 @@ function pointInPolygon(point, polygon) {
   return inside
 }
 
+function parseMaybeJson(value, fallback) {
+  if (value == null) return fallback
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch (_) {
+    return fallback
+  }
+}
+
+function normalizeStageZones(value) {
+  const zones = parseMaybeJson(value, [])
+  if (!Array.isArray(zones)) return []
+  return zones
+    .map((zone, index) => {
+      const coordinates = parseMaybeJson(zone?.coordinates, [])
+      if (!Array.isArray(coordinates) || coordinates.length < 3) return null
+      return {
+        id: zone.id ?? `restored-stage-zone-${index + 1}`,
+        stage: zone.stage ?? 'mature',
+        coordinates,
+        tree_count: zone.tree_count ?? 0,
+      }
+    })
+    .filter(Boolean)
+}
+
+function convexHull(points) {
+  const sorted = [...points]
+    .map((point) => [Number(point[0]), Number(point[1])])
+    .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
+    .sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]))
+  if (sorted.length <= 1) return sorted
+
+  const cross = (origin, a, b) => (
+    (a[0] - origin[0]) * (b[1] - origin[1])
+    - (a[1] - origin[1]) * (b[0] - origin[0])
+  )
+  const lower = []
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+      lower.pop()
+    }
+    lower.push(point)
+  }
+  const upper = []
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const point = sorted[i]
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+      upper.pop()
+    }
+    upper.push(point)
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1))
+}
+
+function paddedBoundsPolygon(points) {
+  if (!points.length) return []
+  const lons = points.map((point) => point[0])
+  const lats = points.map((point) => point[1])
+  const minLon = Math.min(...lons)
+  const maxLon = Math.max(...lons)
+  const minLat = Math.min(...lats)
+  const maxLat = Math.max(...lats)
+  const padLon = Math.max((maxLon - minLon) * 0.08, 0.00003)
+  const padLat = Math.max((maxLat - minLat) * 0.08, 0.00003)
+  return [
+    [minLon - padLon, minLat - padLat],
+    [maxLon + padLon, minLat - padLat],
+    [maxLon + padLon, maxLat + padLat],
+    [minLon - padLon, maxLat + padLat],
+  ]
+}
+
+function stageZonesFromOverrides(stageOverrides, treePoints) {
+  const overrides = parseMaybeJson(stageOverrides, {})
+  if (!overrides || typeof overrides !== 'object') return []
+
+  const pointsById = new Map(treePoints.map((point) => [String(point.tree_id), point]))
+  const byStage = new Map()
+  for (const [treeId, stage] of Object.entries(overrides)) {
+    const point = pointsById.get(String(treeId))
+    if (!point || !stage) continue
+    const stageKey = String(stage)
+    if (!byStage.has(stageKey)) byStage.set(stageKey, [])
+    byStage.get(stageKey).push([point.lon, point.lat])
+  }
+
+  return [...byStage.entries()].map(([stage, points], index) => {
+    const hull = convexHull(points)
+    const coordinates = hull.length >= 3 ? hull : paddedBoundsPolygon(points)
+    if (coordinates.length < 3) return null
+    return {
+      id: `restored-${stage}-zone-${index + 1}`,
+      stage,
+      coordinates,
+      tree_count: points.length,
+      source: 'tree_stage_overrides',
+    }
+  }).filter(Boolean)
+}
+
 function isActiveAlert(alert) {
   return String(alert?.status ?? '').toLowerCase() === 'active'
 }
@@ -123,6 +226,8 @@ export default function DashboardPage() {
   const [playbackFrames, setPlaybackFrames] = useState([])
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0)
   const [mapRefreshKey, setMapRefreshKey] = useState(0)
+  const [simulationTemplate, setSimulationTemplate] = useState(null)
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
 
   // Monitoring state
   const [monitoringData, setMonitoringData] = useState(null)
@@ -407,15 +512,70 @@ export default function DashboardPage() {
 
 
   // ── Simulation complete handler ───────────────────────────────────────
-  const handleSimulationComplete = useCallback((data) => {
+  const applySimulationResult = useCallback((data, options = {}) => {
     setSimData(data)
     const frames = Array.isArray(data.time_series) ? data.time_series : []
     setPlaybackFrames(frames)
-    setCurrentFrameIdx(0)
+    setCurrentFrameIdx(options.startAtLastFrame && frames.length ? frames.length - 1 : 0)
     fetchAlerts()
     window.setTimeout(fetchAlerts, 1200)
     fetchMonitoring()
   }, [fetchAlerts, fetchMonitoring])
+
+  const handleSimulationComplete = useCallback((data) => {
+    applySimulationResult(data)
+    setHistoryRefreshKey((key) => key + 1)
+    window.setTimeout(() => setHistoryRefreshKey((key) => key + 1), 1500)
+  }, [applySimulationResult])
+
+  const restoreStageContext = useCallback((params = {}, options = {}) => {
+    const safeParams = parseMaybeJson(params, {})
+    const dashboardState = parseMaybeJson(safeParams.dashboard_state, {})
+    const savedStageOverrides = parseMaybeJson(safeParams.tree_stage_overrides, {})
+    const savedZones = normalizeStageZones(
+      dashboardState.phenology_zones ?? safeParams.phenology_zones,
+    )
+    const restoredZones = savedZones.length
+      ? savedZones
+      : stageZonesFromOverrides(savedStageOverrides, orchardTreePoints)
+
+    const applyRestoredStages = () => {
+      setPhenologyZones(restoredZones)
+      setTreeStageOverrides(savedStageOverrides)
+      setStageZoneDraft([])
+      setStageZoneDrawing(false)
+      setMapRefreshKey((value) => value + 1)
+    }
+
+    if (options.defer) {
+      setPhenologyZones([])
+      setTreeStageOverrides({})
+      window.setTimeout(applyRestoredStages, 0)
+      return
+    }
+
+    applyRestoredStages()
+  }, [orchardTreePoints])
+
+  const handleHistoricalSimulationLoad = useCallback((data) => {
+    const params = parseMaybeJson(data.request_payload ?? data.input_parameters, {})
+    setActiveTab('live-map')
+    applySimulationResult(data, { startAtLastFrame: true })
+    restoreStageContext(params, { defer: true })
+    setSimulationTemplate({
+      ...params,
+      _loaded_at: Date.now(),
+    })
+  }, [applySimulationResult, restoreStageContext])
+
+  const handleHistoricalTemplateLoad = useCallback((params) => {
+    const safeParams = parseMaybeJson(params, {})
+    restoreStageContext(safeParams)
+    setSimulationTemplate({
+      ...safeParams,
+      _loaded_at: Date.now(),
+    })
+  }, [restoreStageContext])
 
   // ── Tree management modal ─────────────────────────────────────────────
   const handleTreeClick = useCallback((treeData) => {
@@ -542,6 +702,20 @@ export default function DashboardPage() {
                 <SurveillanceTab monitoringData={monitoringData} simData={simData} weather={weather} />
               </div>
 
+              <div
+                id="ops-panel-history"
+                className="ops-panel ops-panel-scroll"
+                style={{ display: activeTab === 'history' ? 'block' : 'none' }}
+              >
+                <SimulationHistoryTab
+                  orchardId={selectedOrchardId}
+                  orchardName={orchardName}
+                  refreshKey={historyRefreshKey}
+                  onLoadRun={handleHistoricalSimulationLoad}
+                  onUseTemplate={handleHistoricalTemplateLoad}
+                />
+              </div>
+
             </div>
           </div>
         </main>
@@ -563,8 +737,10 @@ export default function DashboardPage() {
           orchardGeojson={orchardGeojson}
           treeOverrides={treeOverrides}
           treeStageOverrides={treeStageOverrides}
+          phenologyZones={phenologyZones}
           onClearTreeStageOverrides={handleStageZoneClear}
           onSimulationComplete={handleSimulationComplete}
+          simulationTemplate={simulationTemplate}
           playbackFrames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
           onFrameSeek={setCurrentFrameIdx}

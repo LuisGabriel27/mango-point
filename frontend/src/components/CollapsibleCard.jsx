@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 export default function CollapsibleCard({
   iconName,
@@ -6,10 +6,15 @@ export default function CollapsibleCard({
   children,
   headerExtra = null,
   defaultOpen = true,
+  openOverride = 0,
   cardClass = '',
   cardStyle = {},
 }) {
   const [open, setOpen] = useState(defaultOpen)
+
+  useEffect(() => {
+    if (openOverride > 0) setOpen(true)
+  }, [openOverride])
 
   return (
     <div className={`sidebar-section ${cardClass}`} style={cardStyle}>

@@ -3,6 +3,7 @@
 ## Requirements
 
 - Python 3.10+
+- Node.js 18+ with npm
 - PostgreSQL 14+ with PostGIS installed locally
 - Git
 
@@ -10,15 +11,18 @@
 
 ```bash
 git clone <repository-url>
-cd mango-point
+cd <project-folder>
 
-python -m venv venv
-venv\Scripts\activate
+python -m venv .venv
+.\.venv\Scripts\activate
 
-pip install -r requirements-api.txt
-pip install -r dashboard/requirements-dashboard.txt
+python -m pip install -r requirements-api.txt
 
 copy .env.example .env
+
+cd frontend
+npm install
+cd ..
 ```
 
 Set at least:
@@ -55,28 +59,56 @@ $env:PGPASSWORD="your_postgres_password"
 
 Initialize tables and seed reference data:
 
-```bash
-python -m scripts.init_db
+```powershell
+.\init_db.bat
 ```
+
+If your virtual environment is already active, `python -m scripts.init_db` is equivalent.
 
 The project currently uses schema initialization plus idempotent startup adjustments, not a full migration tool yet.
 
 ## Run the App
 
-Start the API:
+Quick Windows start:
 
-```bash
-python run_server.py --reload
+```powershell
+.\start_dev.bat
 ```
 
-Start the dashboard in another terminal:
+Start the API:
 
-```bash
-python -m dashboard.app
+```powershell
+.\start_api.bat
+```
+
+If PowerShell says `uvicorn.exe` was blocked by Application Control, start the
+same server from a new VS Code terminal so the repo-local `uvicorn.cmd` wrapper
+is first on `Path`:
+
+```powershell
+uvicorn api.main:app --reload --port 8000
+```
+
+You can also start the same server through Python directly:
+
+```powershell
+python run_server.py --reload --port 8000
+```
+
+You can also use the Windows helper:
+
+```powershell
+.\start_api.bat
+```
+
+Start the frontend in another terminal:
+
+```powershell
+.\start_frontend.bat
 ```
 
 API docs: `http://localhost:8000/docs`
-Dashboard: `http://localhost:8050`
+Frontend: `http://localhost:3000`
 
 ## Validation
 
@@ -95,15 +127,16 @@ python -m scripts.run_validation --historical-weather-csv data\hourly_weather.cs
 
 `--require-historical-weather` exits before simulation if any selected validation case would fall back to synthetic weather.
 
-## Dashboard Configuration
+## Frontend Configuration
 
-The dashboard uses:
+Local frontend development uses the Vite proxy in `frontend/vite.config.js`, so API requests go to `http://localhost:8000`.
+For a static build or custom API host, create `frontend/.env` from `frontend/.env.example` and set:
 
 ```env
-MANGOPOINT_API_BASE=http://localhost:8000
+VITE_API_BASE=http://localhost:8000
 ```
 
-Keep the API running before opening `http://localhost:8050`.
+Keep the API running before opening `http://localhost:3000`.
 
 ## Troubleshooting
 
@@ -111,5 +144,7 @@ Keep the API running before opening `http://localhost:8050`.
 - PostGIS errors: run `CREATE EXTENSION postgis;` in the `mangopoint` database.
 - Auth errors: set `AUTH_SECRET_KEY` and use a non-default admin password.
 - Import errors: activate the virtual environment and reinstall requirements.
-- Dashboard connection issues: ensure the API is reachable on port `8000`.
+- `uvicorn.exe` blocked on Windows: close the old terminal and open a new VS Code terminal; or run `$env:Path = "$PWD;$env:Path"` once in the old terminal; or use `.\start_api.bat`.
+- Frontend dependency errors: run `cd frontend` then `npm install`.
+- Frontend connection issues: ensure the API is reachable on port `8000`.
 - Historical validation weather errors: verify `data\hourly_weather.csv` has the required hourly rows and columns.

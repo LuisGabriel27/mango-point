@@ -425,15 +425,28 @@ body {
   max-width: min(560px, calc(100% - 280px));
 }
 .map-stage-zone-tools .btn,
-.map-stage-zone-select {
+.map-stage-zone-tools .mp-select-trigger {
   border-radius: 6px !important;
   font-size: .76rem !important;
   font-weight: 700 !important;
   box-shadow: 0 2px 6px rgba(0,0,0,.1);
 }
 .map-stage-zone-select {
-  width: 118px !important;
+  margin-bottom: 0 !important;
+}
+.map-stage-zone-select .mp-select-trigger {
+  background: #fff !important;
   border: 1px solid rgba(0,0,0,.14) !important;
+  color: #374151 !important;
+  padding: .28rem .65rem !important;
+}
+.map-stage-zone-select .mp-select-trigger:hover,
+.map-stage-zone-select .mp-select-trigger.open {
+  border-color: var(--mp-primary) !important;
+  color: var(--mp-primary) !important;
+}
+.map-stage-zone-select .mp-select-dropdown {
+  z-index: 1200;
 }
 .map-animation-title {
   /* Centered at the bottom of the map. The top-left is reserved for the

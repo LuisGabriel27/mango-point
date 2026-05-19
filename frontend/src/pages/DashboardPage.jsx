@@ -7,9 +7,11 @@ import CropImpactTab from '../components/tabs/CropImpactTab'
 import SurveillanceTab from '../components/tabs/SurveillanceTab'
 import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
 import api from '../api'
+import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
 const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
+const SELECTED_ORCHARD_STORAGE_KEY = 'mangopoint.selectedOrchardId.v1'
 
 const DEFAULT_MANUAL_WEATHER = {
   temperature_c: 30,
@@ -20,6 +22,24 @@ const DEFAULT_MANUAL_WEATHER = {
 }
 
 const fallbackTreeGeojson = { type: 'FeatureCollection', features: [] }
+
+function readStoredSelectedOrchardId() {
+  if (typeof window === 'undefined') return DEFAULT_ORCHARD_ID
+  try {
+    return window.localStorage.getItem(SELECTED_ORCHARD_STORAGE_KEY) || DEFAULT_ORCHARD_ID
+  } catch (_) {
+    return DEFAULT_ORCHARD_ID
+  }
+}
+
+function writeStoredSelectedOrchardId(orchardId) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SELECTED_ORCHARD_STORAGE_KEY, orchardId || DEFAULT_ORCHARD_ID)
+  } catch (_) {
+    /* ignore */
+  }
+}
 
 const PHENOLOGY_STAGE_OPTIONS = [
   { label: 'Dormant', value: 'dormant' },
@@ -186,6 +206,23 @@ function stageZonesFromOverrides(stageOverrides, treePoints) {
   }).filter(Boolean)
 }
 
+function stageOverridesFromZones(zones, treePoints) {
+  const overrides = {}
+
+  for (const zone of zones || []) {
+    const coordinates = Array.isArray(zone?.coordinates) ? zone.coordinates : []
+    if (coordinates.length < 3 || !zone?.stage) continue
+
+    for (const point of treePoints) {
+      if (pointInPolygon([point.lon, point.lat], coordinates)) {
+        overrides[point.tree_id] = zone.stage
+      }
+    }
+  }
+
+  return overrides
+}
+
 function isActiveAlert(alert) {
   return String(alert?.status ?? '').toLowerCase() === 'active'
 }
@@ -211,8 +248,8 @@ export default function DashboardPage() {
 
   // Orchard state
   const [orchards, setOrchards] = useState([])
-  const [selectedOrchardId, setSelectedOrchardId] = useState(DEFAULT_ORCHARD_ID)
-  const selectedOrchardIdRef = useRef(DEFAULT_ORCHARD_ID)
+  const [selectedOrchardId, setSelectedOrchardId] = useState(readStoredSelectedOrchardId)
+  const selectedOrchardIdRef = useRef(selectedOrchardId)
   const [orchardLoading, setOrchardLoading] = useState(false)
 
   // Simulation / map state
@@ -387,8 +424,10 @@ export default function DashboardPage() {
 
   // ── Data fetchers ─────────────────────────────────────────────────────
   const selectOrchardId = useCallback((orchardId) => {
-    selectedOrchardIdRef.current = orchardId
-    setSelectedOrchardId(orchardId)
+    const nextOrchardId = orchardId || DEFAULT_ORCHARD_ID
+    selectedOrchardIdRef.current = nextOrchardId
+    setSelectedOrchardId(nextOrchardId)
+    writeStoredSelectedOrchardId(nextOrchardId)
   }, [])
 
   const fetchAlerts = useCallback(async () => {
@@ -523,8 +562,18 @@ export default function DashboardPage() {
   }, [fetchAlerts, fetchMonitoring])
 
   const handleSimulationComplete = useCallback((data) => {
-    applySimulationResult(data)
-    setHistoryRefreshKey((key) => key + 1)
+    const params = parseMaybeJson(data?.request_payload ?? data?.input_parameters, {})
+    const enrichedData = {
+      ...data,
+      orchard_id: data?.orchard_id ?? params.orchard_id ?? selectedOrchardIdRef.current,
+      request_payload: params,
+      input_parameters: params,
+    }
+
+    applySimulationResult(enrichedData)
+    saveSimulationRunToHistory(enrichedData)
+      .catch(() => {})
+      .finally(() => setHistoryRefreshKey((key) => key + 1))
     window.setTimeout(() => setHistoryRefreshKey((key) => key + 1), 1500)
   }, [applySimulationResult])
 
@@ -601,6 +650,10 @@ export default function DashboardPage() {
     setStageZoneDraft((prev) => [...prev, coordinate])
   }, [])
 
+  const handleStageZoneUndoPoint = useCallback(() => {
+    setStageZoneDraft((prev) => prev.slice(0, -1))
+  }, [])
+
   const handleStageZoneFinish = useCallback(() => {
     if (stageZoneDraft.length < 3) return
     const targetIds = orchardTreePoints
@@ -624,6 +677,14 @@ export default function DashboardPage() {
     setStageZoneDraft([])
     setStageZoneDrawing(false)
   }, [orchardTreePoints, stageZoneDraft, stageZoneStage])
+
+  const handleStageZoneUndoLast = useCallback(() => {
+    const nextZones = phenologyZones.slice(0, -1)
+    setPhenologyZones(nextZones)
+    setTreeStageOverrides(stageOverridesFromZones(nextZones, orchardTreePoints))
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+  }, [orchardTreePoints, phenologyZones])
 
   const handleStageZoneClear = useCallback(() => {
     setPhenologyZones([])
@@ -663,6 +724,8 @@ export default function DashboardPage() {
                   onStageZoneCancel={handleStageZoneCancel}
                   onStageZoneFinish={handleStageZoneFinish}
                   onStageZoneClear={handleStageZoneClear}
+                  onStageZoneUndoPoint={handleStageZoneUndoPoint}
+                  onStageZoneUndoLast={handleStageZoneUndoLast}
                   onStageZoneMapClick={handleStageZoneMapClick}
                   orchardName={orchardName}
                   orthophotoOverlay={orchardOrthophoto}

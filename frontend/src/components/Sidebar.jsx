@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import OrchardSwitcher from './cards/OrchardSwitcher'
 import WeatherCard from './cards/WeatherCard'
 import SimulationCard from './cards/SimulationCard'
@@ -36,6 +36,15 @@ export default function Sidebar({
   defaultTreeCount = 0,
 }) {
   const [suggestedSimParams, setSuggestedSimParams] = useState(null)
+  const [playbackAutoOpen, setPlaybackAutoOpen] = useState(0)
+  const prevFramesLen = useRef(0)
+
+  useEffect(() => {
+    if (prevFramesLen.current === 0 && playbackFrames.length > 0) {
+      setPlaybackAutoOpen((n) => n + 1)
+    }
+    prevFramesLen.current = playbackFrames.length
+  }, [playbackFrames.length])
 
   return (
     <aside className="floating-right-sidebar" id="right-sidebar">
@@ -74,7 +83,7 @@ export default function Sidebar({
           frames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
           onFrameSeek={onFrameSeek}
-          defaultOpen={false}
+          autoOpenSignal={playbackAutoOpen}
         />
         <AlertPanel
           alerts={alerts}

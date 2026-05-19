@@ -12,5 +12,8 @@
   },
   "search.exclude": {
     "**/__pycache__": true
+  },
+  "terminal.integrated.env.windows": {
+    "Path": "${workspaceFolder};${env:Path}"
   }
 }

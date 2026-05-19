@@ -1,13 +1,13 @@
 # MangoPoint
 
-MangoPoint is a GIS-based pest spread forecasting web application for mango orchards. It combines a FastAPI backend, a Dash dashboard, cellular and tree-graph simulation modes, weather-driven biological gates, alerting, decision support, and historical validation against BPI Guimaras pest monitoring data.
+MangoPoint is a GIS-based pest spread forecasting web application for mango orchards. It combines a FastAPI backend, a React/Vite frontend, cellular and tree-graph simulation modes, weather-driven biological gates, alerting, decision support, and historical validation against BPI Guimaras pest monitoring data.
 
 ## Current Capabilities
 
 - Pest spread simulation for Cecid Fly and Fruit Fly.
 - Grid and tree-graph simulation modes, including real crown-width/crown-radius handling.
 - Weather-aware biological triggers using Open-Meteo forecast data, manual weather blocks, synthetic fallback weather, and historical weather CSVs for validation.
-- Multi-orchard API foundation and dashboard orchard switching.
+- Multi-orchard API foundation and frontend orchard switching.
 - Alerts for high-risk simulation output and orchard-aware scheduled gate monitoring.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
@@ -24,7 +24,7 @@ MangoPoint is a GIS-based pest spread forecasting web application for mango orch
 | `spatial/` | GIS conversion, raster helpers, orchard coordinates |
 | `utils/` | Weather ingestion, evaluation, visualization, decision support |
 | `validation/` | Historical validation workflows and reporting |
-| `dashboard/` | Dash UI for simulation, monitoring, validation, and review |
+| `frontend/` | React/Vite UI for simulation, monitoring, validation, and review |
 | `db/` | Database schema, ORM models, and import helpers |
 | `scripts/` | Entry points for database init, API startup, and validation runs |
 | `data/` | GIS inputs, BPI pest data, and historical weather data |
@@ -36,30 +36,80 @@ Install native PostgreSQL with PostGIS first and create a `mangopoint` database.
 Until the shared remote database backlog item is done, each development laptop
 needs its own local PostgreSQL/PostGIS setup.
 
-```bash
-cd mango-point
+```powershell
+cd <project-folder>
 
-python -m venv venv
-venv\Scripts\activate
-
-pip install -r requirements-api.txt
-pip install -r dashboard/requirements-dashboard.txt
-
-copy .env.example .env
-python -m scripts.init_db
-python run_server.py --reload
+.\setup_windows.bat
+.\init_db.bat
+.\start_dev.bat
 ```
 
-In a second terminal:
+On Windows machines with Application Control enabled, run the API through
+Python instead of the `uvicorn.exe` console launcher:
 
-```bash
-cd mango-point
-venv\Scripts\activate
-python -m dashboard.app
+```powershell
+uvicorn api.main:app --reload --port 8000
+# or
+python run_server.py --reload --port 8000
+# or
+python -m uvicorn api.main:app --reload --port 8000
+```
+
+If an already-open VS Code terminal still resolves to the blocked global
+`uvicorn.exe`, either close that terminal and open a new one, or run this once
+in the already-open terminal:
+
+```powershell
+$env:Path = "$PWD;$env:Path"
+```
+
+New project terminals put this repo first on `Path`, so `uvicorn` resolves to
+`uvicorn.cmd`.
+
+If you prefer separate terminals instead of `.\start_dev.bat`:
+
+```powershell
+.\start_api.bat
+```
+
+```powershell
+.\start_frontend.bat
 ```
 
 API docs: `http://localhost:8000/docs`
-Dashboard: `http://localhost:8050`
+Frontend: `http://localhost:3000`
+
+Default local login after database initialization:
+
+```text
+username: admin
+password: change-this-admin-password
+```
+
+Change `DEFAULT_ADMIN_PASSWORD` in `.env` before a shared demo.
+
+Manual setup, if you do not want to use the Windows helper:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements-api.txt
+copy .env.example .env
+
+cd frontend
+npm install
+cd ..
+
+python -m scripts.check_setup
+.\init_db.bat
+.\start_api.bat
+```
+
+Then run the frontend in another terminal:
+
+```powershell
+.\start_frontend.bat
+```
 
 ## Environment
 
@@ -125,11 +175,13 @@ Avoid overclaiming:
 
 ```bash
 pytest -q
-python -m py_compile api\services\simulation_service.py validation\weather_scenarios.py dashboard\app.py
+python -m py_compile api\services\simulation_service.py validation\weather_scenarios.py scripts\check_setup.py
+cd frontend
+npm run build
 ```
 
 ## Notes
 
 - Runnable helpers live in `scripts/`.
 - `run_server.py` is the top-level convenience entry point for starting the API.
-- The dashboard talks to the API over HTTP through `MANGOPOINT_API_BASE`.
+- The frontend talks to the API through the Vite dev proxy during local development.

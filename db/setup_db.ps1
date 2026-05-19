@@ -7,13 +7,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$PgBin = "C:\Program Files\PostgreSQL\16\bin"
-if (Test-Path "$PgBin\psql.exe") {
-    $env:PATH = "$PgBin;$env:PATH"
-    Write-Host "[OK] psql found at $PgBin" -ForegroundColor Green
+$PsqlCommand = Get-Command psql.exe -ErrorAction SilentlyContinue
+if ($PsqlCommand) {
+    Write-Host "[OK] psql found at $($PsqlCommand.Source)" -ForegroundColor Green
 } else {
-    Write-Host "[FAIL] psql.exe not found at $PgBin" -ForegroundColor Red
-    exit 1
+    $PgRoot = "C:\Program Files\PostgreSQL"
+    $PgBin = $null
+    if (Test-Path $PgRoot) {
+        $PgBin = Get-ChildItem $PgRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "bin" } |
+            Where-Object { Test-Path (Join-Path $_ "psql.exe") } |
+            Select-Object -First 1
+    }
+
+    if ($PgBin) {
+        $env:PATH = "$PgBin;$env:PATH"
+        Write-Host "[OK] psql found at $PgBin" -ForegroundColor Green
+    } else {
+        Write-Host "[FAIL] psql.exe not found. Add PostgreSQL bin to PATH or install PostgreSQL with command-line tools." -ForegroundColor Red
+        exit 1
+    }
 }
 
 Write-Host ""
@@ -134,7 +148,7 @@ if ($missing.Count -eq 0) {
     Write-Host "========================================" -ForegroundColor Green
     Write-Host "ALL CHECKS PASSED - Setup complete" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "Next: run 'python -m scripts.init_db' to provision the default admin account." -ForegroundColor Cyan
+    Write-Host "Next: run '.\init_db.bat' to provision the default admin account." -ForegroundColor Cyan
 } else {
     Write-Host "========================================" -ForegroundColor Red
     Write-Host "SETUP INCOMPLETE - $($missing.Count) issue(s) found" -ForegroundColor Red

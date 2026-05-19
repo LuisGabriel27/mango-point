@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import RiskMap from '../RiskMap'
+import MpSelect from '../MpSelect'
 
 const COMPASS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
   <defs>
@@ -117,6 +118,8 @@ export default function LiveMapTab({
   onStageZoneCancel,
   onStageZoneFinish,
   onStageZoneClear,
+  onStageZoneUndoPoint,
+  onStageZoneUndoLast,
   onStageZoneMapClick,
   orchardName,
   orthophotoOverlay = null,
@@ -156,15 +159,25 @@ export default function LiveMapTab({
           </button>
           {stageZoneDrawing && (
             <>
-              <select
-                className="form-select form-select-sm map-stage-zone-select"
-                value={stageZoneStage}
-                onChange={(e) => onStageZoneStageChange?.(e.target.value)}
+              <div style={{ flexShrink: 0, width: 118 }}>
+                <MpSelect
+                  small
+                  className="map-stage-zone-select"
+                  value={stageZoneStage}
+                  onChange={(val) => onStageZoneStageChange?.(val)}
+                  options={stageOptions}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                disabled={stageZoneDraft.length === 0}
+                onClick={onStageZoneUndoPoint}
+                title="Remove the last point"
               >
-                {stageOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Point
+              </button>
               <button
                 type="button"
                 className="btn btn-sm btn-success"
@@ -176,9 +189,20 @@ export default function LiveMapTab({
             </>
           )}
           {!stageZoneDrawing && stageZones.length > 0 && (
-            <button type="button" className="btn btn-sm btn-light" onClick={onStageZoneClear}>
-              Clear Stages
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                onClick={onStageZoneUndoLast}
+                title="Remove the most recently saved stage zone"
+              >
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Zone
+              </button>
+              <button type="button" className="btn btn-sm btn-light" onClick={onStageZoneClear}>
+                Clear Stages
+              </button>
+            </>
           )}
         </div>
 

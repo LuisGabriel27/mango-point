@@ -864,6 +864,10 @@ class AlertService:
         alert_data: AlertCreate,
     ) -> Optional[Alert]:
         """Find an existing active alert with the same operational meaning."""
+        execute = getattr(db, "execute", None)
+        if execute is None:
+            return None
+
         query = (
             select(Alert)
             .where(
@@ -873,7 +877,7 @@ class AlertService:
             )
             .order_by(Alert.triggered_at.desc(), Alert.id.desc())
         )
-        result = await db.execute(query)
+        result = await execute(query)
         fingerprint = self.alert_fingerprint(alert_data)
 
         for existing in result.scalars().all():

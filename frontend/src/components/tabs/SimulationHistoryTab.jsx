@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import api, { apiErrorMessage } from '../../api'
+import MpSelect from '../MpSelect'
+import {
+  getSimulationRunFromHistory,
+  listSimulationRunsFromHistory,
+  saveSimulationRunToHistory,
+} from '../../utils/simulationHistoryStore'
 
 function formatDate(value) {
   if (!value) return 'Unknown'
@@ -54,6 +60,33 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url)
 }
 
+function runTime(value) {
+  const time = new Date(value ?? 0).getTime()
+  return Number.isFinite(time) ? time : 0
+}
+
+function mergeRuns(apiRuns = [], cachedRuns = []) {
+  const byId = new Map()
+
+  for (const run of cachedRuns) {
+    if (run?.run_id) byId.set(run.run_id, run)
+  }
+
+  for (const run of apiRuns) {
+    if (!run?.run_id) continue
+    const cached = byId.get(run.run_id)
+    byId.set(run.run_id, {
+      ...cached,
+      ...run,
+      cached_locally: Boolean(cached?.cached_locally),
+    })
+  }
+
+  return [...byId.values()].sort((a, b) => (
+    runTime(b.started_at || b.local_saved_at) - runTime(a.started_at || a.local_saved_at)
+  ))
+}
+
 export default function SimulationHistoryTab({
   orchardId,
   orchardName,
@@ -74,13 +107,29 @@ export default function SimulationHistoryTab({
   const fetchRuns = useCallback(async () => {
     setLoading(true)
     setStatus(null)
+    let cachedRuns = []
+
+    try {
+      cachedRuns = await listSimulationRunsFromHistory({ orchardId, limit: 50 })
+      if (cachedRuns.length) setRuns(cachedRuns)
+    } catch (_) {
+      cachedRuns = []
+    }
+
     try {
       const params = { limit: 50 }
       if (orchardId) params.orchard_id = orchardId
       const res = await api.getSimulationRuns(params)
-      setRuns(res.data?.runs ?? [])
+      setRuns(mergeRuns(res.data?.runs ?? [], cachedRuns))
     } catch (err) {
-      setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not load simulation history.') })
+      if (cachedRuns.length) {
+        setStatus({
+          type: 'warning',
+          msg: `${apiErrorMessage(err, 'Could not load server history.')} Showing saved browser history.`,
+        })
+      } else {
+        setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not load simulation history.') })
+      }
     } finally {
       setLoading(false)
     }
@@ -95,8 +144,14 @@ export default function SimulationHistoryTab({
     setStatus(null)
     try {
       const res = await api.getSimulationRun(runId)
+      saveSimulationRunToHistory(res.data).catch(() => {})
       return res.data
     } catch (err) {
+      const cached = await getSimulationRunFromHistory(runId)
+      if (cached) {
+        setStatus({ type: 'warning', msg: 'Loaded this simulation from saved browser history.' })
+        return cached
+      }
       setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not load saved simulation.') })
       return null
     } finally {
@@ -157,36 +212,42 @@ export default function SimulationHistoryTab({
   return (
     <div className="p-3">
       <div className="card shadow-sm border-0 monitoring-module-chart-card">
-        <div className="card-header py-3">
+        <div className="card-header">
           <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
             <div>
-              <div className="fw-semibold">
-                <i className="bi bi-clock-history me-2" />
+              <div className="fw-bold" style={{ fontSize: '.88rem' }}>
+                <i className="bi bi-clock-history me-2" style={{ color: 'var(--mp-primary)' }} />
                 Simulation History
               </div>
-              <div className="text-muted small">
-                {orchardName || 'Active orchard'} - saved runs, parameters, weather, playback, and results
+              <div className="text-muted" style={{ fontSize: '.75rem', marginTop: '.1rem' }}>
+                {orchardName || 'Active orchard'} — saved runs, parameters, weather &amp; playback
               </div>
             </div>
             <div className="d-flex flex-wrap align-items-center justify-content-end gap-2">
-              <select
-                className="form-select form-select-sm"
-                style={{ width: 130 }}
-                value={exportScope}
-                onChange={(e) => setExportScope(e.target.value)}
-              >
-                <option value="orchard">Active orchard</option>
-                <option value="all">All orchards</option>
-              </select>
-              <select
-                className="form-select form-select-sm"
-                style={{ width: 110 }}
-                value={exportPeriod}
-                onChange={(e) => setExportPeriod(e.target.value)}
-              >
-                <option value="all">All dates</option>
-                <option value="month">By month</option>
-              </select>
+              <div style={{ width: 138 }}>
+                <MpSelect
+                  small
+                  className="mb-0"
+                  value={exportScope}
+                  onChange={setExportScope}
+                  options={[
+                    { value: 'orchard', label: 'Active orchard' },
+                    { value: 'all', label: 'All orchards' },
+                  ]}
+                />
+              </div>
+              <div style={{ width: 118 }}>
+                <MpSelect
+                  small
+                  className="mb-0"
+                  value={exportPeriod}
+                  onChange={setExportPeriod}
+                  options={[
+                    { value: 'all', label: 'All dates' },
+                    { value: 'month', label: 'By month' },
+                  ]}
+                />
+              </div>
               {exportPeriod === 'month' && (
                 <input
                   type="month"

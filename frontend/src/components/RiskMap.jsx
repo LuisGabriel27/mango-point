@@ -131,6 +131,79 @@ const STAGE_COLORS = {
   mature: '#16a34a',
 }
 
+const STATUS_ZONE_COLORS = {
+  healthy: '#22c55e',
+  infected: '#ef4444',
+  bagged: '#3b82f6',
+  dead: '#424242',
+  history_infected: '#ff9800',
+  suspect: '#9c27b0',
+}
+
+const STATUS_ZONE_FILL_LAYER = {
+  id: 'status-zones-fill',
+  type: 'fill',
+  source: 'status-zones-src',
+  paint: {
+    'fill-color': [
+      'match', ['get', 'status'],
+      'healthy', '#22c55e',
+      'infected', '#ef4444',
+      'bagged', '#3b82f6',
+      'dead', '#424242',
+      'history_infected', '#ff9800',
+      'suspect', '#9c27b0',
+      '#f59e0b',
+    ],
+    'fill-opacity': 0.22,
+  },
+}
+
+const STATUS_ZONE_LINE_LAYER = {
+  id: 'status-zones-line',
+  type: 'line',
+  source: 'status-zones-src',
+  paint: {
+    'line-color': [
+      'match', ['get', 'status'],
+      'healthy', '#22c55e',
+      'infected', '#ef4444',
+      'bagged', '#3b82f6',
+      'dead', '#424242',
+      'history_infected', '#ff9800',
+      'suspect', '#9c27b0',
+      '#f59e0b',
+    ],
+    'line-width': 3,
+    'line-opacity': 0.9,
+  },
+}
+
+const STATUS_DRAFT_LINE_LAYER = {
+  id: 'status-zone-draft-line',
+  type: 'line',
+  source: 'status-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'LineString'],
+  paint: {
+    'line-color': '#e65100',
+    'line-width': 2,
+    'line-dasharray': [2, 1],
+  },
+}
+
+const STATUS_DRAFT_VERTEX_LAYER = {
+  id: 'status-zone-draft-vertices',
+  type: 'circle',
+  source: 'status-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'Point'],
+  paint: {
+    'circle-radius': 5,
+    'circle-color': '#ffffff',
+    'circle-stroke-color': '#e65100',
+    'circle-stroke-width': 2,
+  },
+}
+
 const MAP_STYLE = {
   version: 8,
   sources: {
@@ -404,6 +477,27 @@ function stageZoneGeojson(zones) {
   }
 }
 
+function statusZoneGeojson(zones) {
+  return {
+    type: 'FeatureCollection',
+    features: (zones || [])
+      .map((zone) => {
+        const ring = closedRing(zone.coordinates)
+        if (ring.length < 4) return null
+        return {
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [ring] },
+          properties: {
+            id: zone.id,
+            status: zone.status,
+            tree_count: zone.tree_count ?? 0,
+          },
+        }
+      })
+      .filter(Boolean),
+  }
+}
+
 function stageDraftGeojson(draft) {
   const coords = Array.isArray(draft) ? draft : []
   const features = coords.map((coord, index) => ({
@@ -434,6 +528,20 @@ function ensureStageZoneLayers(map) {
   }
   if (!map.getLayer('stage-zone-draft-line')) map.addLayer(STAGE_DRAFT_LINE_LAYER)
   if (!map.getLayer('stage-zone-draft-vertices')) map.addLayer(STAGE_DRAFT_VERTEX_LAYER)
+}
+
+function ensureStatusZoneLayers(map) {
+  if (!map.getSource('status-zones-src')) {
+    map.addSource('status-zones-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('status-zones-fill')) map.addLayer(STATUS_ZONE_FILL_LAYER)
+  if (!map.getLayer('status-zones-line')) map.addLayer(STATUS_ZONE_LINE_LAYER)
+
+  if (!map.getSource('status-zone-draft-src')) {
+    map.addSource('status-zone-draft-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('status-zone-draft-line')) map.addLayer(STATUS_DRAFT_LINE_LAYER)
+  if (!map.getLayer('status-zone-draft-vertices')) map.addLayer(STATUS_DRAFT_VERTEX_LAYER)
 }
 
 async function resolveOverlayImageUrl(url) {
@@ -555,6 +663,10 @@ export default function RiskMap({
   stageZoneDrawing = false,
   stageZoneDraft = [],
   onStageZoneMapClick,
+  statusZones = [],
+  statusZoneDrawing = false,
+  statusZoneDraft = [],
+  onStatusZoneMapClick,
   orthophotoOverlay = null,
   viewportKey = 'default',
   fitToOrthophoto = true,
@@ -603,6 +715,7 @@ export default function RiskMap({
       map.addSource('risk-heatmap-src', { type: 'geojson', data: EMPTY_FC })
       map.addLayer(HEATMAP_LAYER)
       ensureStageZoneLayers(map)
+      ensureStatusZoneLayers(map)
     })
 
     const resizeObserver = new ResizeObserver(() => map.resize())
@@ -695,6 +808,49 @@ export default function RiskMap({
 
     return () => map.off('load', updateStageZones)
   }, [stageZones, stageZoneDraft])
+
+  // ── Status zone layers update ──────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+
+    const updateStatusZones = () => {
+      ensureStatusZoneLayers(map)
+      map.getSource('status-zones-src')?.setData(statusZoneGeojson(statusZones))
+      map.getSource('status-zone-draft-src')?.setData(stageDraftGeojson(statusZoneDraft))
+      if (map.getLayer('status-zones-fill')) map.moveLayer('status-zones-fill')
+      if (map.getLayer('status-zones-line')) map.moveLayer('status-zones-line')
+      if (map.getLayer('status-zone-draft-line')) map.moveLayer('status-zone-draft-line')
+      if (map.getLayer('status-zone-draft-vertices')) map.moveLayer('status-zone-draft-vertices')
+    }
+
+    if (map.loaded()) updateStatusZones()
+    else map.once('load', updateStatusZones)
+
+    return () => map.off('load', updateStatusZones)
+  }, [statusZones, statusZoneDraft])
+
+  // ── Status zone drawing interaction ──────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !statusZoneDrawing) return undefined
+
+    const handleMapClick = (event) => {
+      onStatusZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
+    }
+
+    const canvas = map.getCanvas()
+    const previousCursor = canvas.style.cursor
+    canvas.style.cursor = 'crosshair'
+    map.doubleClickZoom.disable()
+    map.on('click', handleMapClick)
+
+    return () => {
+      map.off('click', handleMapClick)
+      map.doubleClickZoom.enable()
+      canvas.style.cursor = previousCursor
+    }
+  }, [statusZoneDrawing, onStatusZoneMapClick])
 
   useEffect(() => {
     const map = mapRef.current

@@ -417,19 +417,24 @@ body {
   transition: background .12s;
 }
 .map-overlay-btn:hover { background: #fff !important; color: var(--mp-primary) !important; }
-.map-stage-zone-tools {
-  /* Sits inline to the right of the Show Grid button (top-left toolbar)
-     instead of stacking below it. */
+.map-zone-tools {
   position: absolute; top: 12px; left: 120px; z-index: 1100;
   display: flex; align-items: center; gap: .35rem; flex-wrap: wrap;
-  max-width: min(560px, calc(100% - 280px));
+  max-width: min(680px, calc(100% - 280px));
 }
-.map-stage-zone-tools .btn,
-.map-stage-zone-tools .mp-select-trigger {
+.map-zone-tools .btn,
+.map-zone-tools .mp-select-trigger {
   border-radius: 6px !important;
   font-size: .76rem !important;
   font-weight: 700 !important;
   box-shadow: 0 2px 6px rgba(0,0,0,.1);
+}
+.map-zone-divider {
+  display: inline-block;
+  width: 1px; height: 22px;
+  background: rgba(0,0,0,.15);
+  margin: 0 .1rem;
+  flex-shrink: 0;
 }
 .map-stage-zone-select {
   margin-bottom: 0 !important;
@@ -448,6 +453,26 @@ body {
 .map-stage-zone-select .mp-select-dropdown {
   z-index: 1200;
 }
+
+/* Status Zone select (same green accent as stage zone for uniform look) */
+.map-status-zone-select {
+  margin-bottom: 0 !important;
+}
+.map-status-zone-select .mp-select-trigger {
+  background: #fff !important;
+  border: 1px solid rgba(0,0,0,.14) !important;
+  color: #374151 !important;
+  padding: .28rem .65rem !important;
+}
+.map-status-zone-select .mp-select-trigger:hover,
+.map-status-zone-select .mp-select-trigger.open {
+  border-color: var(--mp-primary) !important;
+  color: var(--mp-primary) !important;
+}
+.map-status-zone-select .mp-select-dropdown {
+  z-index: 1200;
+}
+
 .map-animation-title {
   /* Centered at the bottom of the map. The top-left is reserved for the
      Show Grid / Stage Zone toolbar; the bottom-left has map attribution

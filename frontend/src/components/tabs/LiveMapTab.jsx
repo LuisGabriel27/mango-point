@@ -121,6 +121,19 @@ export default function LiveMapTab({
   onStageZoneUndoPoint,
   onStageZoneUndoLast,
   onStageZoneMapClick,
+  statusZones = [],
+  statusZoneDrawing = false,
+  statusZoneStatus = 'infected',
+  statusZoneDraft = [],
+  statusOptions = [],
+  onStatusZoneStatusChange,
+  onStatusZoneStart,
+  onStatusZoneCancel,
+  onStatusZoneFinish,
+  onStatusZoneClear,
+  onStatusZoneUndoPoint,
+  onStatusZoneUndoLast,
+  onStatusZoneMapClick,
   orchardName,
   orthophotoOverlay = null,
   viewportKey = 'default',
@@ -148,7 +161,9 @@ export default function LiveMapTab({
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
 
-        <div className="map-stage-zone-tools">
+        {/* Zone tools — Stage Zone + Status Zone side by side */}
+        <div className="map-zone-tools">
+          {/* Stage Zone */}
           <button
             type="button"
             className={`btn btn-sm ${stageZoneDrawing ? 'btn-success' : 'btn-light'}`}
@@ -204,6 +219,68 @@ export default function LiveMapTab({
               </button>
             </>
           )}
+
+          {/* Divider between zone buttons */}
+          {!stageZoneDrawing && !statusZoneDrawing && (
+            <span className="map-zone-divider" />
+          )}
+
+          {/* Status Zone */}
+          <button
+            type="button"
+            className={`btn btn-sm ${statusZoneDrawing ? 'btn-success' : 'btn-light'}`}
+            onClick={statusZoneDrawing ? onStatusZoneCancel : onStatusZoneStart}
+          >
+            <i className="bi bi-pencil-square me-1" />
+            {statusZoneDrawing ? 'Cancel Zone' : 'Status Zone'}
+          </button>
+          {statusZoneDrawing && (
+            <>
+              <div style={{ flexShrink: 0, width: 160 }}>
+                <MpSelect
+                  small
+                  className="map-status-zone-select"
+                  value={statusZoneStatus}
+                  onChange={(val) => onStatusZoneStatusChange?.(val)}
+                  options={statusOptions}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                disabled={statusZoneDraft.length === 0}
+                onClick={onStatusZoneUndoPoint}
+                title="Remove the last point"
+              >
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Point
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-success"
+                disabled={statusZoneDraft.length < 3}
+                onClick={onStatusZoneFinish}
+              >
+                Save
+              </button>
+            </>
+          )}
+          {!statusZoneDrawing && statusZones.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                onClick={onStatusZoneUndoLast}
+                title="Remove the most recently saved status zone"
+              >
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Zone
+              </button>
+              <button type="button" className="btn btn-sm btn-light" onClick={onStatusZoneClear}>
+                Clear Statuses
+              </button>
+            </>
+          )}
         </div>
 
         {titleText && (
@@ -222,6 +299,10 @@ export default function LiveMapTab({
             stageZoneDrawing={stageZoneDrawing}
             stageZoneDraft={stageZoneDraft}
             onStageZoneMapClick={onStageZoneMapClick}
+            statusZones={statusZones}
+            statusZoneDrawing={statusZoneDrawing}
+            statusZoneDraft={statusZoneDraft}
+            onStatusZoneMapClick={onStatusZoneMapClick}
             orthophotoOverlay={orthophotoOverlay}
             viewportKey={viewportKey}
             fitToOrthophoto={fitToOrthophoto}

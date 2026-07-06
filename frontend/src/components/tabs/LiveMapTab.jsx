@@ -117,9 +117,7 @@ export default function LiveMapTab({
   onStageZoneStart,
   onStageZoneCancel,
   onStageZoneFinish,
-  onStageZoneClear,
   onStageZoneUndoPoint,
-  onStageZoneUndoLast,
   onStageZoneMapClick,
   statusZones = [],
   statusZoneDrawing = false,
@@ -130,10 +128,11 @@ export default function LiveMapTab({
   onStatusZoneStart,
   onStatusZoneCancel,
   onStatusZoneFinish,
-  onStatusZoneClear,
   onStatusZoneUndoPoint,
-  onStatusZoneUndoLast,
   onStatusZoneMapClick,
+  zoneHistory = [],
+  onZoneUndoLast,
+  onZoneClearAll,
   orchardName,
   orthophotoOverlay = null,
   viewportKey = 'default',
@@ -203,22 +202,6 @@ export default function LiveMapTab({
               </button>
             </>
           )}
-          {!stageZoneDrawing && stageZones.length > 0 && (
-            <>
-              <button
-                type="button"
-                className="btn btn-sm btn-light"
-                onClick={onStageZoneUndoLast}
-                title="Remove the most recently saved stage zone"
-              >
-                <i className="bi bi-arrow-counterclockwise me-1" />
-                Undo Zone
-              </button>
-              <button type="button" className="btn btn-sm btn-light" onClick={onStageZoneClear}>
-                Clear Stages
-              </button>
-            </>
-          )}
 
           {/* Divider between zone buttons */}
           {!stageZoneDrawing && !statusZoneDrawing && (
@@ -265,19 +248,22 @@ export default function LiveMapTab({
               </button>
             </>
           )}
-          {!statusZoneDrawing && statusZones.length > 0 && (
+
+          {/* Universal Undo / Clear — shown when zones exist and not drawing */}
+          {!stageZoneDrawing && !statusZoneDrawing && zoneHistory.length > 0 && (
             <>
+              <span className="map-zone-divider" />
               <button
                 type="button"
                 className="btn btn-sm btn-light"
-                onClick={onStatusZoneUndoLast}
-                title="Remove the most recently saved status zone"
+                onClick={onZoneUndoLast}
+                title="Undo the most recent zone (stage or status)"
               >
                 <i className="bi bi-arrow-counterclockwise me-1" />
                 Undo Zone
               </button>
-              <button type="button" className="btn btn-sm btn-light" onClick={onStatusZoneClear}>
-                Clear Statuses
+              <button type="button" className="btn btn-sm btn-light" onClick={onZoneClearAll}>
+                Clear All
               </button>
             </>
           )}

@@ -281,6 +281,9 @@ export default function DashboardPage() {
   const [statusZoneDraft, setStatusZoneDraft] = useState([])
   const [statusZones, setStatusZones] = useState([])
 
+  // Unified zone action history (tracks order of stage/status zone saves)
+  const [zoneHistory, setZoneHistory] = useState([])
+
   // Monitoring state
   const [monitoringData, setMonitoringData] = useState(null)
 
@@ -700,6 +703,7 @@ export default function DashboardPage() {
     })
     setStageZoneDraft([])
     setStageZoneDrawing(false)
+    setZoneHistory((prev) => [...prev, { type: 'stage' }])
   }, [orchardTreePoints, stageZoneDraft, stageZoneStage])
 
   const handleStageZoneUndoLast = useCallback(() => {
@@ -754,6 +758,7 @@ export default function DashboardPage() {
     })
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
+    setZoneHistory((prev) => [...prev, { type: 'status' }])
   }, [orchardTreePoints, statusZoneDraft, statusZoneStatus])
 
   const handleStatusZoneUndoLast = useCallback(() => {
@@ -798,6 +803,56 @@ export default function DashboardPage() {
     setStageZoneDrawing(false)
   }, [])
 
+  // ── Unified zone undo / clear ─────────────────────────────────────────
+  const handleZoneUndoLast = useCallback(() => {
+    if (!zoneHistory.length) return
+    const last = zoneHistory[zoneHistory.length - 1]
+    setZoneHistory((prev) => prev.slice(0, -1))
+    if (last.type === 'stage') {
+      const nextZones = phenologyZones.slice(0, -1)
+      setPhenologyZones(nextZones)
+      setTreeStageOverrides(stageOverridesFromZones(nextZones, orchardTreePoints))
+      setStageZoneDraft([])
+      setStageZoneDrawing(false)
+    } else {
+      const removed = statusZones[statusZones.length - 1]
+      const nextZones = statusZones.slice(0, -1)
+      setStatusZones(nextZones)
+      if (removed) {
+        const removedIds = new Set(
+          orchardTreePoints
+            .filter((point) => pointInPolygon([point.lon, point.lat], removed.coordinates))
+            .map((point) => point.tree_id),
+        )
+        setTreeOverrides((prev) => {
+          const next = { ...prev }
+          for (const id of removedIds) delete next[id]
+          for (const zone of nextZones) {
+            const ids = orchardTreePoints
+              .filter((point) => pointInPolygon([point.lon, point.lat], zone.coordinates))
+              .map((point) => point.tree_id)
+            for (const zoneId of ids) next[zoneId] = zone.status
+          }
+          return next
+        })
+      }
+      setStatusZoneDraft([])
+      setStatusZoneDrawing(false)
+    }
+  }, [zoneHistory, phenologyZones, statusZones, orchardTreePoints])
+
+  const handleZoneClearAll = useCallback(() => {
+    setPhenologyZones([])
+    setTreeStageOverrides({})
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+    setStatusZones([])
+    setTreeOverrides({})
+    setStatusZoneDraft([])
+    setStatusZoneDrawing(false)
+    setZoneHistory([])
+  }, [])
+
   return (
     <div className="app-shell">
       <Navbar alertCount={activeAlertCount} alerts={activeOrchardAlerts} activeTab={activeTab} onTabChange={setActiveTab} />
@@ -828,9 +883,7 @@ export default function DashboardPage() {
                   onStageZoneStart={handleStageZoneStart}
                   onStageZoneCancel={handleStageZoneCancel}
                   onStageZoneFinish={handleStageZoneFinish}
-                  onStageZoneClear={handleStageZoneClear}
                   onStageZoneUndoPoint={handleStageZoneUndoPoint}
-                  onStageZoneUndoLast={handleStageZoneUndoLast}
                   onStageZoneMapClick={handleStageZoneMapClick}
                   statusZones={statusZones}
                   statusZoneDrawing={statusZoneDrawing}
@@ -841,10 +894,11 @@ export default function DashboardPage() {
                   onStatusZoneStart={handleStatusZoneStart}
                   onStatusZoneCancel={handleStatusZoneCancel}
                   onStatusZoneFinish={handleStatusZoneFinish}
-                  onStatusZoneClear={handleStatusZoneClear}
                   onStatusZoneUndoPoint={handleStatusZoneUndoPoint}
-                  onStatusZoneUndoLast={handleStatusZoneUndoLast}
                   onStatusZoneMapClick={handleStatusZoneMapClick}
+                  zoneHistory={zoneHistory}
+                  onZoneUndoLast={handleZoneUndoLast}
+                  onZoneClearAll={handleZoneClearAll}
                   orchardName={orchardName}
                   orthophotoOverlay={orchardOrthophoto}
                   viewportKey={`${selectedOrchardId}:${mapRefreshKey}`}

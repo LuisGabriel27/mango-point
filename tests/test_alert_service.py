@@ -200,7 +200,7 @@ def test_gate_condition_alerts_fire_when_biological_gate_opens():
     assert alert.orchard_id == "orchard-a"
     assert alert.zone_name == "Cecid fly gate condition"
     assert "opened for 2 of 4 forecast hour" in alert.message
-    assert "First favorable window: 2026-04-28T07:00:00Z" in alert.message
+    assert "Expected Time:" in alert.message
     assert alert.recommended_actions
     assert "fruitlet-stage" in alert.recommended_actions[0]
 

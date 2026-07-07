@@ -543,9 +543,32 @@ export default function DashboardPage() {
   }, [fetchAlerts, selectOrchardId])
 
   const handleOrchardRefresh = useCallback(async () => {
+    // Clear all simulation and alert state for a fresh start
+    setSimData(null)
+    setTreeOverrides({})
+    setTreeStageOverrides({})
+    setPhenologyZones([])
+    setStageZoneDrawing(false)
+    setStageZoneDraft([])
+    setStatusZones([])
+    setStatusZoneDrawing(false)
+    setStatusZoneDraft([])
+    setPlaybackFrames([])
+    setCurrentFrameIdx(0)
+    setSimulationTemplate(null)
+    setZoneHistory([])
+    setSelectedTree(null)
+    setAlerts([])
+
+    // Clear server-side in-memory alerts
+    try { await api.clearAlerts() } catch (_) { /* ignore */ }
+
+    // Re-fetch orchards and alerts fresh
     await fetchOrchards(selectedOrchardIdRef.current)
     setMapRefreshKey((value) => value + 1)
-  }, [fetchOrchards])
+    setHistoryRefreshKey((key) => key + 1)
+    fetchAlerts()
+  }, [fetchOrchards, fetchAlerts])
 
   const fetchWeather = useCallback(async () => {
     try {

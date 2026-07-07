@@ -73,6 +73,7 @@ const api = {
     client.post(`/alerts/${alertId}/resolve`, null, { params: { resolution_notes: notes } }),
   updateAlertAction: (alertId, body) => client.post(`/alerts/${alertId}/action`, body),
   checkWeatherForecast: (body) => client.post('/alerts/check-weather-forecast', body),
+  clearAlerts: () => client.delete('/alerts/clear'),
 
   // Observations
   submitObservation: (body) => client.post('/observations/submit-observation', body),

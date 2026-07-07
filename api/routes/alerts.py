@@ -283,6 +283,18 @@ async def get_alerts(
         )
 
 
+@router.delete(
+    "/clear",
+    summary="Clear all alerts",
+    description="Clear all in-memory alerts. Used when refreshing the dashboard.",
+)
+async def clear_alerts():
+    """Clear all in-memory alerts so the dashboard starts fresh."""
+    alert_service.clear_memory_alerts()
+    logger.info("All in-memory alerts cleared via /alerts/clear")
+    return {"status": "ok", "message": "All alerts cleared"}
+
+
 @router.get(
     "/{alert_id}",
     response_model=AlertResponse,

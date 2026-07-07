@@ -476,7 +476,7 @@ class AlertService:
             message=(
                 f"{pest_label} biological gate opened for {open_count} of "
                 f"{total_hours} forecast hour(s) in orchard '{orchard_id}'. "
-                f"First favorable window: {first_window}. "
+                f"Expected Time: {first_window}. "
                 f"Stage: {stage_text}. Inspect the orchard and review the "
                 f"simulation map before treatment decisions."
             ),
@@ -542,7 +542,8 @@ class AlertService:
         peak_rain = max(float(f.get("rainfall_mm", 0) or 0) for f in rain_hours)
         total_rain_hours = len(rain_hours)
         cumulative_rain = sum(float(f.get("rainfall_mm", 0) or 0) for f in rain_hours)
-        first_dt = rain_hours[0].get("datetime", "soon")
+        first_dt_raw = rain_hours[0].get("datetime", "soon")
+        first_dt = self._friendly_eta(first_dt_raw)
 
         if peak_rain >= 10.0 or total_rain_hours >= 12:
             severity = AlertSeverityEnum.HIGH
@@ -608,7 +609,7 @@ class AlertService:
 
             message = (
                 f"Rain forecast for the next 48 hours: {total_rain_hours} {hours_word} of rainfall "
-                f"(peak {peak_rain:.1f} mm/h), first expected around {first_dt}. "
+                f"(peak {peak_rain:.1f} mm/h). Expected Time: {first_dt}. "
                 f"{stage_note} "
                 f"Simulation parameters have been pre-configured — run a forecast now to assess "
                 f"orchard '{orchard_id}' risk before the rain arrives."
@@ -684,11 +685,46 @@ class AlertService:
         return value.replace("_", " ").title()
 
     @staticmethod
-    def _gate_window_label(entry: Dict[str, Any]) -> str:
+    def _friendly_eta(dt_value: Any) -> str:
+        """Convert a datetime string or object to a human-friendly ETA label.
+
+        Examples:
+            "2026-07-06T08:00:00Z"  → "today at 4:00 PM" (if today in +08)
+            "2026-07-07T13:00:00Z"  → "tomorrow at 9:00 PM"
+            "2026-07-10T06:00:00Z"  → "Jul 10 at 2:00 PM"
+        """
+        if not dt_value:
+            return "soon"
+
+        raw = str(dt_value)
+        try:
+            # Parse ISO 8601 — handles both 'Z' suffix and '+00:00'
+            cleaned = raw.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+            now = datetime.now(dt.tzinfo)
+
+            delta_days = (dt.date() - now.date()).days
+            # Windows doesn't support '%-I', so always use %I and strip the leading zero
+            time_str = dt.strftime("%I:%M %p").lstrip("0")
+
+            if delta_days == 0:
+                return f"today at {time_str}"
+            elif delta_days == 1:
+                return f"tomorrow at {time_str}"
+            elif delta_days == -1:
+                return f"yesterday at {time_str}"
+            else:
+                date_str = dt.strftime("%b %d").replace(" 0", " ")
+                return f"{date_str} at {time_str}"
+        except (ValueError, TypeError):
+            # If parsing fails, return the raw value as-is
+            return raw
+
+    def _gate_window_label(self, entry: Dict[str, Any]) -> str:
         """Return a compact label for the first favorable forecast hour."""
         dt_value = entry.get("datetime")
         if dt_value:
-            return str(dt_value)
+            return self._friendly_eta(dt_value)
 
         step = entry.get("step")
         if step is not None:

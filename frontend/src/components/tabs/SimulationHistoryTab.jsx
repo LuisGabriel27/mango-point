@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import api, { apiErrorMessage } from '../../api'
 import MpSelect from '../MpSelect'
 import {
@@ -6,6 +6,17 @@ import {
   listSimulationRunsFromHistory,
   saveSimulationRunToHistory,
 } from '../../utils/simulationHistoryStore'
+
+const DEFAULT_ORCHARD_ID = 'default-orchard'
+const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
+const ALL_ORCHARDS = 'all'
+
+const HISTORY_GROUP_OPTIONS = [
+  { value: 'all', label: 'All dates' },
+  { value: 'day', label: 'By day' },
+  { value: 'week', label: 'By week' },
+  { value: 'month', label: 'By month' },
+]
 
 function formatDate(value) {
   if (!value) return 'Unknown'
@@ -39,11 +50,6 @@ function modeLabel(value) {
   return value || '--'
 }
 
-function currentMonthValue() {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-}
-
 function filenameFromDisposition(header, fallback) {
   const match = /filename="?([^"]+)"?/i.exec(header || '')
   return match?.[1] || fallback
@@ -63,6 +69,57 @@ function downloadBlob(blob, filename) {
 function runTime(value) {
   const time = new Date(value ?? 0).getTime()
   return Number.isFinite(time) ? time : 0
+}
+
+function validRunDate(run) {
+  if (!run?.started_at) return null
+  const date = new Date(run.started_at)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function startOfWeek(date) {
+  const result = new Date(date)
+  result.setHours(0, 0, 0, 0)
+  const daysSinceMonday = (result.getDay() + 6) % 7
+  result.setDate(result.getDate() - daysSinceMonday)
+  return result
+}
+
+function historyGroupForRun(run, grouping) {
+  const date = validRunDate(run)
+  if (!date) return { key: 'unknown', label: 'Unknown date' }
+
+  if (grouping === 'day') {
+    return {
+      key: `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`,
+      label: date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }),
+    }
+  }
+
+  if (grouping === 'week') {
+    const weekStart = startOfWeek(date)
+    return {
+      key: weekStart.toISOString().slice(0, 10),
+      label: `Week of ${weekStart.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}`,
+    }
+  }
+
+  return {
+    key: `${date.getFullYear()}-${date.getMonth()}`,
+    label: date.toLocaleDateString([], { year: 'numeric', month: 'long' }),
+  }
+}
+
+function groupRuns(runs, grouping) {
+  if (grouping === 'all') return [{ key: 'all', label: null, runs }]
+
+  const groups = new Map()
+  runs.forEach((run) => {
+    const group = historyGroupForRun(run, grouping)
+    if (!groups.has(group.key)) groups.set(group.key, { ...group, runs: [] })
+    groups.get(group.key).runs.push(run)
+  })
+  return [...groups.values()]
 }
 
 function mergeRuns(apiRuns = [], cachedRuns = []) {
@@ -88,8 +145,7 @@ function mergeRuns(apiRuns = [], cachedRuns = []) {
 }
 
 export default function SimulationHistoryTab({
-  orchardId,
-  orchardName,
+  orchards = [],
   refreshKey = 0,
   onLoadRun,
   onUseTemplate,
@@ -99,26 +155,60 @@ export default function SimulationHistoryTab({
   const [loadingRunId, setLoadingRunId] = useState(null)
   const [exportingRunId, setExportingRunId] = useState(null)
   const [exportingHistory, setExportingHistory] = useState(false)
-  const [exportScope, setExportScope] = useState('orchard')
-  const [exportPeriod, setExportPeriod] = useState('all')
-  const [exportMonth, setExportMonth] = useState(currentMonthValue)
+  const [historyOrchardId, setHistoryOrchardId] = useState(ALL_ORCHARDS)
+  const [historyGrouping, setHistoryGrouping] = useState('all')
   const [status, setStatus] = useState(null)
+
+  const historyOrchardOptions = useMemo(() => {
+    const options = [
+      { value: ALL_ORCHARDS, label: 'All orchards' },
+      { value: DEFAULT_ORCHARD_ID, label: DEFAULT_ORCHARD_LABEL },
+    ]
+    const seen = new Set(options.map((option) => option.value))
+    orchards.forEach((orchard) => {
+      const value = orchard?.orchard_id
+      if (!value || seen.has(value)) return
+      seen.add(value)
+      options.push({ value, label: orchard.name || value })
+    })
+    return options
+  }, [orchards])
+
+  const selectedHistoryOrchardName = useMemo(
+    () => historyOrchardOptions.find((option) => option.value === historyOrchardId)?.label
+      ?? historyOrchardId,
+    [historyOrchardId, historyOrchardOptions],
+  )
+
+  const groupedRuns = useMemo(
+    () => groupRuns(runs, historyGrouping),
+    [runs, historyGrouping],
+  )
+
+  const orchardLabel = (runOrchardId) => {
+    if (runOrchardId === DEFAULT_ORCHARD_ID) return DEFAULT_ORCHARD_LABEL
+    return historyOrchardOptions.find((option) => option.value === runOrchardId)?.label
+      ?? runOrchardId
+      ?? '--'
+  }
 
   const fetchRuns = useCallback(async () => {
     setLoading(true)
     setStatus(null)
+    setRuns([])
     let cachedRuns = []
+    const selectedOrchardId = historyOrchardId === ALL_ORCHARDS ? undefined : historyOrchardId
 
     try {
-      cachedRuns = await listSimulationRunsFromHistory({ orchardId, limit: 50 })
+      cachedRuns = await listSimulationRunsFromHistory({ orchardId: selectedOrchardId, limit: 1000 })
       if (cachedRuns.length) setRuns(cachedRuns)
     } catch (_) {
       cachedRuns = []
     }
 
     try {
-      const params = { limit: 50 }
-      if (orchardId) params.orchard_id = orchardId
+      const params = { limit: 1000 }
+      if (selectedOrchardId) params.orchard_id = selectedOrchardId
       const res = await api.getSimulationRuns(params)
       setRuns(mergeRuns(res.data?.runs ?? [], cachedRuns))
     } catch (err) {
@@ -133,7 +223,7 @@ export default function SimulationHistoryTab({
     } finally {
       setLoading(false)
     }
-  }, [orchardId])
+  }, [historyOrchardId])
 
   useEffect(() => {
     fetchRuns()
@@ -177,15 +267,10 @@ export default function SimulationHistoryTab({
     setExportingHistory(true)
     setStatus(null)
     try {
-      const params = { period: exportPeriod, limit: 5000 }
-      if (exportScope === 'orchard' && orchardId) params.orchard_id = orchardId
-      if (exportPeriod === 'month') {
-        const [year, month] = exportMonth.split('-').map(Number)
-        params.year = year
-        params.month = month
-      }
+      const params = { period: 'all', limit: 5000 }
+      if (historyOrchardId !== ALL_ORCHARDS) params.orchard_id = historyOrchardId
       const res = await api.exportSimulationRuns(params)
-      const fallback = `mangopoint_simulation_history_${exportPeriod}.xlsx`
+      const fallback = 'mangopoint_simulation_history.xlsx'
       downloadBlob(res.data, filenameFromDisposition(res.headers['content-disposition'], fallback))
       setStatus({ type: 'success', msg: 'History export downloaded.' })
     } catch (err) {
@@ -220,48 +305,33 @@ export default function SimulationHistoryTab({
                 Simulation History
               </div>
               <div className="text-muted" style={{ fontSize: '.75rem', marginTop: '.1rem' }}>
-                {orchardName || 'Active orchard'} — saved runs, parameters, weather &amp; playback
+                {selectedHistoryOrchardName} — saved runs, parameters, weather &amp; playback
               </div>
             </div>
             <div className="d-flex flex-wrap align-items-center justify-content-end gap-2">
-              <div style={{ width: 138 }}>
+              <div style={{ width: 180 }}>
                 <MpSelect
                   small
                   className="mb-0"
-                  value={exportScope}
-                  onChange={setExportScope}
-                  options={[
-                    { value: 'orchard', label: 'Active orchard' },
-                    { value: 'all', label: 'All orchards' },
-                  ]}
+                  value={historyOrchardId}
+                  onChange={setHistoryOrchardId}
+                  options={historyOrchardOptions}
                 />
               </div>
-              <div style={{ width: 118 }}>
+              <div style={{ width: 130 }}>
                 <MpSelect
                   small
                   className="mb-0"
-                  value={exportPeriod}
-                  onChange={setExportPeriod}
-                  options={[
-                    { value: 'all', label: 'All dates' },
-                    { value: 'month', label: 'By month' },
-                  ]}
+                  value={historyGrouping}
+                  onChange={setHistoryGrouping}
+                  options={HISTORY_GROUP_OPTIONS}
                 />
               </div>
-              {exportPeriod === 'month' && (
-                <input
-                  type="month"
-                  className="form-control form-control-sm"
-                  style={{ width: 130 }}
-                  value={exportMonth}
-                  onChange={(e) => setExportMonth(e.target.value)}
-                />
-              )}
               <button
                 type="button"
                 className="btn btn-success btn-sm"
                 onClick={handleExportHistory}
-                disabled={exportingHistory || (exportPeriod === 'month' && !exportMonth)}
+                disabled={exportingHistory}
               >
                 {exportingHistory ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
                 Export History
@@ -290,10 +360,11 @@ export default function SimulationHistoryTab({
             <div className="text-muted small py-4 text-center">Loading saved simulations...</div>
           ) : runs.length ? (
             <div className="table-responsive">
-              <table className="table table-sm align-middle mb-0">
+              <table className="table table-sm align-middle mb-0 simulation-history-table">
                 <thead>
                   <tr>
                     <th>Date</th>
+                    <th>Orchard</th>
                     <th>Pest</th>
                     <th>Model</th>
                     <th className="text-end">Duration</th>
@@ -304,63 +375,77 @@ export default function SimulationHistoryTab({
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.map((run) => {
-                    const busy = loadingRunId === run.run_id
-                    const exporting = exportingRunId === run.run_id
-                    return (
-                      <tr key={run.run_id}>
-                        <td>
-                          <div className="fw-medium">{formatDate(run.started_at)}</div>
-                          <div className="text-muted" style={{ fontSize: '.72rem' }}>{run.run_id}</div>
-                        </td>
-                        <td>{pestLabel(run.pest_type)}</td>
-                        <td>
-                          <span className="badge bg-light text-dark border">{modeLabel(run.simulation_mode)}</span>
-                        </td>
-                        <td className="text-end">{run.hours ?? '--'} h</td>
-                        <td className="text-end">{percent(run.peak_risk)}</td>
-                        <td className="text-end">{run.n_infested_final ?? '--'}</td>
-                        <td className="text-capitalize">{run.weather_source ?? '--'}</td>
-                        <td>
-                          <div className="d-flex justify-content-end gap-2">
-                            <button
-                              type="button"
-                              className="btn btn-success btn-sm"
-                              disabled={busy}
-                              onClick={() => handleLoad(run.run_id)}
-                            >
-                              {busy ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-box-arrow-in-down me-1" />}
-                              Load Result
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-outline-secondary btn-sm"
-                              disabled={busy}
-                              onClick={() => handleTemplate(run.run_id)}
-                            >
-                              <i className="bi bi-sliders me-1" />
-                              Use as Template
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-outline-success btn-sm"
-                              disabled={exporting}
-                              onClick={() => handleExportRun(run.run_id)}
-                            >
-                              {exporting ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
-                              Export
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {groupedRuns.map((group) => (
+                    <Fragment key={group.key}>
+                      {group.label && (
+                        <tr key={`${group.key}-header`} className="history-group-row">
+                          <th colSpan="9" className="text-muted bg-light" style={{ fontSize: '.78rem' }}>
+                            <i className="bi bi-calendar3 me-1" />
+                            {group.label}
+                            <span className="fw-normal ms-2">{group.runs.length} run{group.runs.length === 1 ? '' : 's'}</span>
+                          </th>
+                        </tr>
+                      )}
+                      {group.runs.map((run) => {
+                        const busy = loadingRunId === run.run_id
+                        const exporting = exportingRunId === run.run_id
+                        return (
+                          <tr key={run.run_id}>
+                            <td>
+                              <div className="fw-medium">{formatDate(run.started_at)}</div>
+                              <div className="text-muted" style={{ fontSize: '.72rem' }}>{run.run_id}</div>
+                            </td>
+                            <td>{orchardLabel(run.orchard_id)}</td>
+                            <td>{pestLabel(run.pest_type)}</td>
+                            <td>
+                              <span className="badge bg-light text-dark border">{modeLabel(run.simulation_mode)}</span>
+                            </td>
+                            <td className="text-end">{run.hours ?? '--'} h</td>
+                            <td className="text-end">{percent(run.peak_risk)}</td>
+                            <td className="text-end">{run.n_infested_final ?? '--'}</td>
+                            <td className="text-capitalize">{run.weather_source ?? '--'}</td>
+                            <td>
+                              <div className="d-flex justify-content-end gap-2">
+                                <button
+                                  type="button"
+                                  className="btn btn-success btn-sm"
+                                  disabled={busy}
+                                  onClick={() => handleLoad(run.run_id)}
+                                >
+                                  {busy ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-box-arrow-in-down me-1" />}
+                                  Load Result
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-secondary btn-sm"
+                                  disabled={busy}
+                                  onClick={() => handleTemplate(run.run_id)}
+                                >
+                                  <i className="bi bi-sliders me-1" />
+                                  Use as Template
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-success btn-sm"
+                                  disabled={exporting}
+                                  onClick={() => handleExportRun(run.run_id)}
+                                >
+                                  {exporting ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
+                                  Export
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>
           ) : (
             <div className="text-muted small py-4 text-center">
-              No saved simulations for this orchard yet. Run a simulation first, then it will appear here.
+              No saved simulations for {selectedHistoryOrchardName.toLowerCase()} yet. Run a simulation first, then it will appear here.
             </div>
           )}
         </div>

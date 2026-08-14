@@ -528,6 +528,32 @@ body {
   background: #fff !important; border-bottom: 1px solid var(--mp-border) !important;
   padding: .55rem 1rem; font-weight: 700; font-size: .8rem;
 }
+.simulation-history-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.simulation-history-table thead th {
+  border-bottom: 2px solid var(--mp-border) !important;
+  padding: .65rem .55rem;
+  white-space: nowrap;
+}
+.simulation-history-table thead th + th,
+.simulation-history-table tbody > tr:not(.history-group-row) > td + td {
+  border-left: 1px solid rgba(27, 67, 50, .12) !important;
+}
+.simulation-history-table tbody > tr:not(.history-group-row) > td {
+  border-bottom: 1px solid var(--mp-border) !important;
+  padding: .65rem .55rem;
+}
+.simulation-history-table .history-group-row > th {
+  background: #f3f7f5 !important;
+  border-top: 1px solid var(--mp-border) !important;
+  border-bottom: 1px solid var(--mp-border) !important;
+  padding: .45rem .55rem;
+}
+.simulation-history-table .history-group-row:first-child > th {
+  border-top: none !important;
+}
 
 /* Charts in scroll panels */
 .ops-panel-scroll .card {

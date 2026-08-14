@@ -666,6 +666,7 @@ export default function DashboardPage() {
 
   const handleHistoricalTemplateLoad = useCallback((params) => {
     const safeParams = parseMaybeJson(params, {})
+    setActiveTab('live-map')
     restoreStageContext(safeParams)
     setSimulationTemplate({
       ...safeParams,
@@ -966,8 +967,7 @@ export default function DashboardPage() {
                 style={{ display: activeTab === 'history' ? 'block' : 'none' }}
               >
                 <SimulationHistoryTab
-                  orchardId={selectedOrchardId}
-                  orchardName={orchardName}
+                  orchards={orchards}
                   refreshKey={historyRefreshKey}
                   onLoadRun={handleHistoricalSimulationLoad}
                   onUseTemplate={handleHistoricalTemplateLoad}

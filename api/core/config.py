@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 
+    # Cloud backup / synchronization (server-side only)
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_DATABASE_URL: Optional[str] = None
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
+    SUPABASE_STORAGE_BUCKET: str = "orchard-assets"
+    CLOUD_SYNC_ENABLED: bool = True
+    # Database rows are backed up; large orchard files remain local by default.
+    CLOUD_SYNC_ASSETS: bool = False
+    CLOUD_SYNC_INTERVAL_SECONDS: int = 7200
+    CLOUD_SYNC_BATCH_SIZE: int = 100
+    CLOUD_SYNC_MAX_RETRIES: int = 8
+
     # Authentication
     AUTH_SECRET_KEY: Optional[str] = None
     AUTH_ALGORITHM: str = "HS256"

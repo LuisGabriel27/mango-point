@@ -217,8 +217,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db():
     """Initialize database tables."""
     async with engine.begin() as conn:
-        # Enable PostGIS extension
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+        from .migrations import apply_migrations
+
+        await apply_migrations(conn)
         await conn.run_sync(Base.metadata.create_all)
         await _normalize_user_role_enum(conn)
         await _normalize_pesttype_enum(conn)

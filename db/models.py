@@ -16,6 +16,9 @@ Tables:
     - mango_stage:              Phenological stage tracking
     - alert:                    Risk alert log
     - weather_cache:            Weather API response cache
+    - sync_outbox:              Transactional cloud-backup queue
+    - sync_state:               Cloud-backup checkpoint/status
+    - orchard_asset:            Local/cloud orchard asset manifest
 """
 
 from datetime import datetime
@@ -24,6 +27,7 @@ from sqlalchemy import (
     Integer, Float, String, Text, DateTime, Numeric,
     Boolean, ForeignKey, Enum as SQLEnum, JSON, Index, Sequence,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.pool import Pool
 from geoalchemy2 import Geometry
@@ -610,3 +614,82 @@ class WeatherCache(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     source: Mapped[str] = mapped_column(String(50), default="openweathermap")
+
+
+class SyncOutbox(Base):
+    """Transactional local events waiting for cloud replication."""
+    __tablename__ = "sync_outbox"
+
+    outbox_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[Any] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True,
+    )
+    entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive,
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive,
+    )
+    synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_sync_outbox_pending", "synced_at", "next_attempt_at", "outbox_id"),
+        Index("idx_sync_outbox_entity", "entity_type", "entity_key", "outbox_id"),
+    )
+
+
+class SyncState(Base):
+    """Singleton status row for the local cloud synchronization worker."""
+    __tablename__ = "sync_state"
+
+    state_id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_event_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive,
+    )
+
+
+class OrchardAsset(Base):
+    """Local asset manifest used to replicate orchard files to cloud storage."""
+    __tablename__ = "orchard_asset"
+
+    asset_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    orchard_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("orchard.orchard_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    local_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mime_type: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    storage_bucket: Mapped[str] = mapped_column(
+        String(150), nullable=False, default="orchard-assets",
+    )
+    storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    sync_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive,
+    )
+
+    orchard: Mapped["Orchard"] = relationship("Orchard")
+
+    __table_args__ = (
+        Index("idx_orchard_asset_orchard_id", "orchard_id"),
+        Index("uq_orchard_asset_type", "orchard_id", "asset_type", unique=True),
+    )

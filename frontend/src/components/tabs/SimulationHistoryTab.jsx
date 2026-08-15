@@ -155,6 +155,7 @@ export default function SimulationHistoryTab({
   const [loadingRunId, setLoadingRunId] = useState(null)
   const [exportingRunId, setExportingRunId] = useState(null)
   const [exportingHistory, setExportingHistory] = useState(false)
+  const [syncingToSupabase, setSyncingToSupabase] = useState(false)
   const [historyOrchardId, setHistoryOrchardId] = useState(ALL_ORCHARDS)
   const [historyGrouping, setHistoryGrouping] = useState('all')
   const [status, setStatus] = useState(null)
@@ -280,6 +281,44 @@ export default function SimulationHistoryTab({
     }
   }
 
+  const handleSyncToSupabase = async () => {
+    setSyncingToSupabase(true)
+    setStatus(null)
+    try {
+      const res = await api.runSupabaseSync()
+      const result = res.data ?? {}
+      const processed = Number(result.processed ?? 0)
+      const succeeded = Number(result.succeeded ?? 0)
+      const skipped = Number(result.skipped ?? 0)
+      const failed = Number(result.failed ?? 0)
+      const pending = Number(result.pending_events ?? 0)
+
+      if (result.message && processed === 0) {
+        setStatus({
+          type: result.configured ? 'warning' : 'danger',
+          msg: result.message,
+        })
+        return
+      }
+
+      const details = [
+        `${succeeded} pushed`,
+        skipped ? `${skipped} skipped` : null,
+        failed ? `${failed} failed` : null,
+        `${pending} pending`,
+      ].filter(Boolean).join(' · ')
+
+      setStatus({
+        type: failed ? 'warning' : 'success',
+        msg: `Supabase sync complete (${details}).`,
+      })
+    } catch (err) {
+      setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not sync with Supabase.') })
+    } finally {
+      setSyncingToSupabase(false)
+    }
+  }
+
   const handleExportRun = async (runId) => {
     setExportingRunId(runId)
     setStatus(null)
@@ -344,6 +383,16 @@ export default function SimulationHistoryTab({
               >
                 {loading ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-arrow-clockwise me-1" />}
                 Refresh
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={handleSyncToSupabase}
+                disabled={syncingToSupabase}
+                title="Push pending local database changes to Supabase"
+              >
+                {syncingToSupabase ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-cloud-arrow-up me-1" />}
+                {syncingToSupabase ? 'Syncing…' : 'Sync to Supabase'}
               </button>
             </div>
           </div>

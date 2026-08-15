@@ -35,9 +35,10 @@ from api.core.database import (
     is_database_unavailable,
 )
 from api.core.security import AuthConfigurationError, get_current_active_user
-from api.routes import auth, alerts, evaluation, monitoring, observations, orchards, simulation, validation, weather
+from api.routes import auth, alerts, evaluation, monitoring, observations, orchards, simulation, sync, validation, weather
 from api.services.alert_monitoring_service import alert_monitoring_service
 from api.services.auth_service import auth_service
+from api.services.cloud_sync_service import cloud_sync_service
 
 # Configure logging
 logging.basicConfig(
@@ -53,8 +54,8 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting MangoPoint API...")
     alert_monitoring_task = None
+    cloud_sync_task = None
     try:
-        import db.models  # noqa: F401  — register all ORM models with Base
         import db.models  # noqa: F401  — register all ORM models with Base
         await init_db()
         logger.info("Database initialized")
@@ -74,6 +75,12 @@ async def lifespan(app: FastAPI):
                 alert_monitoring_service.run_scheduler()
             )
             logger.info("Scheduled orchard alert monitoring enabled")
+        if settings.CLOUD_SYNC_ENABLED and cloud_sync_service.configured:
+            cloud_sync_task = asyncio.create_task(cloud_sync_service.run_scheduler())
+            logger.info(
+                "Cloud backup synchronization enabled every %s seconds",
+                settings.CLOUD_SYNC_INTERVAL_SECONDS,
+            )
     except Exception as e:
         logger.warning(f"Database initialization skipped (may not be configured): {e}")
 
@@ -85,6 +92,11 @@ async def lifespan(app: FastAPI):
             alert_monitoring_task.cancel()
             with suppress(asyncio.CancelledError):
                 await alert_monitoring_task
+        if cloud_sync_task:
+            cloud_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cloud_sync_task
+        await cloud_sync_service.close()
 
         # Shutdown
         logger.info("Shutting down MangoPoint API...")
@@ -171,6 +183,7 @@ app.include_router(evaluation.router, dependencies=protected_router_dependencies
 app.include_router(alerts.router, dependencies=protected_router_dependencies)
 app.include_router(validation.router, dependencies=protected_router_dependencies)
 app.include_router(monitoring.router, dependencies=protected_router_dependencies)
+app.include_router(sync.router, dependencies=protected_router_dependencies)
 
 
 # Health check endpoint
@@ -217,6 +230,7 @@ async def root():
             "evaluation": "/evaluation/evaluate",
             "alerts": "/alerts",
             "monitoring": "/monitoring/metrics",
+            "sync": "/sync/status",
             "validation": "/validation/run",
         },
     }

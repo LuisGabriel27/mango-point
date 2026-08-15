@@ -82,6 +82,18 @@ async def main():
         else:
             print("\nDefault admin provisioning is disabled (DEFAULT_ADMIN_ENABLED=false).")
 
+        try:
+            from scripts.register_orchard_assets import register_assets
+
+            print("\nRegistering existing orchard assets...")
+            created_assets, skipped_assets = await register_assets()
+            print(
+                f"Registered {created_assets} orchard asset(s); "
+                f"skipped {skipped_assets} missing or unsafe path(s)."
+            )
+        except Exception as asset_error:
+            print(f"\nExisting orchard asset registration skipped: {asset_error}")
+
     except Exception as exc:
         print(f"\n[ERROR] {exc}")
         print("\nMake sure:")

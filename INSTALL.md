@@ -4,7 +4,7 @@
 
 - Python 3.10+
 - Node.js 18+ with npm
-- PostgreSQL 14+ with PostGIS installed locally
+- Docker Desktop (for the local PostgreSQL/PostGIS container)
 - Git
 
 ## Setup
@@ -28,7 +28,7 @@ cd ..
 Set at least:
 
 ```env
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/mangopoint
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/mangopoint
 AUTH_SECRET_KEY=replace-with-a-long-random-secret
 DEFAULT_ADMIN_PASSWORD=change-this-admin-password
 ```
@@ -37,9 +37,22 @@ Open-Meteo weather forecast calls do not require an API key.
 
 ## Database
 
-For now, MangoPoint uses native local PostgreSQL/PostGIS for development. That
-means each developer laptop needs its own PostgreSQL/PostGIS install until the
-planned shared remote database is added.
+MangoPoint uses Dockerized PostgreSQL/PostGIS locally. The local database is the
+authoritative write target; Supabase is an optional server-side cloud backup.
+
+Start the database:
+
+```powershell
+docker compose up -d
+```
+
+The default Docker credentials match `.env.example`:
+
+```env
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/mangopoint
+```
+
+The existing native PostgreSQL setup remains supported for legacy installations.
 
 Create the database and enable PostGIS:
 
@@ -57,7 +70,10 @@ $env:PGPASSWORD="your_postgres_password"
 .\db\setup_db.ps1 -PgPort 5432
 ```
 
-Initialize tables and seed reference data:
+If you use that legacy native setup instead of Docker, set `DATABASE_URL` back
+to port `5432` before running the API.
+
+Initialize tables, sync triggers, and the default admin account:
 
 ```powershell
 .\init_db.bat
@@ -65,7 +81,14 @@ Initialize tables and seed reference data:
 
 If your virtual environment is already active, `python -m scripts.init_db` is equivalent.
 
-The project currently uses schema initialization plus idempotent startup adjustments, not a full migration tool yet.
+The versioned sync migration is applied by `scripts.init_db`. The original
+domain schema remains in `db/schema.sql`; future schema changes should be added
+as ordered files under `db/migrations/` and mirrored under `supabase/migrations/`.
+
+For cloud database backup, configure the server-side Supabase values from `.env.example`,
+then run `.\sync_cloud.bat` once to verify connectivity. Orchard files remain
+local-only. Schedule the same command every two hours for recovery-point
+protection.
 
 ## Run the App
 

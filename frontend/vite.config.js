@@ -18,6 +18,7 @@ export default defineConfig({
       '/evaluation': { target: 'http://localhost:8000', changeOrigin: true },
       '/validation': { target: 'http://localhost:8000', changeOrigin: true },
       '/weather': { target: 'http://localhost:8000', changeOrigin: true },
+      '/sync': { target: 'http://localhost:8000', changeOrigin: true },
     }
   }
 })

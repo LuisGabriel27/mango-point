@@ -7,7 +7,9 @@ Manage orchard metadata for multi-orchard deployments.
 import logging
 import base64
 import copy
+import hashlib
 import json
+import mimetypes
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,7 +31,7 @@ from ..models.schemas import (
     OrchardResponse,
     OrchardUpdate,
 )
-from db.models import Orchard
+from db.models import Orchard, OrchardAsset
 from utils.datetime_utils import format_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -366,6 +368,23 @@ def _relative_project_path(path: Path) -> str:
     return path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
 
+def _asset_manifest(path: Optional[Path], asset_type: str) -> Optional[dict[str, Any]]:
+    """Build deterministic local metadata for one uploaded orchard asset."""
+    if path is None or not path.exists():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "asset_type": asset_type,
+        "local_path": _relative_project_path(path),
+        "sha256": digest.hexdigest(),
+        "file_size": path.stat().st_size,
+        "mime_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    }
+
+
 def _safe_project_path(relative_path: Optional[str]) -> Optional[Path]:
     if not relative_path:
         return None
@@ -609,6 +628,19 @@ async def upload_orchard(
             monitored_pest_types=["cecid", "fruitfly"],
         )
         db.add(orchard)
+        await db.flush()
+
+        asset_paths = [
+            (tree_geojson_path, "tree_geojson"),
+            (orthophoto_path, "orthophoto"),
+            (orthophoto_png_path, "orthophoto_png"),
+            (dtm_path, "dtm"),
+            (dsm_path, "dsm"),
+        ]
+        for asset_path, asset_type in asset_paths:
+            manifest = _asset_manifest(asset_path, asset_type)
+            if manifest:
+                db.add(OrchardAsset(orchard_id=orchard.orchard_id, **manifest))
         await db.flush()
 
         logger.info("Uploaded orchard %s (%s)", orchard.name, orchard.orchard_uid)

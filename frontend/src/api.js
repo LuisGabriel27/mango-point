@@ -90,6 +90,10 @@ const api = {
   getWeatherForecast: (params = {}) => client.get('/weather/forecast', { params }),
   getWeatherStatus: () => client.get('/weather/status'),
 
+  // Cloud backup
+  getSyncStatus: () => client.get('/sync/status'),
+  runSupabaseSync: (params = {}) => client.post('/sync/run', null, { params }),
+
   // Validation
   getHistoricalData: () => client.get('/validation/historical-data'),
   getValidationCases: (params = {}) => client.get('/validation/cases', { params }),

@@ -444,18 +444,19 @@ async def run_simulation(
         except Exception as diag_err:
             logger.warning(f"Could not compute gate diagnostics: {diag_err}")
         
-        # Persist simulation run to database (background task)
-        background_tasks.add_task(
-            save_simulation_run,
+        # Local persistence is part of the successful request. Only the
+        # cloud replication worker is asynchronous, so a completed response
+        # always has a durable local simulation record behind it.
+        await save_simulation_run(
             result=result,
             request=request,
             weather_data=weather_data,
             weather_source=weather_source,
         )
-        
-        # Check for alerts (background task)
-        background_tasks.add_task(
-            check_alerts,
+
+        # Persist locally generated alerts before returning as well. This
+        # keeps the simulation result and its alert log recoverable together.
+        await check_alerts(
             result=result,
             orchard_id=_orchard_id_from_request(request),
             gate_diagnostics=gate_diagnostics,
@@ -579,7 +580,8 @@ async def save_simulation_run(
             logger.info(f"Saved simulation run {result.run_id}")
         
     except Exception as e:
-        logger.warning(f"Could not save simulation run (database may not be configured): {e}")
+        logger.error("Could not save simulation run: %s", e)
+        raise
 
 
 async def check_alerts(

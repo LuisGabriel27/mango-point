@@ -32,6 +32,9 @@ from db.models import (
     MangoStage,
     Alert,
     WeatherCache,
+    SyncOutbox,
+    SyncState,
+    OrchardAsset,
 )
 
 # Legacy aliases for old code that used different names
@@ -63,6 +66,9 @@ __all__ = [
     "MangoStage",
     "Alert",
     "WeatherCache",
+    "SyncOutbox",
+    "SyncState",
+    "OrchardAsset",
     # Legacy aliases
     "TreeRegistry",
     "PestObservation",

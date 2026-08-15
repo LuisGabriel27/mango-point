@@ -1,0 +1,98 @@
+from pathlib import Path
+
+import pytest
+
+from api.services.cloud_sync_service import CloudSyncService, _async_database_url
+from api.core.migrations import split_sql_statements
+from scripts.restore_from_supabase import RESTORE_ORDER
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RecordingConnection:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, statement, params=None):
+        self.calls.append((str(statement), params or {}))
+
+
+def test_database_url_is_converted_for_asyncpg():
+    assert _async_database_url("postgresql://user:pass@host/db").startswith(
+        "postgresql+asyncpg://"
+    )
+    assert _async_database_url("postgres://user:pass@host/db").startswith(
+        "postgresql+asyncpg://"
+    )
+    assert _async_database_url("postgresql+asyncpg://host/db") == "postgresql+asyncpg://host/db"
+
+
+def test_migration_splitter_preserves_dollar_quoted_functions():
+    statements = split_sql_statements(
+        "CREATE FUNCTION f() RETURNS void AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql;"
+    )
+    assert len(statements) == 1
+    assert "PERFORM 1;" in statements[0]
+
+
+@pytest.mark.asyncio
+async def test_remote_upsert_is_idempotent_and_serializes_json():
+    remote = RecordingConnection()
+    service = CloudSyncService()
+
+    await service._upsert_remote_row(
+        remote,
+        "orchard",
+        {
+            "orchard_id": 7,
+            "orchard_uid": "orchard-east",
+            "name": "East Block",
+            "geojson": {"type": "FeatureCollection", "features": []},
+            "tree_count": 0,
+            "is_active": True,
+            "monitoring_enabled": True,
+            "orchard_stage": "mature",
+            "days_since_flowering": 60,
+        },
+    )
+
+    sql, params = remote.calls[0]
+    assert 'INSERT INTO "orchard"' in sql
+    assert 'ON CONFLICT ("orchard_id") DO UPDATE' in sql
+    assert '"type": "FeatureCollection"' in params["v_geojson"]
+
+
+def test_sync_migration_has_transactional_triggers_and_excludes_weather_cache():
+    migration = (ROOT / "db" / "migrations" / "0001_sync_backup.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "CREATE TABLE IF NOT EXISTS sync_outbox" in migration
+    assert "CREATE TABLE IF NOT EXISTS sync_state" in migration
+    assert "CREATE TABLE IF NOT EXISTS orchard_asset" in migration
+    for table_name in (
+        "user_account",
+        "orchard",
+        "tree",
+        "pest",
+        "simulation_run",
+        "infestation_record",
+        "environmental_condition",
+        "mango_stage",
+        "alert",
+    ):
+        assert f"trg_{table_name}_sync" in migration
+    assert "trg_weather_cache_sync" not in migration
+
+    asset_migration = (
+        ROOT / "db" / "migrations" / "0003_disable_cloud_asset_replication.sql"
+    ).read_text(encoding="utf-8")
+    assert "DROP TRIGGER IF EXISTS trg_orchard_asset_sync" in asset_migration
+
+
+def test_restore_order_respects_foreign_keys():
+    assert RESTORE_ORDER.index("orchard") < RESTORE_ORDER.index("tree")
+    assert RESTORE_ORDER.index("pest") < RESTORE_ORDER.index("infestation_record")
+    assert RESTORE_ORDER.index("simulation_run") < RESTORE_ORDER.index("alert")
+    assert RESTORE_ORDER[-1] == "alert"

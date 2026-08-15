@@ -32,13 +32,14 @@ MangoPoint is a GIS-based pest spread forecasting web application for mango orch
 
 ## Quick Start
 
-Install native PostgreSQL with PostGIS first and create a `mangopoint` database.
-Until the shared remote database backlog item is done, each development laptop
-needs its own local PostgreSQL/PostGIS setup.
+Run the local PostgreSQL/PostGIS database in Docker. The FastAPI service remains
+the only application data boundary. When Supabase credentials are configured,
+local durable writes are queued for cloud backup every two hours.
 
 ```powershell
 cd <project-folder>
 
+docker compose up -d
 .\setup_windows.bat
 .\init_db.bat
 .\start_dev.bat
@@ -116,14 +117,62 @@ Then run the frontend in another terminal:
 Copy `.env.example` to `.env` and set at least:
 
 ```env
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/mangopoint
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/mangopoint
 AUTH_SECRET_KEY=replace-with-a-long-random-secret
 DEFAULT_ADMIN_PASSWORD=change-this-admin-password
 ```
 
 Open-Meteo is used for weather forecasts and does not require an API key.
-If your local PostgreSQL uses a different password or port, update
-`DATABASE_URL` before running `python -m scripts.init_db`.
+For local Docker, the default connection is:
+
+```env
+DATABASE_URL=postgresql://postgres:postgres@localhost:55432/mangopoint
+```
+
+Docker maps its database to host port `55432` by default so it does not silently
+compete with an existing native PostgreSQL installation on `5432`. Set
+`POSTGRES_PORT` and update `DATABASE_URL` together if you want another port.
+
+The setup command applies the versioned files in `db/migrations/` after the
+domain schema. The migration adds the transactional sync outbox, synchronization
+state. Orchard files remain local-only and are not uploaded to Supabase.
+
+## Supabase cloud backup
+
+Supabase is used as a server-side backup target. Do not put these values in
+`frontend/.env` or expose them through Vite:
+
+```env
+SUPABASE_DATABASE_URL=postgresql://...
+CLOUD_SYNC_ENABLED=true
+CLOUD_SYNC_ASSETS=false
+CLOUD_SYNC_INTERVAL_SECONDS=7200
+```
+
+The API starts a best-effort two-hour scheduler when the cloud database URL is
+configured. You can also run a manual batch:
+
+```powershell
+.\sync_cloud.bat
+```
+
+The protected API endpoints are `GET /sync/status` and `POST /sync/run`.
+For a machine-wide automatic backup, schedule `sync_cloud.bat` in Windows Task
+Scheduler every two hours. If Supabase is unavailable, local writes continue
+and remain in the outbox for retry.
+
+To inspect or restore a cloud copy:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.sync_cloud --once
+.\.venv\Scripts\python.exe -m scripts.restore_from_supabase --dry-run
+.\.venv\Scripts\python.exe -m scripts.restore_from_supabase
+```
+
+The restore command must only be run against a replacement or intentionally
+empty local database. It restores database rows in dependency order. Orchard
+files must be restored separately from your local file backup because they are
+not stored in Supabase.
 
 ## Validation
 

@@ -335,6 +335,7 @@ CREATE TABLE IF NOT EXISTS alert (
 
     message             TEXT,
     recommended_actions JSONB,
+    suggested_simulation_params JSONB,
 
     email_sent          BOOLEAN       DEFAULT FALSE,
     email_sent_at       TIMESTAMP,

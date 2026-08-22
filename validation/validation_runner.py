@@ -813,13 +813,17 @@ class ValidationRunner:
             grid = self._OrchardGrid(rows=grid_size, cols=grid_size)
             tree_mask = np.ones((grid_size, grid_size), dtype=bool)
             grid.plant_trees(tree_mask, self._CellState.UNBAGGED)
-            grid.seed_infestation(
-                self._seed_positions(
-                    case=case,
-                    grid_size=grid_size,
-                    carryover_weight=effective_carryover_weight,
-                    offset=window_index * 1000,
-                )
+            seed_positions = self._seed_positions(
+                case=case,
+                grid_size=grid_size,
+                carryover_weight=effective_carryover_weight,
+                offset=window_index * 1000,
+            )
+            grid.seed_infestation(seed_positions)
+            cecid_source_pressures = (
+                {tuple(position): 1.0 for position in seed_positions}
+                if case.pest_type == "cecid"
+                else None
             )
 
             try:
@@ -832,6 +836,7 @@ class ValidationRunner:
                     gates=gates,
                     orchard_stage=orchard_stage,
                     days_since_flowering=days_since_flowering,
+                    cecid_source_pressures=cecid_source_pressures,
                     progress=False,
                 )
                 risk_features_by_window.append(
@@ -1112,6 +1117,65 @@ class ValidationRunner:
         if split is None:
             self._metrics = metrics
         return metrics
+
+    def raw_score_diagnostics(self, pest_type: str) -> Dict[str, Any]:
+        """Summarize uncalibrated model scores for degeneracy checks."""
+        normalized_pest = str(pest_type).strip().lower()
+        scores = [
+            float(
+                result.raw_predicted_risk
+                if result.raw_predicted_risk is not None
+                else result.predicted_risk
+            )
+            for result in self.results
+            if str(result.case.pest_type).strip().lower() == normalized_pest
+        ]
+        finite_scores = [score for score in scores if np.isfinite(score)]
+        if not finite_scores:
+            return {
+                "pest_type": normalized_pest,
+                "count": 0,
+                "finite_count": 0,
+                "unique_count": 0,
+                "minimum": None,
+                "maximum": None,
+                "mean": None,
+                "spread": None,
+                "nonzero_count": 0,
+            }
+        minimum = min(finite_scores)
+        maximum = max(finite_scores)
+        return {
+            "pest_type": normalized_pest,
+            "count": len(scores),
+            "finite_count": len(finite_scores),
+            "unique_count": len({round(score, 12) for score in finite_scores}),
+            "minimum": minimum,
+            "maximum": maximum,
+            "mean": float(np.mean(finite_scores)),
+            "spread": maximum - minimum,
+            "nonzero_count": sum(abs(score) > 1e-12 for score in finite_scores),
+        }
+
+    def require_non_degenerate_raw_scores(
+        self,
+        pest_type: str,
+        min_cases: int = 2,
+        min_spread: float = 1e-9,
+    ) -> Dict[str, Any]:
+        """Fail validation when a pest's raw scores are constant or all zero."""
+        diagnostics = self.raw_score_diagnostics(pest_type)
+        if diagnostics["finite_count"] != diagnostics["count"]:
+            raise ValueError(f"{pest_type} raw validation scores contain non-finite values.")
+        if diagnostics["count"] < min_cases:
+            raise ValueError(
+                f"{pest_type} needs at least {min_cases} cases for a raw-score degeneracy check."
+            )
+        if diagnostics["nonzero_count"] == 0:
+            raise ValueError(f"{pest_type} raw validation scores are all zero.")
+        if diagnostics["unique_count"] < 2 or diagnostics["spread"] <= min_spread:
+            raise ValueError(f"{pest_type} raw validation scores are constant or effectively constant.")
+        return diagnostics
 
     def fit_calibration(
         self,

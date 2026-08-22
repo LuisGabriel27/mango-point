@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS orchard (
     area_size    NUMERIC(10, 2),
     tree_count   INTEGER      DEFAULT 0,
     geojson      JSONB,
+    cecid_weed_zones JSONB    NOT NULL DEFAULT '[]'::jsonb,
     centroid_lon DOUBLE PRECISION,
     centroid_lat DOUBLE PRECISION,
     orthophoto_path VARCHAR(500),

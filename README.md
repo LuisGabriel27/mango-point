@@ -7,6 +7,7 @@ MangoPoint is a GIS-based pest spread forecasting web application for mango orch
 - Pest spread simulation for Cecid Fly and Fruit Fly.
 - Grid and tree-graph simulation modes, including real crown-width/crown-radius handling.
 - Weather-aware biological triggers using Open-Meteo forecast data, manual weather blocks, synthetic fallback weather, and historical weather CSVs for validation.
+- Cecid-specific fixed soil sources, short-lived adult cohorts, and persistent Weed Habitat relay zones with a strict 15 m hourly movement limit.
 - Multi-orchard API foundation and frontend orchard switching.
 - Alerts for high-risk simulation output and orchard-aware scheduled gate monitoring.
 - Notification/action workflow for alerts.
@@ -173,6 +174,26 @@ The restore command must only be run against a replacement or intentionally
 empty local database. It restores database rows in dependency order. Orchard
 files must be restored separately from your local file backup because they are
 not stored in Supabase.
+
+## Cecid Fly Weed Habitat
+
+Select `Weed Habitat` in the Live Map Zone Editor to draw persistent orchard
+polygons and classify them as Sparse, Moderate, or Dense. Every draw, label or
+density edit, undo, and deletion is saved through the orchard API. The map shows
+Saving, Saved, or Error with a retry action; clearing all weed zones requires
+confirmation. The bundled BPI map is registered once as `default-orchard`, so
+its weed zones use the same persistence path as uploaded orchards.
+
+Weed polygons are provisional adult shelter and short-hop relay assumptions.
+They do not create Cecid flies, strengthen soil emergence, act as alternate
+hosts, or create another generation. The relay efficiencies (0.60/0.80/1.00)
+require BPI field calibration. Legacy `cecid_emergence_zones` remain available
+only for exact historical replay and are not converted into orchard weeds.
+
+For Cecid wind controls, values remain in m/s. Gentle wind from 1–5 km/h
+(0.28–1.39 m/s) can assist a movement edge downwind by up to 35%. Wind above
+5 km/h progressively lowers adult survival, but never allows movement farther
+than 15 m in one eligible dawn/dusk hour.
 
 ## Validation
 

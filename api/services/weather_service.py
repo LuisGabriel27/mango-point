@@ -6,7 +6,9 @@ Falls back to synthetic weather if API fails.
 """
 
 import logging
-from datetime import datetime, timedelta
+import hashlib
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, Tuple
 import httpx
 from functools import lru_cache
@@ -19,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Open-Meteo base URL (free, no API key required)
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+MANILA_TZ = ZoneInfo("Asia/Manila")
+ANTECEDENT_HOURS = 72
 
 
 class WeatherCache:
@@ -331,6 +335,356 @@ class WeatherService:
             })
         
         return forecasts
+
+
+    # ------------------------------------------------------------------
+    # Anchored weather bundle API (v2)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _local_hour(value: Optional[datetime] = None) -> datetime:
+        current = value or datetime.now(MANILA_TZ)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=MANILA_TZ)
+        return current.astimezone(MANILA_TZ).replace(
+            minute=0, second=0, microsecond=0,
+        )
+
+    @staticmethod
+    def _deterministic_seed(
+        lat: float,
+        lon: float,
+        anchor: datetime,
+        purpose: str,
+    ) -> int:
+        material = f"{purpose}|{lat:.5f}|{lon:.5f}|{anchor.isoformat()}".encode("utf-8")
+        return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") % (2**32)
+
+    @staticmethod
+    def _fallback_reason(exc: Exception) -> str:
+        text = str(exc).strip() or "no error detail supplied"
+        return f"{type(exc).__name__}: {text}"[:500]
+
+    @staticmethod
+    def _provenance(
+        *,
+        lat: float,
+        lon: float,
+        source: str,
+        anchor: datetime,
+        fallback_reason: Optional[str] = None,
+        synthetic_seed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "provider": "open-meteo",
+            "source": source,
+            "coordinates": {"lat": float(lat), "lon": float(lon)},
+            "timezone": "Asia/Manila",
+            "anchor_time": format_rfc3339(anchor),
+            "fetched_at": format_rfc3339(datetime.now(timezone.utc)),
+            "fallback_reason": fallback_reason,
+            "synthetic_seed": synthetic_seed,
+        }
+
+    async def get_live_weather(
+        self,
+        lat: float,
+        lon: float,
+        use_cache: bool = True,
+    ) -> Dict[str, Any]:
+        if use_cache:
+            cached = await self.cache.get(lat, lon)
+            if cached:
+                result = dict(cached)
+                result["cached"] = True
+                result["cache_expires_at"] = await self.cache.get_expiry(lat, lon)
+                return result
+
+        anchor = self._local_hour()
+        try:
+            weather = await self._fetch_current_v2(lat, lon, anchor)
+        except Exception as exc:
+            reason = self._fallback_reason(exc)
+            seed = self._deterministic_seed(lat, lon, anchor, "current")
+            logger.error("Open-Meteo current weather failed; using deterministic fallback: %s", reason)
+            weather = self._generate_synthetic_current_v2(lat, lon, anchor, seed, reason)
+
+        await self.cache.set(lat, lon, dict(weather))
+        result = dict(weather)
+        result["cached"] = False
+        result["cache_expires_at"] = await self.cache.get_expiry(lat, lon)
+        return result
+
+    async def _fetch_current_v2(
+        self,
+        lat: float,
+        lon: float,
+        anchor: datetime,
+    ) -> Dict[str, Any]:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+            "wind_speed_unit": "ms",
+            "timezone": "Asia/Manila",
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(OPEN_METEO_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
+        current = data.get("current") or {}
+        if not current.get("time"):
+            raise RuntimeError("Open-Meteo returned no current timestamp")
+        observed = datetime.fromisoformat(str(current["time"]))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=MANILA_TZ)
+        provenance = self._provenance(
+            lat=lat, lon=lon, source="open-meteo", anchor=anchor,
+        )
+        return {
+            "wind_speed_ms": float(current.get("wind_speed_10m", 0.0)),
+            "wind_dir_deg": float(current.get("wind_direction_10m", 0.0)),
+            "temperature_c": float(current.get("temperature_2m", 25.0)),
+            "humidity": float(current.get("relative_humidity_2m", 70.0)),
+            "datetime": format_rfc3339(observed),
+            "source": "open-meteo",
+            "provenance": provenance,
+            "fallback_reason": None,
+        }
+
+    def _generate_synthetic_current_v2(
+        self,
+        lat: float,
+        lon: float,
+        anchor: datetime,
+        seed: int,
+        reason: str,
+    ) -> Dict[str, Any]:
+        entry = self._generate_synthetic_forecast(
+            lat=lat, lon=lon, hours=1, seed=seed, start=anchor,
+        )[0]
+        provenance = self._provenance(
+            lat=lat,
+            lon=lon,
+            source="synthetic",
+            anchor=anchor,
+            fallback_reason=reason,
+            synthetic_seed=seed,
+        )
+        return {
+            **entry,
+            "humidity": float(entry.get("humidity", 75.0)),
+            "source": "synthetic",
+            "provenance": provenance,
+            "fallback_reason": reason,
+        }
+
+    async def get_forecast_bundle(
+        self,
+        lat: float,
+        lon: float,
+        hours: int = 48,
+    ) -> Dict[str, Any]:
+        hours = max(1, min(168, int(hours)))
+        anchor = self._local_hour()
+        try:
+            return await self._fetch_forecast_bundle_open_meteo(
+                lat=lat, lon=lon, hours=hours, anchor=anchor,
+            )
+        except Exception as exc:
+            reason = self._fallback_reason(exc)
+            seed = self._deterministic_seed(lat, lon, anchor, f"bundle-{hours}")
+            logger.error("Open-Meteo forecast failed; using deterministic fallback: %s", reason)
+            return self._generate_synthetic_bundle(
+                lat=lat,
+                lon=lon,
+                hours=hours,
+                anchor=anchor,
+                seed=seed,
+                fallback_reason=reason,
+            )
+
+    async def get_forecast(
+        self,
+        lat: float,
+        lon: float,
+        hours: int = 48,
+    ) -> list:
+        """Backward-compatible forecast list with deterministic fallback."""
+        try:
+            return await self._fetch_forecast_from_open_meteo(lat, lon, hours)
+        except Exception as exc:
+            anchor = self._local_hour()
+            reason = self._fallback_reason(exc)
+            seed = self._deterministic_seed(lat, lon, anchor, f"forecast-{hours}")
+            logger.error("Open-Meteo forecast failed; using deterministic fallback: %s", reason)
+            return self._generate_synthetic_forecast(
+                lat=lat, lon=lon, hours=hours, seed=seed, start=anchor,
+            )
+
+    async def _fetch_forecast_from_open_meteo(
+        self,
+        lat: float,
+        lon: float,
+        hours: int,
+    ) -> list:
+        bundle = await self._fetch_forecast_bundle_open_meteo(
+            lat=lat,
+            lon=lon,
+            hours=hours,
+            anchor=self._local_hour(),
+        )
+        return bundle["forecast"]
+
+    async def _fetch_forecast_bundle_open_meteo(
+        self,
+        lat: float,
+        lon: float,
+        hours: int,
+        anchor: datetime,
+    ) -> Dict[str, Any]:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation",
+            "wind_speed_unit": "ms",
+            "timezone": "Asia/Manila",
+            "past_hours": ANTECEDENT_HOURS,
+            "forecast_hours": hours,
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(OPEN_METEO_URL, params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+        hourly = payload.get("hourly") or {}
+        records = self._records_from_hourly(hourly, source="open-meteo")
+        antecedent = [record for record in records if record["_datetime"] < anchor][-ANTECEDENT_HOURS:]
+        forecast = [record for record in records if record["_datetime"] >= anchor][:hours]
+        if len(antecedent) != ANTECEDENT_HOURS or len(forecast) != hours:
+            raise RuntimeError(
+                f"Open-Meteo returned an incomplete anchored window "
+                f"({len(antecedent)} antecedent, {len(forecast)} forecast)"
+            )
+        for record in antecedent + forecast:
+            record.pop("_datetime", None)
+        return {
+            "antecedent": antecedent,
+            "forecast": forecast,
+            "provenance": self._provenance(
+                lat=lat, lon=lon, source="open-meteo", anchor=anchor,
+            ),
+        }
+
+    @staticmethod
+    def _records_from_hourly(hourly: Dict[str, Any], source: str) -> list:
+        times = hourly.get("time") or []
+        if not times:
+            raise RuntimeError("Open-Meteo returned empty hourly data")
+        fields = {
+            "temperature_c": hourly.get("temperature_2m") or [],
+            "humidity": hourly.get("relative_humidity_2m") or [],
+            "wind_speed_ms": hourly.get("wind_speed_10m") or [],
+            "wind_dir_deg": hourly.get("wind_direction_10m") or [],
+            "rainfall_mm": hourly.get("precipitation") or [],
+        }
+        defaults = {
+            "temperature_c": 28.0,
+            "humidity": 70.0,
+            "wind_speed_ms": 2.0,
+            "wind_dir_deg": 45.0,
+            "rainfall_mm": 0.0,
+        }
+        records = []
+        for index, raw_time in enumerate(times):
+            parsed = datetime.fromisoformat(str(raw_time))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=MANILA_TZ)
+            record = {
+                "_datetime": parsed,
+                "datetime": format_rfc3339(parsed),
+                "hour": parsed.astimezone(MANILA_TZ).hour,
+                "source": source,
+            }
+            for name, values in fields.items():
+                record[name] = float(values[index]) if index < len(values) else defaults[name]
+            records.append(record)
+        return records
+
+    def _generate_synthetic_forecast(
+        self,
+        lat: float,
+        lon: float,
+        hours: int,
+        seed: Optional[int] = None,
+        start: Optional[datetime] = None,
+    ) -> list:
+        """Generate a reproducible, explicitly labelled fallback forecast."""
+        import numpy as np
+
+        anchor = self._local_hour(start)
+        resolved_seed = seed if seed is not None else self._deterministic_seed(
+            lat, lon, anchor, f"synthetic-{hours}",
+        )
+        rng = np.random.default_rng(resolved_seed)
+        forecasts = []
+        rainy_day_flags: Dict[int, bool] = {}
+        for index in range(max(0, int(hours))):
+            current = anchor + timedelta(hours=index)
+            hour = current.hour
+            temperature = 30.0 + 4.0 * np.sin(2.0 * np.pi * (hour - 6) / 24.0)
+            temperature += rng.normal(0.0, 0.5)
+            wind_speed = 2.5 + 1.5 * np.sin(2.0 * np.pi * hour / 24.0 + 1.0)
+            wind_speed = float(np.clip(wind_speed + rng.normal(0.0, 0.4), 0.2, 8.0))
+            wind_direction = float((45.0 + 20.0 * np.sin(2.0 * np.pi * index / 36.0) + rng.normal(0.0, 10.0)) % 360.0)
+            humidity = float(np.clip(75.0 + 15.0 * np.sin(2.0 * np.pi * (hour - 12) / 24.0) + rng.normal(0.0, 5.0), 40.0, 100.0))
+            base_probability = 0.3 if 13 <= hour <= 18 else 0.1 if 6 <= hour <= 12 or 19 <= hour <= 21 else 0.05
+            day_index = index // 24
+            if day_index not in rainy_day_flags:
+                rainy_day_flags[day_index] = bool(rng.random() < 0.3)
+            if rainy_day_flags[day_index]:
+                base_probability *= 2.0
+            rainfall = float(np.clip(rng.exponential(3.0), 0.0, 25.0)) if rng.random() < base_probability else 0.0
+            forecasts.append({
+                "datetime": format_rfc3339(current),
+                "hour": hour,
+                "wind_speed_ms": wind_speed,
+                "wind_dir_deg": wind_direction,
+                "temperature_c": float(temperature),
+                "humidity": humidity,
+                "rainfall_mm": rainfall,
+                "source": "synthetic",
+            })
+        return forecasts
+
+    def _generate_synthetic_bundle(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        hours: int,
+        anchor: datetime,
+        seed: int,
+        fallback_reason: str,
+    ) -> Dict[str, Any]:
+        combined = self._generate_synthetic_forecast(
+            lat=lat,
+            lon=lon,
+            hours=ANTECEDENT_HOURS + hours,
+            seed=seed,
+            start=anchor - timedelta(hours=ANTECEDENT_HOURS),
+        )
+        return {
+            "antecedent": combined[:ANTECEDENT_HOURS],
+            "forecast": combined[ANTECEDENT_HOURS:],
+            "provenance": self._provenance(
+                lat=lat,
+                lon=lon,
+                source="synthetic",
+                anchor=anchor,
+                fallback_reason=fallback_reason,
+                synthetic_seed=seed,
+            ),
+        }
 
 
 # Singleton instance

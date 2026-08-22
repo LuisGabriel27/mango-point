@@ -363,3 +363,36 @@ def test_validation_calibration_maps_constant_raw_scores_to_calibration_median()
     assert curve.scale == pytest.approx(0.0)
     assert curve.intercept == pytest.approx(0.3125)
     assert runner.results[-1].predicted_level == "Medium"
+
+
+def test_raw_cecid_score_check_rejects_constant_scores_and_accepts_variation():
+    runner = ValidationRunner(seed=1)
+
+    def cecid_result(case_id, score):
+        case = ValidationCase(
+            case_id=case_id,
+            year=2025,
+            month=5,
+            date_str="2025-05",
+            pest_type="cecid",
+            orchard_stage="fruitlet",
+            actual_value=5.0,
+            actual_level="Medium",
+            weather_scenario="historical",
+        )
+        return ValidationResult(
+            case,
+            predicted_risk=score,
+            predicted_level="Low",
+            match=False,
+        )
+
+    runner.results = [cecid_result("CF-1", 0.02), cecid_result("CF-2", 0.02)]
+    with pytest.raises(ValueError, match="constant"):
+        runner.require_non_degenerate_raw_scores("cecid")
+
+    runner.results.append(cecid_result("CF-3", 0.08))
+    diagnostics = runner.require_non_degenerate_raw_scores("cecid")
+    assert diagnostics["count"] == 3
+    assert diagnostics["unique_count"] == 2
+    assert diagnostics["spread"] == pytest.approx(0.06)

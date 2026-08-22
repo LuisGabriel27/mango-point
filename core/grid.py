@@ -56,6 +56,9 @@ class OrchardGrid:
         self.treatment_susceptibility_factor: np.ndarray = np.ones((rows, cols), dtype=np.float64)
         self.treatment_source_factor: np.ndarray = np.ones((rows, cols), dtype=np.float64)
         self.treatment_active: np.ndarray = np.zeros((rows, cols), dtype=bool)
+        self.cecid_source_pressure: np.ndarray = np.zeros((rows, cols), dtype=np.float64)
+        self.cecid_source_assumed: np.ndarray = np.zeros((rows, cols), dtype=bool)
+        self.cecid_source_label: np.ndarray = np.full((rows, cols), "", dtype=object)
 
         # Neighbor threat layer  [0.0 … 1.0]
         # Represents external orchard pressure from adjacent unmanaged areas
@@ -361,6 +364,9 @@ class OrchardGrid:
         g.treatment_susceptibility_factor = self.treatment_susceptibility_factor.copy()
         g.treatment_source_factor = self.treatment_source_factor.copy()
         g.treatment_active = self.treatment_active.copy()
+        g.cecid_source_pressure = self.cecid_source_pressure.copy()
+        g.cecid_source_assumed = self.cecid_source_assumed.copy()
+        g.cecid_source_label = self.cecid_source_label.copy()
         g.neighbor_threat = self.neighbor_threat.copy()
         g.tree_ids = self.tree_ids.copy()
         g.origin_lon = self.origin_lon

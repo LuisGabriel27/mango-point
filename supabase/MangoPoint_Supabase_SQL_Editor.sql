@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS orchard (
     area_size NUMERIC(10, 2),
     tree_count INTEGER DEFAULT 0,
     geojson JSONB,
+    cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     centroid_lon DOUBLE PRECISION,
     centroid_lat DOUBLE PRECISION,
     orthophoto_path VARCHAR(500),
@@ -120,6 +121,9 @@ CREATE TABLE IF NOT EXISTS orchard (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE IF EXISTS orchard
+ADD COLUMN IF NOT EXISTS cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);
 CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);

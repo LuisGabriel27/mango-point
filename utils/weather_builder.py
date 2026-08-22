@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from utils.datetime_utils import (
@@ -39,6 +39,7 @@ from utils.datetime_utils import (
     parse_rfc3339 as _parse_rfc3339,
     utcnow_naive,
 )
+from utils.solar import MANILA_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,141 @@ def _to_weather_dict(
     return out
 
 
+def _compute_gate_diagnostics_v2(
+    weather_data: List[Dict[str, Any]],
+    pest_type: str,
+    orchard_stage: str,
+    sugar_index: float = 0.5,
+    initial_rainfall_history: Optional[List[float]] = None,
+    history_hours: int = 72,
+    cecid_rainfall_threshold_mm: Optional[float] = None,
+    fruit_fly_temp_threshold_c: Optional[float] = None,
+    latitude: float = 10.585,
+    longitude: float = 122.580,
+    favorable_threshold: float = 0.25,
+) -> List[Dict[str, Any]]:
+    """Replay the exact gate configuration used by a simulation engine."""
+    from core.biological_rules import CecidFlyGate, FruitFlyGate
+    from core.config import OrchardStage
+
+    pest = (pest_type or "").lower()
+    if pest == "cecid":
+        gate = CecidFlyGate(
+            rainfall_threshold_mm=cecid_rainfall_threshold_mm,
+            latitude=latitude,
+            longitude=longitude,
+            favorable_threshold=favorable_threshold,
+        )
+    elif pest == "fruitfly":
+        gate = FruitFlyGate(temp_threshold_c=fruit_fly_temp_threshold_c)
+    else:
+        return []
+
+    try:
+        stage_enum = OrchardStage[(orchard_stage or "").upper()]
+    except (KeyError, AttributeError):
+        stage_enum = OrchardStage.MATURE
+
+    history: deque = deque(maxlen=max(1, int(history_hours)))
+    seed_values = [float(value) for value in (initial_rainfall_history or [])]
+    for rainfall in ([0.0] * history.maxlen + seed_values)[-history.maxlen:]:
+        history.append(rainfall)
+
+    out: List[Dict[str, Any]] = []
+    for step, entry in enumerate(weather_data):
+        dt_value: Optional[datetime] = None
+        dt_string = entry.get("datetime")
+        if dt_string:
+            try:
+                dt_value = _parse_rfc3339(str(dt_string))
+                if dt_value.tzinfo is None:
+                    dt_value = dt_value.replace(tzinfo=MANILA_TZ)
+            except (ValueError, TypeError):
+                dt_value = None
+        if dt_value is None:
+            dt_value = datetime.now(MANILA_TZ).replace(
+                minute=0, second=0, microsecond=0,
+            ) + timedelta(hours=step)
+
+        local_dt = dt_value.astimezone(MANILA_TZ)
+        rainfall = float(entry.get("rainfall_mm", 0.0) or 0.0)
+        wind_speed = float(entry.get("wind_speed_ms", 0.0) or 0.0)
+        wind_direction = float(entry.get("wind_dir_deg", 0.0) or 0.0) % 360.0
+        temperature = float(entry.get("temperature_c", 30.0) or 30.0)
+        history.append(rainfall)
+
+        if hasattr(gate, "set_time_context"):
+            gate.set_time_context(dt_value)
+
+        is_open = gate.is_open(
+            hour=local_dt.hour,
+            wind_speed_ms=wind_speed,
+            temperature_c=temperature,
+            rainfall_mm=rainfall,
+            rainfall_history=history,
+            orchard_stage=stage_enum,
+            sugar_index=sugar_index,
+        )
+
+        record: Dict[str, Any] = {
+            "step": step,
+            "datetime": entry.get("datetime") or _format_rfc3339(dt_value),
+            "local_datetime": _format_rfc3339(local_dt),
+            "hour_of_day": local_dt.hour,
+            "rainfall_mm": rainfall,
+            "rain_24h_sum": float(sum(list(history)[-24:])),
+            "rain_72h_sum": float(sum(history)),
+            "wind_speed_ms": wind_speed,
+            "wind_speed_kmh": wind_speed * 3.6,
+            "wind_from_deg": wind_direction,
+            "downwind_bearing_deg": (wind_direction + 180.0) % 360.0,
+            "temperature_c": temperature,
+            "gate_open": bool(is_open),
+        }
+
+        if pest == "cecid":
+            components = gate.suitability_components(
+                wind_speed_ms=wind_speed,
+                rainfall_mm=rainfall,
+                rainfall_history=history,
+                orchard_stage=stage_enum,
+                hour=local_dt.hour,
+            )
+            score = float(components["suitability_score"])
+            hard_open = bool(components["hard_open"])
+            status = (
+                "closed" if not hard_open
+                else "favorable" if score >= gate.favorable_threshold
+                else "limited"
+            )
+            record.update(components)
+            record.update({
+                "status": status,
+                "favorable": status == "favorable",
+                "gate_open": bool(hard_open and score > 0.0),
+                "wind_speed_kmh": wind_speed * 3.6,
+                "wind_from_deg": wind_direction,
+                "downwind_bearing_deg": (wind_direction + 180.0) % 360.0,
+            })
+        else:
+            record.update({
+                "hard_open": bool(is_open),
+                "status": "favorable" if is_open else "closed",
+                "favorable": bool(is_open),
+                "suitability_score": 1.0 if is_open else 0.0,
+                "hard_reasons": [] if is_open else ["biological gate closed"],
+                "limiting_factors": [],
+            })
+
+        out.append(record)
+
+    return out
+
+
+# The v2 implementation keeps the public name stable for routes and tests.
+compute_gate_diagnostics = _compute_gate_diagnostics_v2
+
+
 def _make_entry(start_dt: datetime, hour_index: int, weather: Dict[str, float]) -> Dict[str, Any]:
     """Assemble a single hourly weather record."""
     return {
@@ -140,6 +276,35 @@ def _resolve_start_dt(start_dt: Any) -> datetime:
 # ─────────────────────────────────────────────
 #  Builder: constant (legacy)
 # ─────────────────────────────────────────────
+def _resolve_start_dt_local(start_dt: Any) -> datetime:
+    """Resolve a manual schedule start without shifting Guimaras wall time."""
+    if start_dt is None:
+        return datetime.now(MANILA_TZ).replace(minute=0, second=0, microsecond=0)
+    if isinstance(start_dt, str):
+        try:
+            start_dt = _parse_rfc3339(start_dt)
+        except (ValueError, TypeError):
+            logger.warning(
+                "manual_weather_start: unparseable string %r; using current Guimaras hour",
+                start_dt,
+            )
+            return datetime.now(MANILA_TZ).replace(minute=0, second=0, microsecond=0)
+    if not isinstance(start_dt, datetime):
+        logger.warning(
+            "manual_weather_start: expected datetime, got %s; using current Guimaras hour",
+            type(start_dt).__name__,
+        )
+        return datetime.now(MANILA_TZ).replace(minute=0, second=0, microsecond=0)
+    if start_dt.tzinfo is None:
+        return start_dt.replace(tzinfo=MANILA_TZ)
+    return start_dt
+
+
+# Override the legacy UTC-normalising helper above.  Keeping the old code in
+# place avoids a noisy mechanical rewrite in an already modified user file.
+_resolve_start_dt = _resolve_start_dt_local
+
+
 def _series_from_constant(
     overrides: Dict[str, Any],
     hours: int,
@@ -222,7 +387,7 @@ def _series_from_blocks(
 def extract_initial_rainfall_history(
     request_obj: Any,
     weather_data: List[Dict[str, Any]],
-    history_hours: int = 24,
+    history_hours: int = 72,
 ) -> Optional[List[float]]:
     """
     Extract a pre-seed rainfall history from the request, if provided.
@@ -230,17 +395,81 @@ def extract_initial_rainfall_history(
     Looks for ``manual_weather_prefix_rain`` (a list of mm values representing
     rainfall in the hours BEFORE the simulation starts). Useful for cecid
     scenarios where you want the engine to start with rain already
-    accumulated in the 24-hour buffer.
+    represented in the 72-hour antecedent context.
     """
-    prefix = getattr(request_obj, "manual_weather_prefix_rain", None)
-    if not prefix:
+    antecedent = build_manual_antecedent_weather(request_obj, history_hours=history_hours)
+    if not antecedent:
         return None
-    return [float(x) for x in prefix][-history_hours:]
+    return [float(entry.get("rainfall_mm", 0.0)) for entry in antecedent]
 
 
 # ─────────────────────────────────────────────
 #  Dispatcher (precedence)
 # ─────────────────────────────────────────────
+def build_manual_antecedent_weather(
+    request_obj: Any,
+    history_hours: int = 72,
+) -> Optional[List[Dict[str, Any]]]:
+    """Expand manual soil context into hourly weather before simulation Hour 0.
+
+    ``manual_weather_prefix_rain`` has precedence for backward compatibility.
+    The compact selector otherwise supports ``dry``, ``recently_wet``, and a
+    custom event described by total rain, event duration, and elapsed dry time.
+    """
+    history_hours = max(1, int(history_hours))
+    prefix = getattr(request_obj, "manual_weather_prefix_rain", None)
+    context = getattr(request_obj, "manual_soil_context", None)
+
+    if prefix is not None:
+        if isinstance(prefix, (int, float)):
+            prefix_values = [float(prefix)]
+        else:
+            prefix_values = [float(value) for value in prefix]
+        rain = ([0.0] * history_hours + prefix_values)[-history_hours:]
+    elif context is not None:
+        if hasattr(context, "model_dump"):
+            context = context.model_dump()
+        elif hasattr(context, "dict"):
+            context = context.dict()
+        else:
+            context = dict(context)
+
+        preset = str(context.get("preset", "dry")).strip().lower()
+        rain = [0.0] * history_hours
+        if preset == "recently_wet":
+            total_rain = 8.0
+            duration = 4
+            hours_since = 6
+        elif preset == "custom":
+            total_rain = max(0.0, float(context.get("total_rain_mm", 0.0) or 0.0))
+            duration = max(1, int(context.get("event_duration_hours", 1) or 1))
+            hours_since = max(0, int(context.get("hours_since_rain_ended", 0) or 0))
+        else:
+            total_rain = 0.0
+            duration = 1
+            hours_since = 0
+
+        if total_rain > 0.0 and hours_since < history_hours:
+            event_end = history_hours - hours_since
+            event_start = max(0, event_end - duration)
+            slots = max(1, event_end - event_start)
+            amount = total_rain / slots
+            for index in range(event_start, event_end):
+                rain[index] = amount
+    else:
+        return None
+
+    start_dt = _resolve_start_dt(getattr(request_obj, "manual_weather_start", None))
+    antecedent_start = start_dt - timedelta(hours=history_hours)
+    out: List[Dict[str, Any]] = []
+    for index, rainfall in enumerate(rain):
+        entry = _make_entry(antecedent_start, index, _WEATHER_DEFAULTS)
+        entry["rainfall_mm"] = float(rainfall)
+        entry["source"] = "manual-soil-context"
+        out.append(entry)
+    return out
+
+
 def build_weather_series(request_obj: Any) -> Optional[List[Dict[str, Any]]]:
     """
     Build an hourly weather list from the ``manual_weather*`` fields on a
@@ -367,3 +596,8 @@ def compute_gate_diagnostics(
         })
 
     return out
+
+
+# Keep the historical implementation above for a readable diff, but route all
+# callers through the richer diagnostics that match the current engine.
+compute_gate_diagnostics = _compute_gate_diagnostics_v2

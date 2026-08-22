@@ -26,16 +26,20 @@ export default function OrchardSwitcher({
   const options = [
     { label: 'Default Orchard (BPI)', value: DEFAULT_ORCHARD_ID },
   ]
-  orchards.forEach((o) => options.push({ label: o.name || o.orchard_id, value: o.orchard_id }))
+  orchards
+    .filter((o) => o.orchard_id !== DEFAULT_ORCHARD_ID)
+    .forEach((o) => options.push({ label: o.name || o.orchard_id, value: o.orchard_id }))
 
-  const selected = selectedId === DEFAULT_ORCHARD_ID
-    ? {
+  const selected = orchards.find((o) => o.orchard_id === selectedId) ?? (
+    selectedId === DEFAULT_ORCHARD_ID
+      ? {
         orchard_id: DEFAULT_ORCHARD_ID,
         name: 'Default Orchard (BPI)',
         tree_count: defaultTreeCount,
-        location: 'Local sample data',
+        location: 'Bundled BPI orchard',
       }
-    : orchards.find((o) => o.orchard_id === selectedId)
+      : null
+  )
   const treeCount = selected?.tree_count ?? 0
 
   async function handleSubmit(event) {

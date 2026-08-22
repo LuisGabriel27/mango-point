@@ -604,6 +604,18 @@ def run_validation(args: argparse.Namespace) -> None:
     
     print()  # New line after progress bar
 
+    if pest_types is None or "cecid" in pest_types:
+        try:
+            cecid_raw = runner.require_non_degenerate_raw_scores("cecid")
+        except ValueError as exc:
+            raise SystemExit(f"Raw Cecid score check failed: {exc}") from exc
+        print(
+            "Raw Cecid score check: "
+            f"n={cecid_raw['count']}, unique={cecid_raw['unique_count']}, "
+            f"range={cecid_raw['minimum']:.6f}–{cecid_raw['maximum']:.6f} "
+            "(non-degenerate)"
+        )
+
     calibration = None
     if calibration_requested:
         calibration_source_split = "calibration" if has_split else None

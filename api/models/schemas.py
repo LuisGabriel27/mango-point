@@ -95,6 +95,14 @@ class AlertActionStatusEnum(str, Enum):
     DISMISSED = "dismissed"
 
 
+class CecidWeedDensityEnum(str, Enum):
+    """Provisional adult-habitat strength for a mapped weed polygon."""
+
+    SPARSE = "sparse"
+    MODERATE = "moderate"
+    DENSE = "dense"
+
+
 # ═══════════════════════════════════════════════
 #  GeoJSON Schemas
 # ═══════════════════════════════════════════════
@@ -112,6 +120,41 @@ class GeoJSONFeatureCollection(BaseModel):
     features: List[GeoJSONFeature]
 
 
+class CecidWeedZone(BaseModel):
+    """Orchard-persisted weed habitat used only as an adult Cecid relay."""
+
+    id: str = Field(..., min_length=1, max_length=120)
+    label: str = Field(default="Weed habitat", min_length=1, max_length=120)
+    density: CecidWeedDensityEnum = Field(default=CecidWeedDensityEnum.MODERATE)
+    coordinates: List[List[float]] = Field(
+        ...,
+        min_length=3,
+        description="Open polygon ring as [longitude, latitude] pairs.",
+    )
+
+    @field_validator("coordinates")
+    @classmethod
+    def coordinates_are_lon_lat(cls, value: List[List[float]]) -> List[List[float]]:
+        normalized: List[List[float]] = []
+        for point in value:
+            if len(point) < 2:
+                raise ValueError("Each weed-zone point must contain longitude and latitude")
+            lon, lat = float(point[0]), float(point[1])
+            if not -180.0 <= lon <= 180.0 or not -90.0 <= lat <= 90.0:
+                raise ValueError("Weed-zone coordinates are outside valid longitude/latitude bounds")
+            normalized.append([lon, lat])
+        if len({(point[0], point[1]) for point in normalized}) < 3:
+            raise ValueError("A weed zone requires at least three distinct coordinates")
+        signed_area = sum(
+            normalized[index][0] * normalized[(index + 1) % len(normalized)][1]
+            - normalized[(index + 1) % len(normalized)][0] * normalized[index][1]
+            for index in range(len(normalized))
+        )
+        if abs(signed_area) <= 1e-15:
+            raise ValueError("A weed zone polygon must enclose a non-zero area")
+        return normalized
+
+
 class OrchardCreate(BaseModel):
     """Request schema for creating a managed orchard."""
     name: str = Field(..., min_length=1, max_length=200)
@@ -125,6 +168,7 @@ class OrchardCreate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     description: Optional[str] = Field(default=None)
     is_active: bool = Field(default=True)
     monitoring_enabled: bool = Field(default=True)
@@ -152,6 +196,7 @@ class OrchardUpdate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    cecid_weed_zones: Optional[List[CecidWeedZone]] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_active: Optional[bool] = Field(default=None)
     monitoring_enabled: Optional[bool] = Field(default=None)
@@ -180,6 +225,7 @@ class OrchardResponse(BaseModel):
     area_size: Optional[float] = None
     tree_count: int
     geojson: Optional[Dict[str, Any]] = None
+    cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     centroid_lon: Optional[float] = None
     centroid_lat: Optional[float] = None
     orthophoto_url: Optional[str] = None
@@ -308,6 +354,45 @@ class ManualWeatherBlock(BaseModel):
         if start is not None and v <= start:
             raise ValueError(f"end_hour ({v}) must be greater than start_hour ({start})")
         return v
+
+
+class ManualSoilContext(BaseModel):
+    """Compact antecedent-rain selector for a manual Cecid scenario."""
+
+    preset: str = Field(
+        default="dry",
+        pattern="^(dry|recently_wet|custom)$",
+        description="Dry, the documented recently-wet preset, or a custom rain event.",
+    )
+    total_rain_mm: float = Field(default=8.0, ge=0.0, le=500.0)
+    event_duration_hours: int = Field(default=4, ge=1, le=72)
+    hours_since_rain_ended: int = Field(default=6, ge=0, le=72)
+
+
+class CecidEmergenceZone(BaseModel):
+    """Per-simulation polygon representing suspected Cecid soil habitat."""
+
+    id: Optional[str] = Field(default=None, max_length=120)
+    label: str = Field(default="Cecid emergence area", min_length=1, max_length=120)
+    pressure: str = Field(default="medium", pattern="^(low|medium|high)$")
+    coordinates: List[List[float]] = Field(
+        ...,
+        min_length=3,
+        description="Open polygon ring as [longitude, latitude] pairs.",
+    )
+
+    @field_validator("coordinates")
+    @classmethod
+    def coordinates_are_lon_lat(cls, value: List[List[float]]) -> List[List[float]]:
+        normalized: List[List[float]] = []
+        for point in value:
+            if len(point) < 2:
+                raise ValueError("Each emergence-zone point must contain longitude and latitude")
+            lon, lat = float(point[0]), float(point[1])
+            if not -180.0 <= lon <= 180.0 or not -90.0 <= lat <= 90.0:
+                raise ValueError("Emergence-zone coordinates are outside valid longitude/latitude bounds")
+            normalized.append([lon, lat])
+        return normalized
 
 
 # ═══════════════════════════════════════════════
@@ -477,25 +562,41 @@ class SimulationRequest(BaseModel):
         default=None,
         description="Optional start datetime for the manual weather series. Controls "
                     "the hour-of-day stamped on each entry, which the engine uses for "
-                    "crepuscular gate checks. Defaults to current UTC time.",
+                    "crepuscular gate checks. Naive values and the default are "
+                    "interpreted in Guimaras local time.",
+    )
+    cecid_emergence_zones: List[CecidEmergenceZone] = Field(
+        default_factory=list,
+        description="Deprecated legacy per-run soil-source polygons retained only for exact "
+                    "historical replay. New runs should use cecid_weed_zones.",
+    )
+    cecid_weed_zones: Optional[List[CecidWeedZone]] = Field(
+        default=None,
+        description="Adult-only weed habitat relay polygons. Omitted values are resolved from "
+                    "the selected orchard; an explicit list is authoritative for this run.",
     )
     manual_weather_prefix_rain: Optional[List[float]] = Field(
         default=None,
-        description="Optional pre-seed for the engine's 24-hour rainfall history "
+        description="Optional pre-seed for the engine's 72-hour antecedent rainfall context "
                     "(mm per hour, oldest first). Lets cecid scenarios start with "
-                    "rain already accumulated. Length is clipped to the engine's "
-                    "history window (24 h).",
+                    "soil wetness already accumulated. Length is clipped to the "
+                    "engine history window (72 h).",
     )
     # ── biological gate parameter overrides ──────────────────────
     cecid_rainfall_threshold_mm: Optional[float] = Field(
         default=None, ge=0.1, le=50.0,
-        description="Override cecid gate 24-h rainfall accumulation threshold (mm). "
+        description="Override the Cecid soil-wetness sensitivity scale (mm). "
                     f"Default: {CECID_RAINFALL_THRESHOLD_MM}.",
     )
     cecid_base_dispersal_prob: Optional[float] = Field(
         default=None, ge=0.01, le=0.50,
         description="Override cecid per-cell base dispersal probability. "
                     f"Default: {CECID_BASE_DISPERSAL_PROB}.",
+    )
+    cecid_favorable_threshold: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Suitability score required for a favorable Cecid diagnostic/alert. "
+                    "Defaults to 0.25; it does not turn the soft weather factors into hard gates.",
     )
     fruit_fly_temp_threshold_c: Optional[float] = Field(
         default=None, ge=15.0, le=40.0,
@@ -532,6 +633,11 @@ class SimulationRequest(BaseModel):
         description="When false, skips detailed per-timestep GeoJSON snapshots in "
                     "`time_series` and `timesteps`. Use this for dashboards that only "
                     "need the final `risk_geojson` so simulation results return faster.",
+    )
+    manual_soil_context: Optional[ManualSoilContext] = Field(
+        default=None,
+        description="Compact 72-hour antecedent soil-rain context for manual Cecid scenarios. "
+                    "manual_weather_prefix_rain takes precedence when both are supplied.",
     )
     impact_assumptions: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -640,6 +746,19 @@ class SimulationMetadata(BaseModel):
     quadrant_stages: Optional[Dict[str, str]] = None
     tree_stage_override_count: int = 0
 
+    # Exact weather inputs used for replay and audit.  Stored in the existing
+    # JSON result_metadata column, so no database migration is required.
+    orchard_coordinates: Optional[Dict[str, float]] = None
+    weather_antecedent: Optional[List[Dict[str, Any]]] = None
+    weather_provenance: Optional[Dict[str, Any]] = None
+    cecid_sources: Optional[List[Dict[str, Any]]] = None
+    cecid_source_count: int = 0
+    cecid_cohort_events: Optional[List[Dict[str, Any]]] = None
+    cecid_source_assumptions: Optional[Dict[str, Any]] = None
+    cecid_weed_zones: Optional[List[Dict[str, Any]]] = None
+    cecid_habitat_summary: Optional[Dict[str, Any]] = None
+    cecid_habitat_diagnostics: Optional[List[Dict[str, Any]]] = None
+
 
 class SimulationResponse(BaseModel):
     """Response schema for POST /run-simulation."""
@@ -694,6 +813,8 @@ class WeatherResponse(BaseModel):
     location: Dict[str, float]
     cached: bool = Field(default=False, description="Whether data is from cache")
     cache_expires_at: Optional[str] = None
+    provenance: Optional[Dict[str, Any]] = None
+    fallback_reason: Optional[str] = None
 
 
 # ═══════════════════════════════════════════════

@@ -1,9 +1,13 @@
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
-from api.models.schemas import SimulationRequest
+from api.core.database import _ensure_default_orchard
+from api.models.schemas import CecidWeedZone, OrchardCreate, OrchardUpdate, SimulationRequest
+from api.routes import orchards as orchard_routes
 from api.routes.orchards import (
     count_geojson_trees,
     derive_geojson_centroid,
@@ -14,7 +18,7 @@ from api.routes.orchards import (
     _centroid_from_bounds,
     _point_within_bounds,
 )
-from api.routes.simulation import _orchard_id_from_request
+from api.routes.simulation import _orchard_id_from_request, _resolve_cecid_weed_zones
 
 
 def _point_feature(lon, lat, tree_id):
@@ -125,6 +129,12 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
         area_size=Decimal("1.25"),
         tree_count=42,
         geojson={"type": "FeatureCollection", "features": []},
+        cecid_weed_zones=[{
+            "id": "north-weeds",
+            "label": "North weeds",
+            "density": "dense",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
         centroid_lon=122.5,
         centroid_lat=10.5,
         orthophoto_png_path="data/orchards/orchard-east/orthophoto.png",
@@ -155,6 +165,7 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
     assert response.has_dsm is False
     assert response.monitoring_enabled is True
     assert response.orchard_stage == "mature"
+    assert response.cecid_weed_zones[0].density.value == "dense"
 
 
 def test_centroid_from_raster_bounds():
@@ -182,3 +193,167 @@ def test_simulation_request_orchard_id_overrides_geojson_name():
     )
 
     assert _orchard_id_from_request(request) == "registered-orchard-2"
+
+
+def test_weed_zone_schema_validates_density_and_polygon():
+    zone = CecidWeedZone(
+        id="weeds-1",
+        label="Drainage weeds",
+        density="moderate",
+        coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    )
+    assert zone.density.value == "moderate"
+
+    with pytest.raises(ValidationError):
+        CecidWeedZone(
+            id="bad-density",
+            label="Bad",
+            density="high",
+            coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        )
+    with pytest.raises(ValidationError):
+        CecidWeedZone(
+            id="bad-polygon",
+            label="Bad",
+            density="sparse",
+            coordinates=[[122.0, 10.0], [122.1, 10.0]],
+        )
+
+
+class _FakeOrchardSession:
+    def __init__(self):
+        self.added = None
+        self.flush_count = 0
+
+    def add(self, value):
+        self.added = value
+
+    async def flush(self):
+        self.flush_count += 1
+        if self.added is not None and self.added.orchard_id is None:
+            self.added.orchard_id = 91
+
+    async def rollback(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
+    async def allow_uid(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchard_routes, "_ensure_unique_uid", allow_uid)
+    session = _FakeOrchardSession()
+    payload = OrchardCreate(
+        orchard_id="weed-demo",
+        name="Weed Demo",
+        geojson={"type": "FeatureCollection", "features": []},
+        cecid_weed_zones=[{
+            "id": "zone-a",
+            "label": "Canal-side weeds",
+            "density": "sparse",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
+    )
+    created = await orchard_routes.create_orchard(payload, db=session)
+    assert created.cecid_weed_zones[0].density.value == "sparse"
+    assert session.added.cecid_weed_zones[0]["density"] == "sparse"
+
+    orchard = session.added
+
+    async def return_orchard(*_args, **_kwargs):
+        return orchard
+
+    monkeypatch.setattr(orchard_routes, "_get_orchard_or_404", return_orchard)
+    updated = await orchard_routes.update_orchard(
+        "weed-demo",
+        OrchardUpdate(cecid_weed_zones=[]),
+        db=session,
+    )
+    assert updated.cecid_weed_zones == []
+    assert orchard.cecid_weed_zones == []
+
+
+class _BootstrapConnection:
+    def __init__(self, exists):
+        self.exists = exists
+        self.executions = []
+
+    async def scalar(self, _statement):
+        return self.exists
+
+    async def execute(self, statement, params=None):
+        self.executions.append((str(statement), params))
+
+
+@pytest.mark.asyncio
+async def test_default_orchard_bootstrap_is_idempotent_and_never_overwrites():
+    existing = _BootstrapConnection(exists=1)
+    await _ensure_default_orchard(existing)
+    assert existing.executions == []
+
+    missing = _BootstrapConnection(exists=None)
+    await _ensure_default_orchard(missing)
+    assert len(missing.executions) == 1
+    sql, params = missing.executions[0]
+    assert "ON CONFLICT (orchard_uid) DO NOTHING" in sql
+    assert "'default-orchard'" in sql
+    assert params["tree_count"] > 0
+    assert '"features"' in params["geojson"]
+
+
+def test_local_and_supabase_weed_migrations_are_mirrored():
+    project_root = Path(__file__).resolve().parents[1]
+    local_sql = (project_root / "db/migrations/0004_cecid_weed_zones.sql").read_text(encoding="utf-8")
+    cloud_sql = (project_root / "supabase/migrations/202608180000_cecid_weed_zones.sql").read_text(encoding="utf-8")
+    expected = "cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb"
+    assert expected in local_sql
+    assert expected in cloud_sql
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _ResolveSession:
+    def __init__(self, orchard):
+        self.orchard = orchard
+        self.calls = 0
+
+    async def execute(self, _query):
+        self.calls += 1
+        return _ScalarResult(self.orchard)
+
+
+@pytest.mark.asyncio
+async def test_simulation_omission_loads_orchard_weeds_but_explicit_list_is_authoritative():
+    stored_zone = {
+        "id": "stored-weeds",
+        "label": "Stored weeds",
+        "density": "dense",
+        "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    }
+    session = _ResolveSession(SimpleNamespace(cecid_weed_zones=[stored_zone]))
+    orchard_geojson = {"type": "FeatureCollection", "features": []}
+    omitted = SimulationRequest(
+        pest_type="cecid",
+        orchard_id="orchard-a",
+        orchard_geojson=orchard_geojson,
+    )
+    resolved = await _resolve_cecid_weed_zones(omitted, session)
+    assert resolved.cecid_weed_zones[0].id == "stored-weeds"
+    assert session.calls == 1
+
+    explicit = SimulationRequest(
+        pest_type="cecid",
+        orchard_id="orchard-a",
+        orchard_geojson=orchard_geojson,
+        cecid_weed_zones=[],
+    )
+    untouched = await _resolve_cecid_weed_zones(explicit, session)
+    assert untouched.cecid_weed_zones == []
+    assert session.calls == 1

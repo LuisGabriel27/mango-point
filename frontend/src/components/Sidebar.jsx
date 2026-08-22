@@ -17,12 +17,19 @@ export default function Sidebar({
   weather,
   manualWeather,
   weatherOverrideActive,
+  weatherTimeline,
   onManualWeatherChange,
   onWeatherOverrideToggle,
+  onWeatherTimelineChange,
+  onWeatherRetry,
+  orchardCoordinates,
   orchardGeojson,
   treeOverrides,
   treeStageOverrides,
   phenologyZones,
+  cecidWeedZones,
+  legacyCecidEmergenceZones,
+  onPestTypeChange,
   onClearTreeStageOverrides,
   onSimulationComplete,
   simulationTemplate,
@@ -62,8 +69,11 @@ export default function Sidebar({
           weather={weather}
           manualWeather={manualWeather}
           weatherOverrideActive={weatherOverrideActive}
+          weatherTimeline={weatherTimeline}
           onManualChange={onManualWeatherChange}
           onOverrideToggle={onWeatherOverrideToggle}
+          onTimelineChange={onWeatherTimelineChange}
+          onRetry={onWeatherRetry}
         />
         <SimulationCard
           orchardGeojson={orchardGeojson}
@@ -71,11 +81,16 @@ export default function Sidebar({
           treeOverrides={treeOverrides}
           treeStageOverrides={treeStageOverrides}
           phenologyZones={phenologyZones}
+          cecidWeedZones={cecidWeedZones}
+          legacyCecidEmergenceZones={legacyCecidEmergenceZones}
+          onPestTypeChange={onPestTypeChange}
           onClearTreeStageOverrides={onClearTreeStageOverrides}
           onSimulationComplete={onSimulationComplete}
           loadedParams={simulationTemplate}
           manualWeather={manualWeather}
           weatherOverrideActive={weatherOverrideActive}
+          weatherTimeline={weatherTimeline}
+          orchardCoordinates={orchardCoordinates}
           suggestedParams={suggestedSimParams}
           onClearSuggested={() => setSuggestedSimParams(null)}
         />

@@ -396,6 +396,10 @@ body {
     0 0 0 4px var(--stage-color, rgba(15,23,42,.35));
 }
 .map-tree-marker-risk { animation: marker-pulse 1.4s ease-in-out infinite; }
+.map-tree-marker-cecid-source {
+  outline: 3px dashed #92400e;
+  outline-offset: 3px;
+}
 @keyframes marker-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.7); }
   50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
@@ -420,8 +424,52 @@ body {
 .map-zone-tools {
   position: absolute; top: 12px; left: 120px; z-index: 1100;
   display: flex; align-items: center; gap: .35rem; flex-wrap: wrap;
-  max-width: min(680px, calc(100% - 280px));
+  max-width: min(980px, calc(100% - 150px));
 }
+.map-zone-editor-label {
+  padding: .3rem .55rem;
+  border-radius: 6px;
+  background: rgba(255,255,255,.96);
+  color: #374151;
+  font-size: .76rem;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(0,0,0,.1);
+}
+.map-cecid-zone-label {
+  width: 170px !important;
+  min-width: 130px;
+  border-radius: 6px !important;
+  font-size: .76rem !important;
+  box-shadow: 0 2px 6px rgba(0,0,0,.1);
+}
+.map-cecid-assumption {
+  max-width: 190px;
+  padding: .26rem .5rem;
+  border-radius: 6px;
+  background: rgba(240, 253, 244, .97);
+  border: 1px solid rgba(21, 128, 61, .25);
+  color: #166534;
+  font-size: .68rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.map-weed-zone-manager {
+  position: absolute;
+  top: 58px;
+  left: 120px;
+  z-index: 1099;
+  width: min(430px, calc(100% - 145px));
+  max-height: min(420px, calc(100% - 90px));
+  overflow-y: auto;
+  padding: .7rem;
+  border: 1px solid rgba(21, 128, 61, .24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .16);
+  backdrop-filter: blur(5px);
+}
+.map-weed-zone-manager .mp-select { margin-bottom: 0 !important; }
+.map-weed-zone-manager .mp-select-trigger { min-height: 31px; font-size: .73rem !important; }
 .map-zone-tools .btn,
 .map-zone-tools .mp-select-trigger {
   border-radius: 6px !important;
@@ -982,6 +1030,87 @@ input[type="range"]::-moz-range-progress {
 .mp-datepicker .react-datepicker__triangle::before,
 .mp-datepicker .react-datepicker__triangle::after {
   border-bottom-color: var(--mp-primary) !important;
+}
+
+/* Cecid weather timeline: one compact card per horizontal step */
+.cecid-timeline-sequence {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: .3rem;
+  white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mp-border) transparent;
+}
+.cecid-timeline-sequence > * { flex: 0 0 auto; }
+
+.cecid-timeline-block-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-bottom: .4rem;
+}
+.cecid-timeline-block-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  flex: 0 0 auto;
+}
+.cecid-timeline-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 !important;
+}
+.cecid-timeline-block-count {
+  min-width: 2.7rem;
+  color: var(--mp-muted);
+  font-size: .72rem;
+  font-weight: 700;
+  text-align: center;
+}
+.cecid-timeline-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: .6rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  padding: .1rem .1rem .55rem;
+  margin: 0 -.1rem .4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mp-primary) var(--mp-primary-light);
+}
+.cecid-timeline-strip:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid rgba(27,67,50,.25);
+  outline-offset: 2px;
+}
+.cecid-timeline-strip::-webkit-scrollbar,
+.cecid-timeline-sequence::-webkit-scrollbar { height: 6px; }
+.cecid-timeline-strip::-webkit-scrollbar-track,
+.cecid-timeline-sequence::-webkit-scrollbar-track {
+  background: var(--mp-primary-light);
+  border-radius: 999px;
+}
+.cecid-timeline-strip::-webkit-scrollbar-thumb,
+.cecid-timeline-sequence::-webkit-scrollbar-thumb {
+  background: var(--mp-primary);
+  border-radius: 999px;
+}
+.cecid-timeline-block {
+  flex: 0 0 calc(100% - .7rem);
+  min-width: 0;
+  margin-bottom: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
 }
 
 /* ── Responsive ───────────────────────────────── */

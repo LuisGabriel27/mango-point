@@ -204,6 +204,66 @@ const STATUS_DRAFT_VERTEX_LAYER = {
   },
 }
 
+const CECID_ZONE_FILL_LAYER = {
+  id: 'cecid-zones-fill',
+  type: 'fill',
+  source: 'cecid-zones-src',
+  paint: {
+    'fill-color': [
+      'case', ['boolean', ['get', 'legacy'], false], '#64748b',
+      ['match', ['get', 'density'],
+        'sparse', '#86efac',
+        'dense', '#166534',
+        '#22c55e'],
+    ],
+    'fill-opacity': [
+      'case', ['boolean', ['get', 'legacy'], false], 0.12,
+      ['match', ['get', 'density'],
+        'sparse', 0.16,
+        'dense', 0.34,
+        0.24],
+    ],
+  },
+}
+
+const CECID_ZONE_LINE_LAYER = {
+  id: 'cecid-zones-line',
+  type: 'line',
+  source: 'cecid-zones-src',
+  paint: {
+    'line-color': [
+      'case', ['boolean', ['get', 'legacy'], false], '#64748b',
+      ['match', ['get', 'density'],
+        'sparse', '#4ade80',
+        'dense', '#14532d',
+        '#15803d'],
+    ],
+    'line-width': 3,
+    'line-dasharray': [2, 1],
+  },
+}
+
+const CECID_DRAFT_LINE_LAYER = {
+  id: 'cecid-zone-draft-line',
+  type: 'line',
+  source: 'cecid-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'LineString'],
+  paint: { 'line-color': '#15803d', 'line-width': 2, 'line-dasharray': [2, 1] },
+}
+
+const CECID_DRAFT_VERTEX_LAYER = {
+  id: 'cecid-zone-draft-vertices',
+  type: 'circle',
+  source: 'cecid-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'Point'],
+  paint: {
+    'circle-radius': 5,
+    'circle-color': '#ffffff',
+    'circle-stroke-color': '#15803d',
+    'circle-stroke-width': 2,
+  },
+}
+
 const MAP_STYLE = {
   version: 8,
   sources: {
@@ -349,6 +409,10 @@ function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
         color,
         stage,
         stage_color: STAGE_COLORS[String(overrideStage ?? '').toLowerCase()] ?? null,
+        cecid_source: Boolean(props.cecid_source),
+        cecid_source_pressure: Number(props.cecid_source_pressure || 0),
+        cecid_source_assumed: Boolean(props.cecid_source_assumed),
+        cecid_source_label: props.cecid_source_label || null,
       }
     })
     .filter(Boolean)
@@ -382,6 +446,11 @@ function markerPopupHtml(point) {
   const label = String(point.status).replace(/_/g, ' ')
   const riskLine = point.risk == null ? '' : `<br />Risk: ${(point.risk * 100).toFixed(0)}%`
   const stageLine = point.stage == null ? '' : `<br />Stage: ${escapeHtml(String(point.stage))}`
+  const sourceLine = point.cecid_source
+    ? `<br /><strong>Cecid soil source:</strong> ${escapeHtml(point.cecid_source_label || 'Source anchor')}`
+      + `<br />Pressure: ${escapeHtml(point.cecid_source_pressure.toFixed(1))}×`
+      + (point.cecid_source_assumed ? '<br /><em>Assumed fallback source</em>' : '')
+    : ''
 
   return `
     <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
@@ -389,6 +458,7 @@ function markerPopupHtml(point) {
     Crown: ${escapeHtml(point.crown.toFixed(1))} m
     ${riskLine}
     ${stageLine}
+    ${sourceLine}
   `
 }
 
@@ -407,6 +477,11 @@ function makeTreeMarker(point) {
 
   if (point.risk != null && point.risk >= 0.5) {
     el.classList.add('map-tree-marker-risk')
+  }
+
+  if (point.cecid_source) {
+    el.classList.add('map-tree-marker-cecid-source')
+    el.title = `${point.cecid_source_label || 'Cecid soil source'}${point.cecid_source_assumed ? ' (assumed)' : ''}`
   }
 
   return el
@@ -498,6 +573,48 @@ function statusZoneGeojson(zones) {
   }
 }
 
+function cecidZoneGeojson(weedZones, legacyZones) {
+  const weedFeatures = (weedZones || [])
+    .map((zone) => {
+      const ring = closedRing(zone.coordinates)
+      if (ring.length < 4) return null
+      return {
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ring] },
+        properties: {
+          id: zone.id,
+          label: zone.label,
+          density: zone.density || 'moderate',
+          tree_count: zone.tree_count ?? 0,
+          legacy: false,
+          assumption: 'Adult shelter and short-hop relay only; weeds are not Cecid sources or hosts',
+        },
+      }
+    })
+    .filter(Boolean)
+  const legacyFeatures = (legacyZones || [])
+    .map((zone) => {
+      const ring = closedRing(zone.coordinates)
+      if (ring.length < 4) return null
+      return {
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ring] },
+        properties: {
+          id: zone.id,
+          label: zone.label || 'Legacy Cecid emergence assumption',
+          pressure: zone.pressure || 'medium',
+          legacy: true,
+          assumption: 'Read-only historical source assumption; not converted to weed habitat',
+        },
+      }
+    })
+    .filter(Boolean)
+  return {
+    type: 'FeatureCollection',
+    features: [...weedFeatures, ...legacyFeatures],
+  }
+}
+
 function stageDraftGeojson(draft) {
   const coords = Array.isArray(draft) ? draft : []
   const features = coords.map((coord, index) => ({
@@ -542,6 +659,20 @@ function ensureStatusZoneLayers(map) {
   }
   if (!map.getLayer('status-zone-draft-line')) map.addLayer(STATUS_DRAFT_LINE_LAYER)
   if (!map.getLayer('status-zone-draft-vertices')) map.addLayer(STATUS_DRAFT_VERTEX_LAYER)
+}
+
+function ensureCecidZoneLayers(map) {
+  if (!map.getSource('cecid-zones-src')) {
+    map.addSource('cecid-zones-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('cecid-zones-fill')) map.addLayer(CECID_ZONE_FILL_LAYER)
+  if (!map.getLayer('cecid-zones-line')) map.addLayer(CECID_ZONE_LINE_LAYER)
+
+  if (!map.getSource('cecid-zone-draft-src')) {
+    map.addSource('cecid-zone-draft-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('cecid-zone-draft-line')) map.addLayer(CECID_DRAFT_LINE_LAYER)
+  if (!map.getLayer('cecid-zone-draft-vertices')) map.addLayer(CECID_DRAFT_VERTEX_LAYER)
 }
 
 async function resolveOverlayImageUrl(url) {
@@ -667,6 +798,12 @@ export default function RiskMap({
   statusZoneDrawing = false,
   statusZoneDraft = [],
   onStatusZoneMapClick,
+  cecidWeedZones = [],
+  legacyCecidEmergenceZones = [],
+  cecidZoneDrawing = false,
+  cecidZoneDraft = [],
+  onCecidZoneMapClick,
+  zoneVisibility = { stage: true, status: true, cecid: true },
   orthophotoOverlay = null,
   viewportKey = 'default',
   fitToOrthophoto = true,
@@ -716,6 +853,7 @@ export default function RiskMap({
       map.addLayer(HEATMAP_LAYER)
       ensureStageZoneLayers(map)
       ensureStatusZoneLayers(map)
+      ensureCecidZoneLayers(map)
     })
 
     const resizeObserver = new ResizeObserver(() => map.resize())
@@ -830,6 +968,50 @@ export default function RiskMap({
     return () => map.off('load', updateStatusZones)
   }, [statusZones, statusZoneDraft])
 
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+
+    const updateCecidZones = () => {
+      ensureCecidZoneLayers(map)
+      map.getSource('cecid-zones-src')?.setData(cecidZoneGeojson(
+        cecidWeedZones,
+        legacyCecidEmergenceZones,
+      ))
+      map.getSource('cecid-zone-draft-src')?.setData(stageDraftGeojson(cecidZoneDraft))
+      if (map.getLayer('cecid-zones-fill')) map.moveLayer('cecid-zones-fill')
+      if (map.getLayer('cecid-zones-line')) map.moveLayer('cecid-zones-line')
+      if (map.getLayer('cecid-zone-draft-line')) map.moveLayer('cecid-zone-draft-line')
+      if (map.getLayer('cecid-zone-draft-vertices')) map.moveLayer('cecid-zone-draft-vertices')
+    }
+
+    if (map.loaded()) updateCecidZones()
+    else map.once('load', updateCecidZones)
+    return () => map.off('load', updateCecidZones)
+  }, [cecidWeedZones, legacyCecidEmergenceZones, cecidZoneDraft])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+    const applyVisibility = () => {
+      const groups = {
+        stage: ['stage-zones-fill', 'stage-zones-line'],
+        status: ['status-zones-fill', 'status-zones-line'],
+        cecid: ['cecid-zones-fill', 'cecid-zones-line'],
+      }
+      Object.entries(groups).forEach(([type, layers]) => {
+        layers.forEach((layer) => {
+          if (map.getLayer(layer)) {
+            map.setLayoutProperty(layer, 'visibility', zoneVisibility[type] === false ? 'none' : 'visible')
+          }
+        })
+      })
+    }
+    if (map.loaded()) applyVisibility()
+    else map.once('load', applyVisibility)
+    return () => map.off('load', applyVisibility)
+  }, [zoneVisibility])
+
   // ── Status zone drawing interaction ──────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
@@ -851,6 +1033,24 @@ export default function RiskMap({
       canvas.style.cursor = previousCursor
     }
   }, [statusZoneDrawing, onStatusZoneMapClick])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !cecidZoneDrawing) return undefined
+    const handleMapClick = (event) => {
+      onCecidZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
+    }
+    const canvas = map.getCanvas()
+    const previousCursor = canvas.style.cursor
+    canvas.style.cursor = 'crosshair'
+    map.doubleClickZoom.disable()
+    map.on('click', handleMapClick)
+    return () => {
+      map.off('click', handleMapClick)
+      map.doubleClickZoom.enable()
+      canvas.style.cursor = previousCursor
+    }
+  }, [cecidZoneDrawing, onCecidZoneMapClick])
 
   useEffect(() => {
     const map = mapRef.current

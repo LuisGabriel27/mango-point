@@ -67,17 +67,47 @@ N_TIMESTEPS          = FORECAST_HOURS // TIMESTEP_HOURS
 
 # —— Cecid Fly (Mango Gall Midge) ——
 # Biological calibration from 2022-2025 data: episodic emergence in March-June
-CECID_WIND_THRESHOLD_MS    = 3.0      # m/s – gate closes above this
+CECID_WIND_THRESHOLD_MS    = 3.0      # legacy override name; wind is now a soft score
 CECID_BASE_DISPERSAL_PROB  = 0.12     # base per-neighbour probability at 1-cell distance
 CECID_DISTANCE_DECAY       = 0.6      # multiplicative decay per additional cell distance
 CECID_MAX_RANGE_CELLS      = 3        # maximum dispersal range in cells
 
-# Rainfall-triggered emergence parameters (larvae emerge from soil after rain)
-CECID_RAINFALL_THRESHOLD_MM  = 5.0    # 24-hour accumulated rainfall must exceed this
-CECID_RAIN_HISTORY_HOURS     = 24     # hours to accumulate rainfall
-CECID_NO_CURRENT_RAIN        = True   # current timestep must be dry (emergence during drying period)
+# Rainfall-triggered emergence parameters (larvae emerge from soil after rain).
+# The rainfall value is a wetness sensitivity scale, not a hard gate.
+CECID_RAINFALL_THRESHOLD_MM  = 5.0
+CECID_RAIN_HISTORY_HOURS     = 72
+CECID_NO_CURRENT_RAIN        = True   # legacy compatibility; drying is now a soft score
 
-# Crepuscular windows (hour of day, 24-h format)
+# Cecid suitability and source-cohort parameters.  The 2/5/8 mm sensitivity
+# presets are model scales, not hard biological thresholds.  Reassigning the
+# legacy names remain available for older modules.
+CECID_MAX_RANGE_M = 15.0
+CECID_SOIL_WETNESS_HALF_LIFE_HOURS = 48.0
+CECID_FAVORABLE_THRESHOLD = 0.25
+CECID_DRY_RAIN_MAX_MM = 0.1
+CECID_DRYING_ZERO_MM = 1.0
+CECID_WIND_SCORE_SCALE_MS = 4.0
+CECID_SOURCE_WETTING_RAIN_MM = 0.1
+CECID_ADULT_HALF_LIFE_HOURS = 24.0
+CECID_ADULT_MAX_AGE_HOURS = 72
+CECID_WEED_RELAY_SPACING_M = 10.0
+CECID_WEED_RELAY_EFFICIENCY = {
+    "sparse": 0.60,
+    "moderate": 0.80,
+    "dense": 1.00,
+}
+CECID_GENTLE_WIND_MIN_KMH = 1.0
+CECID_GENTLE_WIND_MAX_KMH = 5.0
+CECID_WIND_DIRECTION_MAX_ASSIST = 0.35
+CECID_HIGH_WIND_DECAY_KMH = 3.0
+CECID_SOURCE_PRESSURE_MULTIPLIERS = {
+    "low": 0.5,
+    "medium": 1.0,
+    "high": 1.5,
+}
+
+# Crepuscular windows (hour of day, 24-h format). These remain fallbacks for
+# callers that do not provide a dated timestamp; simulations use solar time.
 DAWN_START  = 5
 DAWN_END    = 7
 DUSK_START  = 17

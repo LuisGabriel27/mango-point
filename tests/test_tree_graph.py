@@ -727,8 +727,8 @@ class TestCecidModifier:
 
     def test_rainfall_boost_higher_rain_increases_modifier(self):
         """More accumulated rainfall must increase the Cecid modifier."""
-        rain_low  = _sufficient_rain_history(6.0)    # small excess over 5 mm threshold
-        rain_high = _sufficient_rain_history(24.0)   # large excess → capped at 1.5
+        rain_low  = _sufficient_rain_history(2.0)
+        rain_high = _sufficient_rain_history(8.0)
         mod_low  = cecid_spread_modifier(wind_speed_ms=1.0, rainfall_history=rain_low)
         mod_high = cecid_spread_modifier(wind_speed_ms=1.0, rainfall_history=rain_high)
         assert mod_high > mod_low, (
@@ -952,13 +952,13 @@ class TestModifiersIntegration:
         risk_low_rain = self._run_one_step_risk(
             _cecid_weather(), g,
             OrchardStage.FRUITLET,
-            initial_rainfall_history=_sufficient_rain_history(6.0),
+            initial_rainfall_history=_sufficient_rain_history(2.0),
             pest_type="cecid",
         )
         risk_high_rain = self._run_one_step_risk(
             _cecid_weather(), g,
             OrchardStage.FRUITLET,
-            initial_rainfall_history=_sufficient_rain_history(24.0),
+            initial_rainfall_history=_sufficient_rain_history(8.0),
             pest_type="cecid",
         )
         assert risk_high_rain > risk_low_rain, (

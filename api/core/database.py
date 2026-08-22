@@ -4,7 +4,9 @@ MangoPoint API — Database Connection
 SQLAlchemy async engine and session management for PostgreSQL + PostGIS.
 """
 
+import json
 import logging
+from pathlib import Path
 from typing import AsyncGenerator
 
 import asyncpg
@@ -17,6 +19,9 @@ from sqlalchemy.orm import declarative_base
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ORCHARD_GEOJSON = PROJECT_ROOT / "data" / "trees.geojson"
 
 DATABASE_UNAVAILABLE_DETAIL = "Database unavailable. Check PostgreSQL configuration and credentials."
 DATABASE_ERROR_TYPES = (
@@ -214,6 +219,50 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
                 logger.warning(f"Database session close failed: {close_error}")
 
 
+async def _ensure_default_orchard(conn) -> None:
+    """Register the bundled BPI map once without overwriting managed data."""
+    exists = await conn.scalar(text(
+        "SELECT 1 FROM orchard WHERE orchard_uid = 'default-orchard' LIMIT 1"
+    ))
+    if exists or not DEFAULT_ORCHARD_GEOJSON.exists():
+        return
+
+    try:
+        geojson = json.loads(DEFAULT_ORCHARD_GEOJSON.read_text(encoding="utf-8"))
+        points = []
+        for feature in geojson.get("features", []) or []:
+            geometry = feature.get("geometry", {}) or {}
+            if geometry.get("type") != "Point":
+                continue
+            coordinates = geometry.get("coordinates") or []
+            if len(coordinates) >= 2:
+                points.append((float(coordinates[0]), float(coordinates[1])))
+        centroid_lon = sum(point[0] for point in points) / len(points) if points else None
+        centroid_lat = sum(point[1] for point in points) / len(points) if points else None
+        await conn.execute(text("""
+            INSERT INTO orchard (
+                orchard_uid, name, location, tree_count, geojson,
+                cecid_weed_zones, centroid_lon, centroid_lat,
+                is_active, monitoring_enabled, orchard_stage,
+                days_since_flowering, monitored_pest_types
+            ) VALUES (
+                'default-orchard', 'Default Orchard (BPI)',
+                'Guimaras, Philippines', :tree_count, CAST(:geojson AS JSONB),
+                '[]'::jsonb, :centroid_lon, :centroid_lat,
+                TRUE, TRUE, 'mature', 60, '["cecid", "fruitfly"]'::jsonb
+            )
+            ON CONFLICT (orchard_uid) DO NOTHING
+        """), {
+            "tree_count": len(points),
+            "geojson": json.dumps(geojson),
+            "centroid_lon": centroid_lon,
+            "centroid_lat": centroid_lat,
+        })
+        logger.info("Registered bundled default-orchard with %d trees", len(points))
+    except Exception as exc:
+        logger.warning("Could not register bundled default-orchard: %s", exc)
+
+
 async def init_db():
     """Initialize database tables."""
     async with engine.begin() as conn:
@@ -236,6 +285,10 @@ async def init_db():
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS orchard_uid VARCHAR(100);"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS owner_name VARCHAR(200);"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS geojson JSONB;"))
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
+            "cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"
+        ))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS centroid_lon DOUBLE PRECISION;"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS centroid_lat DOUBLE PRECISION;"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS orthophoto_path VARCHAR(500);"))
@@ -261,6 +314,7 @@ async def init_db():
         await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);"))
+        await _ensure_default_orchard(conn)
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS treatment_applications JSONB;"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS simulation_mode VARCHAR(50) DEFAULT 'grid';"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS request_payload JSONB;"))

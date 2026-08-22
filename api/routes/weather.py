@@ -86,6 +86,8 @@ async def get_live_weather(
             location={"lat": lat, "lon": lon},
             cached=weather.get("cached", False),
             cache_expires_at=format_rfc3339(weather["cache_expires_at"]) if weather.get("cache_expires_at") else None,
+            provenance=weather.get("provenance"),
+            fallback_reason=weather.get("fallback_reason"),
         )
         
     except Exception as e:
@@ -132,7 +134,7 @@ async def get_weather_forecast(
         lon = settings.DEFAULT_LON
     
     try:
-        forecast = await weather_service.get_forecast(
+        bundle = await weather_service.get_forecast_bundle(
             lat=lat,
             lon=lon,
             hours=hours,
@@ -141,7 +143,9 @@ async def get_weather_forecast(
         return {
             "location": {"lat": lat, "lon": lon},
             "hours": hours,
-            "forecast": forecast,
+            "forecast": bundle["forecast"],
+            "antecedent": bundle["antecedent"],
+            "provenance": bundle["provenance"],
         }
         
     except Exception as e:

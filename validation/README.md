@@ -71,6 +71,12 @@ Use the normal fallback mode while developing or demoing. Use `--require-histori
 
 Use `--split-year YYYY` or `--test-years YYYY,YYYY` to create calibration and testing groups. Split runs now fit pest-specific risk-score calibration on the calibration group, preserve each case's `raw_predicted_risk`, then apply the frozen calibration before reporting testing metrics. Use `--no-calibration` to report raw simulator scores only, or `--calibrate` without a split for exploratory all-case calibration.
 
+Whenever Cecid cases are included, the CLI checks the uncalibrated Cecid scores
+before fitting calibration. It reports their count, unique values, and range,
+and fails the run if the scores are all zero or effectively constant. This
+guards against a weather/source gate that silently produces degenerate output;
+it does not turn monthly BPI aggregates into event-level validation evidence.
+
 The calibration layer is deliberately small: it fits a non-negative affine curve per pest type from simulated risk to BPI-normalized observed risk, then classifies calibrated scores with BPI-equivalent thresholds:
 
 - Fruit fly: CPTD 8 and 20 mapped to the 0-1 risk scale.
@@ -105,4 +111,4 @@ Summarize each manual validation round with accuracy, precision, recall, false a
 
 - The validation package now imports directly from `core` and `utils`.
 - Biological thresholds used by simulation come from `core/config.py`; BPI comparison thresholds come from `validation/historical_data.py`.
-- Without an hourly historical weather CSV and additional field trials, validation should be described as calibrated historical plausibility testing, not a final proof of forecasting accuracy.
+- Monthly BPI aggregates cannot establish event-level forecast accuracy. Without hourly field observations and additional trials, validation should be described as calibrated historical plausibility testing, not final proof of forecasting accuracy.

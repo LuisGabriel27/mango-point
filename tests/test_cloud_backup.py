@@ -49,6 +49,12 @@ async def test_remote_upsert_is_idempotent_and_serializes_json():
             "orchard_uid": "orchard-east",
             "name": "East Block",
             "geojson": {"type": "FeatureCollection", "features": []},
+            "cecid_weed_zones": [{
+                "id": "weeds-a",
+                "label": "Canal weeds",
+                "density": "moderate",
+                "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+            }],
             "tree_count": 0,
             "is_active": True,
             "monitoring_enabled": True,
@@ -61,6 +67,7 @@ async def test_remote_upsert_is_idempotent_and_serializes_json():
     assert 'INSERT INTO "orchard"' in sql
     assert 'ON CONFLICT ("orchard_id") DO UPDATE' in sql
     assert '"type": "FeatureCollection"' in params["v_geojson"]
+    assert '"density": "moderate"' in params["v_cecid_weed_zones"]
 
 
 def test_sync_migration_has_transactional_triggers_and_excludes_weather_cache():

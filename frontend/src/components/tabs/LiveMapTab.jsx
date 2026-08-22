@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import RiskMap from '../RiskMap'
 import MpSelect from '../MpSelect'
 
@@ -102,6 +102,18 @@ const RISK_LEGEND_ENTRIES = [
   { label: 'Low',      color: '#22c55e' },
 ]
 
+const ZONE_TYPE_OPTIONS = [
+  { value: 'stage', label: 'Stage' },
+  { value: 'status', label: 'Status' },
+  { value: 'cecid', label: 'Weed Habitat' },
+]
+
+const CECID_DENSITY_OPTIONS = [
+  { value: 'sparse', label: 'Sparse (0.60×)' },
+  { value: 'moderate', label: 'Moderate (0.80×)' },
+  { value: 'dense', label: 'Dense (1.00×)' },
+]
+
 export default function LiveMapTab({
   geojson,
   baseGeojson,
@@ -130,6 +142,27 @@ export default function LiveMapTab({
   onStatusZoneFinish,
   onStatusZoneUndoPoint,
   onStatusZoneMapClick,
+  cecidWeedZones = [],
+  legacyCecidEmergenceZones = [],
+  cecidZoneDrawing = false,
+  cecidZoneDensity = 'moderate',
+  cecidZoneLabel = 'Weed habitat',
+  cecidZoneDraft = [],
+  cecidZoneSaveState = 'idle',
+  cecidZoneSaveError = '',
+  onCecidZoneDensityChange,
+  onCecidZoneLabelChange,
+  onCecidZoneStart,
+  onCecidZoneCancel,
+  onCecidZoneFinish,
+  onCecidZoneUndoPoint,
+  onCecidZoneMapClick,
+  onCecidZoneUpdate,
+  onCecidZoneRedraw,
+  onCecidZoneDelete,
+  onCecidZoneClear,
+  onCecidZoneRetry,
+  selectedPestType = 'fruitfly',
   zoneHistory = [],
   onZoneUndoLast,
   onZoneClearAll,
@@ -141,6 +174,61 @@ export default function LiveMapTab({
   onTreeClick,
 }) {
   const [showGrid, setShowGrid] = useState(false)
+  const [showWeedManager, setShowWeedManager] = useState(false)
+  const [zoneEditorType, setZoneEditorType] = useState('stage')
+  const [zoneVisibility, setZoneVisibility] = useState({
+    stage: true,
+    status: true,
+    cecid: selectedPestType === 'cecid',
+  })
+
+  useEffect(() => {
+    setZoneVisibility((current) => ({
+      ...current,
+      cecid: selectedPestType === 'cecid',
+    }))
+  }, [selectedPestType])
+
+  const drawingByType = {
+    stage: stageZoneDrawing,
+    status: statusZoneDrawing,
+    cecid: cecidZoneDrawing,
+  }
+  const draftByType = {
+    stage: stageZoneDraft,
+    status: statusZoneDraft,
+    cecid: cecidZoneDraft,
+  }
+  const activeDrawing = Boolean(drawingByType[zoneEditorType])
+  const activeDraft = draftByType[zoneEditorType] || []
+  const cancelAllDrawings = () => {
+    onStageZoneCancel?.()
+    onStatusZoneCancel?.()
+    onCecidZoneCancel?.()
+  }
+  const handleZoneTypeChange = (value) => {
+    cancelAllDrawings()
+    setZoneEditorType(value)
+  }
+  const handleZoneDrawToggle = () => {
+    if (activeDrawing) {
+      cancelAllDrawings()
+      return
+    }
+    if (zoneEditorType === 'stage') onStageZoneStart?.()
+    else if (zoneEditorType === 'status') onStatusZoneStart?.()
+    else onCecidZoneStart?.()
+  }
+  const handleZoneUndoPoint = () => {
+    if (zoneEditorType === 'stage') onStageZoneUndoPoint?.()
+    else if (zoneEditorType === 'status') onStatusZoneUndoPoint?.()
+    else onCecidZoneUndoPoint?.()
+  }
+  const handleZoneFinish = () => {
+    if (zoneEditorType === 'stage') onStageZoneFinish?.()
+    else if (zoneEditorType === 'status') onStatusZoneFinish?.()
+    else onCecidZoneFinish?.()
+  }
 
   const titleText = currentFrame != null
     ? `Hour ${currentFrame.hour} — Spread Animation`
@@ -160,9 +248,215 @@ export default function LiveMapTab({
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
 
+        <div className="map-zone-tools map-zone-editor">
+          <span className="map-zone-editor-label">Zone Editor</span>
+          <div style={{ flexShrink: 0, width: 156 }}>
+            <MpSelect
+              small
+              className="map-zone-type-select"
+              value={zoneEditorType}
+              onChange={handleZoneTypeChange}
+              options={ZONE_TYPE_OPTIONS}
+            />
+          </div>
+          <button
+            type="button"
+            className={`btn btn-sm ${activeDrawing ? 'btn-success' : 'btn-light'}`}
+            onClick={handleZoneDrawToggle}
+          >
+            <i className="bi bi-bounding-box me-1" />
+            {activeDrawing ? 'Cancel' : 'Draw Zone'}
+          </button>
+
+          {activeDrawing && (
+            <>
+              {zoneEditorType === 'stage' && (
+                <div style={{ flexShrink: 0, width: 118 }}>
+                  <MpSelect small value={stageZoneStage} onChange={onStageZoneStageChange} options={stageOptions} />
+                </div>
+              )}
+              {zoneEditorType === 'status' && (
+                <div style={{ flexShrink: 0, width: 148 }}>
+                  <MpSelect small value={statusZoneStatus} onChange={onStatusZoneStatusChange} options={statusOptions} />
+                </div>
+              )}
+              {zoneEditorType === 'cecid' && (
+                <>
+                  <input
+                    className="form-control form-control-sm map-cecid-zone-label"
+                    value={cecidZoneLabel}
+                    aria-label="Weed habitat label"
+                    onChange={(event) => onCecidZoneLabelChange?.(event.target.value)}
+                    placeholder="Weed habitat label"
+                  />
+                  <div style={{ flexShrink: 0, width: 130 }}>
+                    <MpSelect
+                      small
+                      value={cecidZoneDensity}
+                      onChange={onCecidZoneDensityChange}
+                      options={CECID_DENSITY_OPTIONS}
+                    />
+                  </div>
+                  <span className="map-cecid-assumption" title="Weed relay coefficients require BPI field calibration">
+                    Research shelter/relay assumption. Weeds never create flies or another generation.
+                  </span>
+                </>
+              )}
+              <button
+                type="button"
+                className="btn btn-sm btn-light"
+                disabled={activeDraft.length === 0}
+                onClick={handleZoneUndoPoint}
+              >
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Point
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-success"
+                disabled={activeDraft.length < 3}
+                onClick={handleZoneFinish}
+              >
+                Save
+              </button>
+            </>
+          )}
+
+          {!activeDrawing && (
+            <>
+              <span className="map-zone-divider" />
+              {ZONE_TYPE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`btn btn-sm ${zoneVisibility[option.value] ? 'btn-light' : 'btn-outline-secondary'}`}
+                  onClick={() => setZoneVisibility((current) => ({
+                    ...current,
+                    [option.value]: !current[option.value],
+                  }))}
+                  title={`Toggle ${option.label} zones`}
+                >
+                  <i className={`bi ${zoneVisibility[option.value] ? 'bi-eye' : 'bi-eye-slash'} me-1`} />
+                  {option.value === 'cecid' ? 'Weeds' : option.label}
+                </button>
+              ))}
+              {zoneEditorType === 'cecid' && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${showWeedManager ? 'btn-success' : 'btn-light'}`}
+                  onClick={() => setShowWeedManager((current) => !current)}
+                >
+                  <i className="bi bi-list-ul me-1" />
+                  {cecidWeedZones.length} habitat{cecidWeedZones.length === 1 ? '' : 's'}
+                </button>
+              )}
+            </>
+          )}
+
+          {!activeDrawing && cecidZoneSaveState !== 'idle' && (
+            <span
+              className={`badge ${cecidZoneSaveState === 'error' ? 'text-bg-danger' : cecidZoneSaveState === 'saved' ? 'text-bg-success' : 'text-bg-light text-dark'}`}
+              title={cecidZoneSaveError || 'Weed habitat persistence status'}
+            >
+              {cecidZoneSaveState === 'saving' && <span className="spinner-border spinner-border-sm me-1" />}
+              {cecidZoneSaveState === 'saving' ? 'Saving' : cecidZoneSaveState === 'saved' ? 'Saved' : 'Save error'}
+            </span>
+          )}
+          {!activeDrawing && cecidZoneSaveState === 'error' && (
+            <button type="button" className="btn btn-sm btn-warning" onClick={onCecidZoneRetry}>
+              Retry
+            </button>
+          )}
+
+          {!activeDrawing && zoneHistory.length > 0 && (
+            <>
+              <span className="map-zone-divider" />
+              <button type="button" className="btn btn-sm btn-light" onClick={onZoneUndoLast}>
+                <i className="bi bi-arrow-counterclockwise me-1" />
+                Undo Zone
+              </button>
+              <button type="button" className="btn btn-sm btn-light" onClick={onZoneClearAll}>
+                Clear All
+              </button>
+            </>
+          )}
+        </div>
+
+        {showWeedManager && zoneEditorType === 'cecid' && !activeDrawing && (
+          <div className="map-weed-zone-manager">
+            <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+              <div>
+                <div className="fw-bold small"><i className="bi bi-flower2 me-1" />Weed habitats</div>
+                <div className="text-muted" style={{ fontSize: '.68rem' }}>
+                  Persistent orchard shelter and one-hop relay assumptions.
+                </div>
+              </div>
+              {cecidWeedZones.length > 0 && (
+                <button type="button" className="btn btn-sm btn-outline-danger" onClick={onCecidZoneClear}>
+                  Clear all
+                </button>
+              )}
+            </div>
+            {cecidWeedZones.length === 0 ? (
+              <div className="text-muted small">No weed habitats saved. Use Draw Zone to add one.</div>
+            ) : (
+              <div className="d-flex flex-column gap-2">
+                {cecidWeedZones.map((zone) => (
+                  <div className="border rounded p-2" key={`${zone.id}-${zone.label}`}>
+                    <div className="d-flex gap-2 align-items-center">
+                      <input
+                        className="form-control form-control-sm"
+                        defaultValue={zone.label}
+                        aria-label={`Label for ${zone.label}`}
+                        onBlur={(event) => {
+                          const label = event.target.value.trim() || zone.label
+                          if (label !== zone.label) onCecidZoneUpdate?.(zone.id, { label })
+                        }}
+                      />
+                      <div style={{ width: 132, flexShrink: 0 }}>
+                        <MpSelect
+                          small
+                          value={zone.density}
+                          onChange={(density) => onCecidZoneUpdate?.(zone.id, { density })}
+                          options={CECID_DENSITY_OPTIONS}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-success"
+                        title={`Redraw ${zone.label}`}
+                        onClick={() => onCecidZoneRedraw?.(zone.id)}
+                      >
+                        <i className="bi bi-pencil" />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-danger"
+                        title={`Delete ${zone.label}`}
+                        onClick={() => onCecidZoneDelete?.(zone.id)}
+                      >
+                        <i className="bi bi-trash" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {legacyCecidEmergenceZones.length > 0 && (
+              <div className="alert alert-secondary py-1 px-2 mt-2 mb-0" style={{ fontSize: '.69rem' }}>
+                {legacyCecidEmergenceZones.length} legacy emergence zone{legacyCecidEmergenceZones.length === 1 ? '' : 's'} shown read-only for historical replay. They are not converted to weeds.
+              </div>
+            )}
+            {cecidZoneSaveState === 'error' && (
+              <div className="text-danger mt-2" style={{ fontSize: '.69rem' }}>{cecidZoneSaveError}</div>
+            )}
+          </div>
+        )}
+
         {/* Zone tools — Stage Zone + Status Zone side by side */}
+        {false && (
         <div className="map-zone-tools">
-          {/* Stage Zone */}
+          {/* Legacy separate controls retained only for source compatibility. */}
           <button
             type="button"
             className={`btn btn-sm ${stageZoneDrawing ? 'btn-success' : 'btn-light'}`}
@@ -268,6 +562,7 @@ export default function LiveMapTab({
             </>
           )}
         </div>
+        )}
 
         {titleText && (
           <div className="map-animation-title">{titleText}</div>
@@ -289,6 +584,12 @@ export default function LiveMapTab({
             statusZoneDrawing={statusZoneDrawing}
             statusZoneDraft={statusZoneDraft}
             onStatusZoneMapClick={onStatusZoneMapClick}
+            cecidWeedZones={cecidWeedZones}
+            legacyCecidEmergenceZones={legacyCecidEmergenceZones}
+            cecidZoneDrawing={cecidZoneDrawing}
+            cecidZoneDraft={cecidZoneDraft}
+            onCecidZoneMapClick={onCecidZoneMapClick}
+            zoneVisibility={zoneVisibility}
             orthophotoOverlay={orthophotoOverlay}
             viewportKey={viewportKey}
             fitToOrthophoto={fitToOrthophoto}

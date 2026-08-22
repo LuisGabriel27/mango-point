@@ -20,6 +20,7 @@ import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
@@ -108,15 +109,13 @@ class WeatherTimeSeries:
         """
         import requests
 
-        forecast_days = max(1, -(-hours // 24))  # ceil division
-
         params = {
             "latitude":       lat,
             "longitude":      lon,
             "hourly":         "temperature_2m,wind_speed_10m,wind_direction_10m,precipitation",
             "wind_speed_unit": "ms",
-            "timezone":       "auto",
-            "forecast_days":  min(forecast_days, 16),
+            "timezone":       "Asia/Manila",
+            "forecast_hours": min(int(hours), 168),
         }
 
         logger.info(
@@ -141,14 +140,26 @@ class WeatherTimeSeries:
         if not times_raw:
             raise RuntimeError("Open-Meteo returned empty hourly data")
 
-        # Build DataFrame (trim to requested hours)
-        n = min(hours, len(times_raw))
+        manila = ZoneInfo("Asia/Manila")
+        anchor = datetime.now(manila).replace(minute=0, second=0, microsecond=0)
+        parsed_times = [
+            datetime.fromisoformat(value).replace(tzinfo=manila)
+            if datetime.fromisoformat(value).tzinfo is None
+            else datetime.fromisoformat(value).astimezone(manila)
+            for value in times_raw
+        ]
+        selected_indices = [
+            index for index, value in enumerate(parsed_times) if value >= anchor
+        ][:hours]
+        n = len(selected_indices)
+        if n != hours:
+            raise RuntimeError(f"Open-Meteo returned {n} of {hours} anchored forecast hours")
         df = pd.DataFrame({
-            "datetime":       pd.to_datetime(times_raw[:n]),
-            "wind_speed_ms":  np.array(winds[:n], dtype=float),
-            "wind_dir_deg":   np.array(dirs[:n], dtype=float),
-            "temperature_c":  np.array(temps[:n], dtype=float),
-            "rainfall_mm":    np.array(precip[:n] if precip else [0.0] * n, dtype=float),
+            "datetime":       pd.to_datetime([parsed_times[i] for i in selected_indices]),
+            "wind_speed_ms":  np.array([winds[i] for i in selected_indices], dtype=float),
+            "wind_dir_deg":   np.array([dirs[i] for i in selected_indices], dtype=float),
+            "temperature_c":  np.array([temps[i] for i in selected_indices], dtype=float),
+            "rainfall_mm":    np.array([precip[i] if precip else 0.0 for i in selected_indices], dtype=float),
         })
 
         logger.info(

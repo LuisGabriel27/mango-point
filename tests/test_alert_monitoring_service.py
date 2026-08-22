@@ -52,10 +52,10 @@ async def test_scan_orchard_creates_gate_condition_alert(monkeypatch):
     service = AlertMonitoringService()
     db = _FakeDb()
 
-    async def fake_forecast(lat, lon, hours):
-        return [
+    async def fake_forecast_bundle(lat, lon, hours):
+        return {"antecedent": [], "provenance": {"source": "test"}, "forecast": [
             {
-                "datetime": "2026-04-28T09:00:00Z",
+                "datetime": "2026-04-28T09:00:00+08:00",
                 "hour": 9,
                 "wind_speed_ms": 2.0,
                 "wind_dir_deg": 90.0,
@@ -63,11 +63,11 @@ async def test_scan_orchard_creates_gate_condition_alert(monkeypatch):
                 "humidity": 75.0,
                 "rainfall_mm": 0.0,
             }
-        ]
+        ]}
 
     monkeypatch.setattr(
-        "api.services.alert_monitoring_service.weather_service.get_forecast",
-        fake_forecast,
+        "api.services.alert_monitoring_service.weather_service.get_forecast_bundle",
+        fake_forecast_bundle,
     )
 
     summary = await service.scan_orchard(
@@ -91,10 +91,10 @@ async def test_scan_orchard_updates_timestamp_without_alert_when_gate_closed(mon
     db = _FakeDb()
     orchard = _orchard(orchard_stage="fruitlet")
 
-    async def fake_forecast(lat, lon, hours):
-        return [
+    async def fake_forecast_bundle(lat, lon, hours):
+        return {"antecedent": [], "provenance": {"source": "test"}, "forecast": [
             {
-                "datetime": "2026-04-28T09:00:00Z",
+                "datetime": "2026-04-28T09:00:00+08:00",
                 "hour": 9,
                 "wind_speed_ms": 2.0,
                 "wind_dir_deg": 90.0,
@@ -102,11 +102,11 @@ async def test_scan_orchard_updates_timestamp_without_alert_when_gate_closed(mon
                 "humidity": 75.0,
                 "rainfall_mm": 0.0,
             }
-        ]
+        ]}
 
     monkeypatch.setattr(
-        "api.services.alert_monitoring_service.weather_service.get_forecast",
-        fake_forecast,
+        "api.services.alert_monitoring_service.weather_service.get_forecast_bundle",
+        fake_forecast_bundle,
     )
 
     summary = await service.scan_orchard(

@@ -272,6 +272,7 @@ def orchard_to_response(
         area_size=float(orchard.area_size) if orchard.area_size is not None else None,
         tree_count=orchard.tree_count or 0,
         geojson=orchard.geojson if include_geojson else None,
+        cecid_weed_zones=getattr(orchard, "cecid_weed_zones", None) or [],
         centroid_lon=orchard.centroid_lon,
         centroid_lat=orchard.centroid_lat,
         orthophoto_url=(
@@ -493,6 +494,9 @@ async def create_orchard(
             area_size=payload.area_size,
             tree_count=tree_count,
             geojson=payload.geojson,
+            cecid_weed_zones=[
+                zone.model_dump(mode="json") for zone in payload.cecid_weed_zones
+            ],
             centroid_lon=centroid_lon,
             centroid_lat=centroid_lat,
             description=payload.description,
@@ -746,6 +750,11 @@ async def update_orchard(
     try:
         orchard = await _get_orchard_or_404(db, orchard_id)
         updates = payload.model_dump(exclude_unset=True)
+
+        if "cecid_weed_zones" in updates and payload.cecid_weed_zones is not None:
+            updates["cecid_weed_zones"] = [
+                zone.model_dump(mode="json") for zone in payload.cecid_weed_zones
+            ]
 
         if "orchard_id" in updates and updates["orchard_id"]:
             new_uid = normalize_orchard_uid(updates.pop("orchard_id"))

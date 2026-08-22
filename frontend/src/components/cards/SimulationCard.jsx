@@ -1,6 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 import api, { apiErrorMessage } from '../../api'
+import {
+  buildGuidedBlocks,
+  normalizeAdvancedBlocks,
+  summarizeWeatherBlocks,
+} from '../../utils/weatherSchedule'
 
 const STAGE_OPTIONS = [
   { label: 'Dormant', value: 'dormant' },
@@ -157,16 +162,81 @@ function Slider({ id, label, iconName, min, max, step, value, marks, onChange })
   )
 }
 
+function CecidTimelineResult({ diagnostics }) {
+  if (!Array.isArray(diagnostics) || !diagnostics.length) return null
+
+  const favorableHours = diagnostics.filter((entry) => entry.status === 'favorable' || entry.favorable)
+  const limitedHours = diagnostics.filter((entry) => entry.status === 'limited')
+  const reachableHours = diagnostics.filter((entry) => Number(entry.reachable_tree_count ?? 0) > 0)
+  const maxRelays = Math.max(0, ...diagnostics.map((entry) => Number(entry.active_relay_count ?? 0)))
+  return (
+    <div className="border rounded p-2 mt-2" style={{ fontSize: '.78rem' }}>
+      <div className="d-flex align-items-center justify-content-between mb-1">
+        <strong><i className="bi bi-activity me-1" />Cecid gate timeline</strong>
+        <span className={`badge ${favorableHours.length ? 'text-bg-success' : 'text-bg-secondary'}`}>
+          {favorableHours.length} favorable hour{favorableHours.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div className="small text-muted mb-2">
+        {favorableHours.length
+          ? <>Favorable hours: {favorableHours.map((entry) => `${entry.step} (${String(entry.hour_of_day).padStart(2, '0')}:00)`).join(', ')}</>
+          : 'No hour reached favorable Cecid suitability in this run.'}
+        {limitedHours.length > 0 && <> Â· {limitedHours.length} twilight hour{limitedHours.length === 1 ? '' : 's'} limited by weather</>}
+        {reachableHours.length > 0 && <> Â· trees reachable in {reachableHours.length} hour{reachableHours.length === 1 ? '' : 's'}</>}
+        {maxRelays > 0 && <> Â· up to {maxRelays} active weed relay{maxRelays === 1 ? '' : 's'}</>}
+      </div>
+      <details>
+        <summary className="text-primary" style={{ cursor: 'pointer' }}>Show hourly gate details</summary>
+        <div className="table-responsive mt-1" style={{ maxHeight: 220 }}>
+          <table className="table table-sm mb-0" style={{ fontSize: '.7rem' }}>
+            <thead>
+              <tr><th>Hour</th><th>Local</th><th>Rain</th><th>Soil</th><th>Wind</th><th>Sources / cohorts / relays</th><th>Trees</th><th>Neighbor</th><th>Score</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {diagnostics.map((entry) => (
+                <tr key={`${entry.step}-${entry.datetime}`}>
+                  <td>{entry.step}</td>
+                  <td>{String(entry.hour_of_day).padStart(2, '0')}:00</td>
+                  <td>{Number(entry.rainfall_mm).toFixed(1)} mm/h</td>
+                  <td>{Number(entry.soil_wetness_mm ?? 0).toFixed(1)} mm</td>
+                  <td title={`Downwind ${Math.round(Number(entry.downwind_bearing_deg ?? 0))}°; edge direction factor ${Number(entry.directional_factor_min ?? 1).toFixed(2)}–${Number(entry.directional_factor_max ?? 1).toFixed(2)}`}>
+                    {Number(entry.wind_speed_ms ?? 0).toFixed(1)} m/s
+                    <br />{Number(entry.wind_speed_kmh ?? 0).toFixed(1)} km/h
+                  </td>
+                  <td title={JSON.stringify(entry.active_relay_density_counts ?? {})}>
+                    {Number(entry.active_source_count ?? 0)} / {Number(entry.active_cohort_count ?? 0)} / {Number(entry.active_relay_count ?? 0)}
+                  </td>
+                  <td>{Number(entry.reachable_tree_count ?? 0)}</td>
+                  <td>{Number(entry.neighbor_contribution ?? 0).toFixed(3)}</td>
+                  <td>{Math.round(Number(entry.suitability_score ?? 0) * 100)}%</td>
+                  <td title={[...(entry.hard_reasons || []), ...(entry.limiting_factors || [])].join('; ')}>
+                    {entry.status || (entry.gate_open ? 'Favorable' : 'Closed')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  )
+}
+
 export default function SimulationCard({
   orchardGeojson,
   orchardId,
   treeOverrides,
   treeStageOverrides,
   phenologyZones,
+  cecidWeedZones,
+  legacyCecidEmergenceZones,
+  onPestTypeChange,
   onClearTreeStageOverrides,
   onSimulationComplete,
   manualWeather,
   weatherOverrideActive,
+  weatherTimeline,
+  orchardCoordinates,
   suggestedParams,
   onClearSuggested,
   loadedParams,
@@ -186,12 +256,63 @@ export default function SimulationCard({
   const [running, setRunning] = useState(false)
   const [status, setStatus] = useState(null)
   const [prefixRain, setPrefixRain] = useState(null)
+  const [gateDiagnostics, setGateDiagnostics] = useState([])
+
+  useEffect(() => {
+    onPestTypeChange?.(pestType)
+  }, [onPestTypeChange, pestType])
 
   // Calibration overrides
   const [showCalibration, setShowCalibration] = useState(false)
   const [useObsSeeds, setUseObsSeeds] = useState(false)
   const [obsLookbackDays, setObsLookbackDays] = useState(30)
   const [sensitivity, setSensitivity] = useState('standard')
+
+  const timelineActive = Boolean(weatherOverrideActive && weatherTimeline?.enabled)
+  const timelineHours = Number.parseInt(simHours, 10)
+  const safeTimelineHours = Number.isFinite(timelineHours) ? timelineHours : 48
+  const timelineBlocks = useMemo(() => {
+    if (!timelineActive) return []
+    return weatherTimeline?.mode === 'advanced'
+      ? normalizeAdvancedBlocks(weatherTimeline?.advanced_blocks, safeTimelineHours)
+      : buildGuidedBlocks(weatherTimeline?.guided_phases, safeTimelineHours)
+  }, [safeTimelineHours, timelineActive, weatherTimeline?.advanced_blocks, weatherTimeline?.guided_phases, weatherTimeline?.mode])
+  const timelinePayloadBlocks = timelineBlocks.length
+    ? timelineBlocks
+    : [{
+      start_hour: 0,
+      end_hour: safeTimelineHours,
+      temperature_c: 30,
+      wind_speed_ms: 2,
+      wind_dir_deg: 90,
+      rainfall_mm: 0,
+    }]
+  const timelineSummary = useMemo(() => {
+    if (!timelineActive) return null
+    const threshold = SENSITIVITY_PRESETS[sensitivity]?.cecid_rainfall_threshold_mm ?? 5
+    return summarizeWeatherBlocks(
+      timelineBlocks,
+      safeTimelineHours,
+      weatherTimeline?.start_datetime,
+      threshold,
+      {
+        manual_soil_context: weatherTimeline?.manual_soil_context,
+        manual_weather_prefix_rain: Array.isArray(prefixRain) ? prefixRain : null,
+        latitude: orchardCoordinates?.lat,
+        longitude: orchardCoordinates?.lon,
+      },
+    )
+  }, [
+    orchardCoordinates?.lat,
+    orchardCoordinates?.lon,
+    prefixRain,
+    safeTimelineHours,
+    sensitivity,
+    timelineActive,
+    timelineBlocks,
+    weatherTimeline?.manual_soil_context,
+    weatherTimeline?.start_datetime,
+  ])
 
   // Apply suggested params from a weather forecast alert
   useEffect(() => {
@@ -253,14 +374,16 @@ export default function SimulationCard({
 
   const handleRun = async () => {
     setRunning(true)
+    setGateDiagnostics([])
     setStatus({ type: 'info', msg: 'Simulation in progress…' })
     try {
       const parsedHours = Number.parseInt(simHours, 10)
+      const requestedHours = Number.isFinite(parsedHours) ? parsedHours : 48
       const body = {
         pest_type: pestType,
         orchard_id: orchardId,
         orchard_geojson: orchardGeojson,
-        hours: Number.isFinite(parsedHours) ? parsedHours : 48,
+        hours: requestedHours,
         bagged_tree_ids: [],
         initial_infestation: [],
         treatment_applications: treatmentEnabled
@@ -282,10 +405,30 @@ export default function SimulationCard({
           use_observations_as_seeds: useObsSeeds,
           observations_lookback_days: obsLookbackDays,
           weather_override_active: weatherOverrideActive,
+          weather_timeline: timelineActive ? weatherTimeline : null,
           impact_assumptions: impact,
           phenology_zones: phenologyZones ?? [],
+          cecid_weed_zones: cecidWeedZones ?? [],
+          cecid_emergence_zones: legacyCecidEmergenceZones ?? [],
         },
       }
+      if (pestType === 'cecid') {
+        body.cecid_weed_zones = (cecidWeedZones ?? []).map((zone) => ({
+          id: zone.id,
+          label: zone.label,
+          density: zone.density,
+          coordinates: zone.coordinates,
+        }))
+        if (legacyCecidEmergenceZones?.length) {
+          body.cecid_emergence_zones = legacyCecidEmergenceZones.map((zone) => ({
+            id: zone.id,
+            label: zone.label,
+            pressure: zone.pressure,
+            coordinates: zone.coordinates,
+          }))
+        }
+      }
+      if (pestType === 'cecid') body.debug_gates = true
 
       if (neighborThreat > 0 && neighborDir) {
         body.neighbor_direction = neighborDir
@@ -296,14 +439,31 @@ export default function SimulationCard({
       }
 
       if (weatherOverrideActive) {
-        body.manual_weather = manualWeatherPayload(manualWeather)
-        if (manualWeather?.sim_datetime) {
-          body.manual_weather_start = manualWeather.sim_datetime
+        if (timelineActive) {
+          body.manual_weather_blocks = timelinePayloadBlocks
+          if (weatherTimeline?.manual_soil_context) {
+            body.manual_soil_context = weatherTimeline.manual_soil_context
+          }
+          if (weatherTimeline?.start_datetime) {
+            body.manual_weather_start = weatherTimeline.start_datetime
+          }
+        } else {
+          body.manual_weather = manualWeatherPayload(manualWeather)
+          if (manualWeather?.sim_datetime) {
+            body.manual_weather_start = manualWeather.sim_datetime
+          }
         }
       }
 
-      if (prefixRain != null && prefixRain > 0) {
+      if (Array.isArray(prefixRain) && prefixRain.length > 0) {
         body.manual_weather_prefix_rain = prefixRain
+      } else if (timelineActive && Number(prefixRain) > 0) {
+        body.manual_soil_context = {
+          preset: 'custom',
+          total_rain_mm: Number(prefixRain),
+          event_duration_hours: 1,
+          hours_since_rain_ended: 1,
+        }
       }
 
       if (treeOverrides && Object.keys(treeOverrides).length > 0) {
@@ -324,9 +484,12 @@ export default function SimulationCard({
       }
 
       const res = await api.runSimulation(body)
+      setGateDiagnostics(res.data.gate_diagnostics ?? [])
       const peakPct = res.data.peak_risk != null ? `${(res.data.peak_risk * 100).toFixed(0)}%` : '—'
       const nInfested = res.data.n_infested_final ?? 0
-      const weatherSrc = weatherOverrideActive ? 'manual weather' : 'live forecast'
+      const weatherSrc = timelineActive
+        ? 'weather timeline'
+        : weatherOverrideActive ? 'manual weather' : 'live forecast'
       const seedNote = useObsSeeds ? 'field observations' : 'auto seed'
       const sensitivityLabel = SENSITIVITY_PRESETS[sensitivity]?.label ?? 'Standard'
       setStatus({
@@ -443,7 +606,11 @@ export default function SimulationCard({
           </div>
         </div>
       )}
-      <small className="text-muted d-block mb-0">Pressure from unmanaged orchards (historical ~2× higher CPTD).</small>
+      <small className="text-muted d-block mb-0">
+        {pestType === 'cecid'
+          ? 'Adds risk only when a live soil-source cohort can reach a fruitlet tree during an eligible dawn/dusk hour.'
+          : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
+      </small>
 
       <SectionLabel iconName="shield-plus" text="Treatment Scenario" />
       <label className="sim-toggle-row mb-1" htmlFor="treatment-enabled">
@@ -492,6 +659,22 @@ export default function SimulationCard({
           { value: '168', label: '7 day' },
         ]}
       />
+
+      {timelineActive && timelineSummary && pestType === 'cecid' && (
+        <div className={`alert ${timelineSummary.favorable_hours > 0 && orchardStage === 'fruitlet' ? 'alert-success' : 'alert-warning'} py-2 px-2 mt-2 mb-0`} style={{ fontSize: '.76rem' }}>
+          <div className="fw-semibold mb-1"><i className="bi bi-activity me-1" />Cecid timeline checks</div>
+          <ul className="mb-0 ps-3">
+            {orchardStage !== 'fruitlet' && <li>Cecid Fly requires the Fruitlet orchard stage.</li>}
+            {!timelineSummary.reaches_rain_threshold && <li>Decayed soil wetness never reaches the selected {SENSITIVITY_PRESETS[sensitivity]?.cecid_rainfall_threshold_mm ?? 5} mm sensitivity scale.</li>}
+            {!timelineSummary.has_dry_crepuscular_window && <li>No dry solar dawn or dusk window is scheduled.</li>}
+            {timelineSummary.favorable_hours === 0 && timelineSummary.limited_hours > 0 && <li>Twilight windows exist, but rain, soil moisture, or wind keeps suitability below 25%.</li>}
+            {orchardStage === 'fruitlet' && timelineSummary.favorable_hours > 0 && (
+              <li>{timelineSummary.favorable_hours} hour(s) are favorable; moderate wind or drizzle reduces probability instead of hard-closing the model.</li>
+            )}
+            {timelineSummary.covered_hours < timelineSummary.hours && <li>Uncovered hours use default dry weather.</li>}
+          </ul>
+        </div>
+      )}
 
       {/* Impact assumptions */}
       <button
@@ -616,6 +799,9 @@ export default function SimulationCard({
         <div className={`alert alert-${status.type} py-2 mt-2`} style={{ fontSize: '.83rem' }}>
           {status.msg}
         </div>
+      )}
+      {pestType === 'cecid' && (
+        <CecidTimelineResult diagnostics={gateDiagnostics} />
       )}
     </CollapsibleCard>
   )

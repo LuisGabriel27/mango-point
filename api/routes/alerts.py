@@ -514,10 +514,17 @@ async def check_weather_forecast(
     lon = body.lon if body.lon is not None else settings.DEFAULT_LON
 
     try:
-        forecast = await weather_service.get_forecast(lat=lat, lon=lon, hours=48)
+        weather_bundle = await weather_service.get_forecast_bundle(
+            lat=lat, lon=lon, hours=48,
+        )
+        forecast = weather_bundle["forecast"]
+        antecedent = weather_bundle.get("antecedent", [])
+        provenance = weather_bundle.get("provenance", {})
     except Exception as exc:
         logger.warning("Weather forecast unavailable for alert check: %s", exc)
         forecast = []
+        antecedent = []
+        provenance = {"provider": "unavailable", "fallback_reason": str(exc)}
 
     alert_data_list = alert_service.check_weather_forecast_alerts(
         forecast=forecast,
@@ -526,6 +533,8 @@ async def check_weather_forecast(
         lon=lon,
         orchard_stage=body.orchard_stage,
         monitored_pest_types=body.monitored_pest_types,
+        antecedent=antecedent,
+        provenance=provenance,
     )
 
     created_responses: list[AlertResponse] = []

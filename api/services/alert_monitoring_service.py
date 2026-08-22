@@ -150,11 +150,14 @@ class AlertMonitoringService:
         if used_default_coordinates:
             lon, lat = settings.DEFAULT_LON, settings.DEFAULT_LAT
 
-        weather_data = await weather_service.get_forecast(
+        weather_bundle = await weather_service.get_forecast_bundle(
             lat=float(lat),
             lon=float(lon),
             hours=hours,
         )
+        weather_data = weather_bundle["forecast"]
+        antecedent = weather_bundle.get("antecedent", [])
+        provenance = weather_bundle.get("provenance", {})
 
         pest_types = self._monitored_pest_types(orchard.monitored_pest_types)
         stage = orchard.orchard_stage or "mature"
@@ -170,6 +173,7 @@ class AlertMonitoringService:
             "duplicates_skipped": 0,
             "gate_open": {},
             "alert_ids": [],
+            "weather_provenance": provenance,
         }
 
         for pest_type in pest_types:
@@ -178,8 +182,17 @@ class AlertMonitoringService:
                 pest_type=pest_type,
                 orchard_stage=stage,
                 sugar_index=sugar_index,
+                initial_rainfall_history=[
+                    float(entry.get("rainfall_mm", 0.0)) for entry in antecedent
+                ],
+                history_hours=72,
+                latitude=float(lat),
+                longitude=float(lon),
             )
-            open_count = sum(1 for entry in diagnostics if entry.get("gate_open"))
+            open_count = sum(
+                1 for entry in diagnostics
+                if entry.get("status") == "favorable"
+            )
             orchard_summary["gate_open"][pest_type] = open_count
 
             alerts = alert_service.check_gate_condition_alerts(

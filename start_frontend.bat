@@ -22,5 +22,12 @@ if not exist "node_modules" (
 npm run dev -- --host 0.0.0.0
 set EXIT_CODE=%ERRORLEVEL%
 
+if not "%EXIT_CODE%"=="0" (
+    echo [WARN] Vite could not start with its default config loader.
+    echo [INFO] Retrying with the compatibility config loader.
+    npm run dev -- --host 0.0.0.0 --configLoader runner
+    set EXIT_CODE=%ERRORLEVEL%
+)
+
 popd
 exit /b %EXIT_CODE%

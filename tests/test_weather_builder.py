@@ -28,6 +28,7 @@ from utils.weather_builder import (
     _series_from_blocks,
     _parse_rfc3339,
     build_weather_series,
+    build_manual_antecedent_weather,
     compute_gate_diagnostics,
     _WEATHER_DEFAULTS,
 )
@@ -283,11 +284,11 @@ class TestCecidAcceptance:
             orchard_stage="fruitlet",
         )
         # Hour 17 should be open: dusk + accumulated rain + dry now + low wind
-        hour_17 = diag[17]
-        assert hour_17["hour_of_day"] == 17
-        assert hour_17["rainfall_mm"] == 0.0
-        assert hour_17["rain_24h_sum"] >= 5.0
-        assert hour_17["gate_open"] is True
+        hour_18 = diag[18]
+        assert hour_18["hour_of_day"] == 18
+        assert hour_18["rainfall_mm"] == 0.0
+        assert hour_18["soil_wetness_mm"] >= 5.0
+        assert hour_18["status"] == "favorable"
 
     def test_diagnostics_show_gate_closed_during_rain(self):
         blocks = self._scenario_blocks()
@@ -313,6 +314,45 @@ class TestCecidAcceptance:
             orchard_stage="mature",  # cecid only opens in fruitlet
         )
         assert all(d["gate_open"] is False for d in diag)
+
+    def test_repeating_wet_dry_cycles_open_at_each_dusk(self):
+        blocks = []
+        for day in range(3):
+            offset = day * 24
+            blocks.extend([
+                {
+                    "start_hour": offset,
+                    "end_hour": offset + 8,
+                    "rainfall_mm": 2.5,
+                    "wind_speed_ms": 1.5,
+                    "temperature_c": 26.0,
+                },
+                {
+                    "start_hour": offset + 8,
+                    "end_hour": offset + 24,
+                    "rainfall_mm": 0.0,
+                    "wind_speed_ms": 1.5,
+                    "temperature_c": 28.0,
+                },
+            ])
+
+        weather = _series_from_blocks(blocks, hours=72, start_dt=_FIXED_START)
+        diag = compute_gate_diagnostics(weather, "cecid", "fruitlet")
+
+        assert all(diag[step]["status"] == "favorable" for step in (18, 42, 66))
+        assert diag[6]["rainfall_mm"] > 0
+
+    def test_local_start_keeps_crepuscular_hour(self):
+        weather = _series_from_blocks(
+            self._scenario_blocks(),
+            hours=24,
+            start_dt=datetime(2026, 4, 1, 5, 0, 0),
+        )
+        diag = compute_gate_diagnostics(weather, "cecid", "fruitlet")
+
+        # Simulation step 12 is 17:00 in the selected wall-clock schedule.
+        assert diag[13]["hour_of_day"] == 18
+        assert diag[13]["status"] == "favorable"
 
     def test_full_simulation_produces_infections(self):
         """End-to-end: tree_graph cecid sim with the wet-then-dry schedule
@@ -346,10 +386,10 @@ class TestCecidAcceptance:
 class TestDatetimeFormat:
     """Regression for the `+00:00Z` bug that broke pandas parsing."""
 
-    def test_naive_start_produces_trailing_z(self):
+    def test_naive_start_is_interpreted_as_guimaras_time(self):
         out = _series_from_constant({}, hours=2, start_dt=datetime(2026, 4, 1, 0, 0, 0))
-        assert out[0]["datetime"] == "2026-04-01T00:00:00Z"
-        assert out[1]["datetime"] == "2026-04-01T01:00:00Z"
+        assert out[0]["datetime"] == "2026-04-01T00:00:00+08:00"
+        assert out[1]["datetime"] == "2026-04-01T01:00:00+08:00"
 
     def test_aware_start_normalized_to_utc_z(self):
         """Aware datetimes are normalized to naive UTC so output is consistent.
@@ -360,14 +400,14 @@ class TestDatetimeFormat:
         """
         start = datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
         out = _series_from_constant({}, hours=1, start_dt=start)
-        assert out[0]["datetime"] == "2026-04-01T00:00:00Z"
+        assert out[0]["datetime"] == "2026-04-01T00:00:00+00:00"
 
     def test_aware_non_utc_start_converted_to_utc(self):
         """A +08:00 input should be shifted to its UTC equivalent."""
         ph = timezone(timedelta(hours=8))
         start = datetime(2026, 4, 1, 8, 0, 0, tzinfo=ph)  # 00:00 UTC
         out = _series_from_constant({}, hours=1, start_dt=start)
-        assert out[0]["datetime"] == "2026-04-01T00:00:00Z"
+        assert out[0]["datetime"] == "2026-04-01T08:00:00+08:00"
 
     def test_pandas_can_parse_output(self):
         out = _series_from_constant({}, hours=4, start_dt=datetime(2026, 4, 1, 10, 0, 0))
@@ -394,19 +434,19 @@ class TestResolveStartDt:
 
     def test_string_start_is_parsed(self):
         out = _series_from_constant({}, hours=1, start_dt="2026-04-01T05:00:00Z")
-        assert out[0]["datetime"] == "2026-04-01T05:00:00Z"
+        assert out[0]["datetime"] == "2026-04-01T05:00:00+00:00"
 
     def test_unparseable_string_falls_back_to_now(self):
         out = _series_from_constant({}, hours=1, start_dt="not-a-real-date")
         # Doesn't crash — datetime field is a valid Z-suffixed string
-        assert out[0]["datetime"].endswith("Z")
+        assert out[0]["datetime"].endswith("+08:00")
         assert "T" in out[0]["datetime"]
 
     def test_non_datetime_input_falls_back_to_now(self):
         # Numbers, dicts, lists — none are valid; must NOT raise
         for bad in (12345, {"foo": "bar"}, [1, 2, 3], object()):
             out = _series_from_constant({}, hours=1, start_dt=bad)
-            assert out[0]["datetime"].endswith("Z")
+            assert out[0]["datetime"].endswith("+08:00")
 
     def test_aware_start_no_pandas_mixed_tz_error(self):
         """Regression: blocks built from an aware start used to emit `+00:00`
@@ -418,12 +458,101 @@ class TestResolveStartDt:
         parsed = pd.to_datetime(df["datetime"])
         assert len(parsed) == 4
         # All entries normalized — same dtype, no mixed-tz error
-        assert all(s.endswith("Z") for s in df["datetime"])
+        assert all(s.endswith("+00:00") for s in df["datetime"])
 
 
 # ═════════════════════════════════════════════
 # 8. Legacy manual_weather schema validation
 # ═════════════════════════════════════════════
+class TestCecidSuitabilityRedesign:
+    def test_recently_wet_selector_expands_to_72_hour_context(self):
+        request = SimulationRequest(
+            pest_type="cecid",
+            orchard_geojson=_TREE_GEOJSON,
+            orchard_stage="fruitlet",
+            manual_weather={"rainfall_mm": 0.0},
+            manual_weather_start=datetime(2026, 4, 1, 12, 0),
+            manual_soil_context={"preset": "recently_wet"},
+        )
+        context = build_manual_antecedent_weather(request)
+        rainfall = [entry["rainfall_mm"] for entry in context]
+
+        assert len(context) == 72
+        assert sum(rainfall) == pytest.approx(8.0)
+        assert rainfall[-10:-6] == [2.0, 2.0, 2.0, 2.0]
+        assert rainfall[-6:] == [0.0] * 6
+        assert context[-1]["datetime"].endswith("+08:00")
+
+    def test_explicit_prefix_takes_precedence_over_soil_selector(self):
+        request = SimulationRequest(
+            pest_type="cecid",
+            orchard_geojson=_TREE_GEOJSON,
+            manual_weather={"rainfall_mm": 0.0},
+            manual_soil_context={"preset": "recently_wet"},
+            manual_weather_prefix_rain=[1.0, 2.0],
+        )
+        context = build_manual_antecedent_weather(request)
+        rainfall = [entry["rainfall_mm"] for entry in context]
+        assert rainfall[-2:] == [1.0, 2.0]
+        assert sum(rainfall) == pytest.approx(3.0)
+
+    def test_rain_60_hours_earlier_still_contributes_to_wetness(self):
+        context = [0.0] * 72
+        context[12] = 8.0
+        weather = [{
+            "datetime": "2026-04-01T18:00:00+08:00",
+            "temperature_c": 28.0,
+            "wind_speed_ms": 1.0,
+            "wind_dir_deg": 90.0,
+            "rainfall_mm": 0.0,
+        }]
+        diagnostic = compute_gate_diagnostics(
+            weather, "cecid", "fruitlet",
+            initial_rainfall_history=context,
+        )[0]
+        assert diagnostic["soil_wetness_mm"] > 3.0
+        assert diagnostic["moisture_score"] > 0.6
+        assert diagnostic["status"] == "favorable"
+
+    def test_soft_weather_limits_do_not_replace_hard_stage_and_solar_rules(self):
+        context = [0.0] * 68 + [2.0] * 4
+        base = {
+            "datetime": "2026-04-01T18:00:00+08:00",
+            "temperature_c": 28.0,
+            "wind_speed_ms": 1.0,
+            "wind_dir_deg": 90.0,
+            "rainfall_mm": 0.0,
+        }
+        favorable = compute_gate_diagnostics(
+            [base], "cecid", "fruitlet", initial_rainfall_history=context,
+        )[0]
+        drizzle = compute_gate_diagnostics(
+            [{**base, "rainfall_mm": 0.5, "wind_speed_ms": 3.0}],
+            "cecid", "fruitlet", initial_rainfall_history=context,
+        )[0]
+        heavy_rain = compute_gate_diagnostics(
+            [{**base, "rainfall_mm": 1.0}],
+            "cecid", "fruitlet", initial_rainfall_history=context,
+        )[0]
+        midday = compute_gate_diagnostics(
+            [{**base, "datetime": "2026-04-01T12:00:00+08:00"}],
+            "cecid", "fruitlet", initial_rainfall_history=context,
+        )[0]
+        wrong_stage = compute_gate_diagnostics(
+            [base], "cecid", "mature", initial_rainfall_history=context,
+        )[0]
+
+        assert favorable["status"] == "favorable"
+        assert drizzle["hard_open"] is True
+        assert 0.0 < drizzle["suitability_score"] < favorable["suitability_score"]
+        assert heavy_rain["status"] == "limited"
+        assert heavy_rain["drying_score"] == 0.0
+        assert midday["status"] == "closed"
+        assert "outside solar dawn/dusk window" in midday["hard_reasons"]
+        assert wrong_stage["status"] == "closed"
+        assert "fruitlet stage required" in wrong_stage["hard_reasons"]
+
+
 class TestManualWeatherSchemaValidation:
 
     def test_rejects_negative_wind_speed(self):

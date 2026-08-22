@@ -445,7 +445,11 @@ class AlertService:
         total_hours = len(diagnostics)
         open_entries = [
             entry for entry in diagnostics
-            if bool(entry.get("gate_open"))
+            if (
+                entry.get("status") == "favorable"
+                if "status" in entry
+                else bool(entry.get("gate_open"))
+            )
         ]
         if not open_entries:
             return []
@@ -506,6 +510,8 @@ class AlertService:
         lon: float,
         orchard_stage: Optional[str] = None,
         monitored_pest_types: Optional[List[str]] = None,
+        antecedent: Optional[List[Dict[str, Any]]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> List["AlertCreate"]:
         """
         Analyze a 48-hour weather forecast for upcoming rain events and return
@@ -530,6 +536,19 @@ class AlertService:
         monitored_pest_types : list[str], optional
             Pests to evaluate; defaults to ["cecid", "fruitfly"].
         """
+        return self._check_weather_suitability_alerts(
+            forecast=forecast,
+            antecedent=antecedent or [],
+            provenance=provenance or {},
+            orchard_id=orchard_id,
+            lat=lat,
+            lon=lon,
+            orchard_stage=orchard_stage,
+            monitored_pest_types=monitored_pest_types,
+        )
+
+        # Legacy rain-only implementation retained below for compatibility
+        # reference; execution uses the shared biological suitability model.
         RAIN_MM_THRESHOLD = 0.5  # mm/h minimum to flag as a rain event
 
         rain_hours = [
@@ -644,6 +663,89 @@ class AlertService:
                 orchard_id,
             )
 
+        return alerts
+
+    def _check_weather_suitability_alerts(
+        self,
+        forecast: List[Dict[str, Any]],
+        antecedent: List[Dict[str, Any]],
+        provenance: Dict[str, Any],
+        orchard_id: str,
+        lat: float,
+        lon: float,
+        orchard_stage: Optional[str],
+        monitored_pest_types: Optional[List[str]],
+    ) -> List[AlertCreate]:
+        """Create alerts from the same suitability diagnostics as simulations."""
+        from utils.weather_builder import compute_gate_diagnostics
+
+        if not forecast:
+            return []
+        stage = str(orchard_stage or "mature").strip().lower()
+        pest_types = monitored_pest_types or ["cecid", "fruitfly"]
+        stage_pest_map = {
+            "fruitlet": {"cecid"},
+            "mature": {"fruitfly"},
+            "dormant": set(),
+            "flowering": set(),
+        }
+        if stage in stage_pest_map:
+            pest_types = [pest for pest in pest_types if pest in stage_pest_map[stage]]
+
+        antecedent_rain = [
+            float(entry.get("rainfall_mm", 0.0)) for entry in antecedent
+        ]
+        provider = str(provenance.get("provider") or provenance.get("source") or "weather provider")
+        alerts: List[AlertCreate] = []
+        for pest in pest_types:
+            diagnostics = compute_gate_diagnostics(
+                weather_data=forecast,
+                pest_type=pest,
+                orchard_stage=stage,
+                initial_rainfall_history=antecedent_rain,
+                history_hours=72,
+                latitude=lat,
+                longitude=lon,
+            )
+            favorable = [entry for entry in diagnostics if entry.get("status") == "favorable"]
+            if not favorable:
+                continue
+
+            count = len(favorable)
+            fraction = count / max(1, len(diagnostics))
+            peak_score = max(float(entry.get("suitability_score", 0.0)) for entry in favorable)
+            pest_label = self._pest_label(pest)
+            first_window = self._gate_window_label(favorable[0])
+            severity = self._classify_gate_condition_severity(count, fraction)
+            suggested_params: Dict[str, Any] = {
+                "pest_type": pest,
+                "orchard_stage": stage,
+                "hours": min(168, len(forecast)),
+                "weather_mode": "live",
+                "_weather_provenance": provenance,
+            }
+            alerts.append(AlertCreate(
+                alert_id=f"alert_wx_{str(pest)[:6]}_{uuid.uuid4().hex[:10]}",
+                simulation_run_id=None,
+                severity=severity,
+                risk_value=round(peak_score, 4),
+                affected_cells=[],
+                affected_tree_ids=[],
+                orchard_id=orchard_id,
+                zone_name=f"{pest_label} weather forecast",
+                message=(
+                    f"{pest_label} conditions are favorable for {count} of "
+                    f"{len(diagnostics)} forecast hour(s). Expected Time: "
+                    f"{first_window}. Weather source: {provider}. Run the live "
+                    f"simulation for orchard '{orchard_id}' and inspect susceptible trees."
+                ),
+                centroid_lat=lat,
+                centroid_lon=lon,
+                recommended_actions=self._recommended_actions(
+                    alert_kind="condition", pest_type=pest,
+                ),
+                suggested_simulation_params=suggested_params,
+            ))
         return alerts
 
     def _classify_severity(

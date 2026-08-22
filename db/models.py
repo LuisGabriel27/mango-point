@@ -162,6 +162,9 @@ class Orchard(Base):
     area_size: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     tree_count: Mapped[int] = mapped_column(Integer, default=0)
     geojson: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    cecid_weed_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list,
+    )
     centroid_lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     centroid_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     orthophoto_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

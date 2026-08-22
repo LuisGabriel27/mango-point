@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from api.models.schemas import SimulationRequest
@@ -86,3 +89,81 @@ async def test_get_forecast_fallback_preserves_synthetic_source(monkeypatch):
 
     assert len(forecast) == 2
     assert {entry["source"] for entry in forecast} == {"synthetic"}
+
+
+@pytest.mark.asyncio
+async def test_forecast_bundle_requests_exact_anchored_window(monkeypatch):
+    service = WeatherService()
+    manila = ZoneInfo("Asia/Manila")
+    anchor = datetime(2026, 4, 1, 14, tzinfo=manila)
+    times = [
+        (anchor - timedelta(hours=72) + timedelta(hours=index)).strftime("%Y-%m-%dT%H:00")
+        for index in range(72 + 48)
+    ]
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            values = [0.0] * len(times)
+            return {"hourly": {
+                "time": times,
+                "temperature_2m": [28.0] * len(times),
+                "relative_humidity_2m": [75.0] * len(times),
+                "wind_speed_10m": [1.5] * len(times),
+                "wind_direction_10m": [90.0] * len(times),
+                "precipitation": values,
+            }}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            captured.update(params)
+            return FakeResponse()
+
+    monkeypatch.setattr("api.services.weather_service.httpx.AsyncClient", FakeClient)
+    bundle = await service._fetch_forecast_bundle_open_meteo(
+        lat=10.61, lon=122.59, hours=48, anchor=anchor,
+    )
+
+    assert captured["past_hours"] == 72
+    assert captured["forecast_hours"] == 48
+    assert captured["timezone"] == "Asia/Manila"
+    assert captured["latitude"] == 10.61
+    assert captured["longitude"] == 122.59
+    assert len(bundle["antecedent"]) == 72
+    assert len(bundle["forecast"]) == 48
+    assert bundle["forecast"][0]["datetime"] == "2026-04-01T14:00:00+08:00"
+    assert bundle["provenance"]["coordinates"] == {"lat": 10.61, "lon": 122.59}
+
+
+@pytest.mark.asyncio
+async def test_synthetic_bundle_is_deterministic_and_explains_failure(monkeypatch):
+    service = WeatherService()
+    anchor = datetime(2026, 4, 1, 14, tzinfo=ZoneInfo("Asia/Manila"))
+
+    async def fail_fetch(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(service, "_local_hour", lambda value=None: anchor)
+    monkeypatch.setattr(service, "_fetch_forecast_bundle_open_meteo", fail_fetch)
+    first = await service.get_forecast_bundle(10.61, 122.59, hours=72)
+    second = await service.get_forecast_bundle(10.61, 122.59, hours=72)
+
+    assert first["antecedent"] == second["antecedent"]
+    assert first["forecast"] == second["forecast"]
+    assert len(first["antecedent"]) == 72
+    assert len(first["forecast"]) == 72
+    assert first["provenance"]["source"] == "synthetic"
+    assert first["provenance"]["synthetic_seed"] is not None
+    assert "provider unavailable" in first["provenance"]["fallback_reason"]

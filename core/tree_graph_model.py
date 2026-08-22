@@ -126,7 +126,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -135,6 +135,7 @@ from core.config import (
     CECID_RAIN_HISTORY_HOURS,
     CECID_RAINFALL_THRESHOLD_MM,
     CECID_WIND_THRESHOLD_MS,
+    CECID_MAX_RANGE_M,
     DIRECTION_BEARING_MAP,
     FRUIT_FLY_DEFAULT_DAYS_FLOWERING,
     FRUIT_FLY_SUGAR_INDEX_GROWTH,
@@ -152,6 +153,12 @@ from core.config import (
     TG_MAX_NEIGHBOR_DIST_M,
     TG_WIND_BIAS,
     WIND_NEIGHBOR_BOOST,
+)
+from core.cecid_habitat import (
+    CecidHabitatNetwork,
+    CecidHabitatTracker,
+    cecid_wind_direction_factor,
+    cecid_wind_survival,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,6 +204,9 @@ class TreeNode:
     treatment_susceptibility_factor: float = 1.0
     treatment_source_factor: float = 1.0
     treatment_active: bool = False
+    cecid_source_pressure: float = 0.0
+    cecid_source_assumed: bool = False
+    cecid_source_label: Optional[str] = None
 
 
 @dataclass
@@ -460,6 +470,7 @@ def crown_spread_prob(
 def cecid_spread_modifier(
     wind_speed_ms: float,
     rainfall_history,
+    rainfall_mm: float = 0.0,
 ) -> float:
     """
     Combined Cecid Fly dispersal modifier (multiplicative factor on P_geom).
@@ -476,13 +487,32 @@ def cecid_spread_modifier(
 
     Returns  wind_mod × rain_factor  (≥ 0).
     """
-    wind_factor = max(0.0, 1.0 - wind_speed_ms / (CECID_WIND_THRESHOLD_MS * 2.0))
-    wind_mod = 0.5 + 0.5 * wind_factor
+    from core.config import (
+        CECID_DRYING_ZERO_MM,
+        CECID_DRY_RAIN_MAX_MM,
+        CECID_SOIL_WETNESS_HALF_LIFE_HOURS,
+    )
 
-    accumulated = sum(rainfall_history)
-    rain_factor = max(0.0, min(1.5, 1.0 + (accumulated - CECID_RAINFALL_THRESHOLD_MM) / 20.0))
-
-    return wind_mod * rain_factor
+    decay = 2.0 ** (-1.0 / CECID_SOIL_WETNESS_HALF_LIFE_HOURS)
+    wetness = 0.0
+    values = [float(value) for value in rainfall_history]
+    for rainfall in values:
+        wetness = wetness * decay + max(0.0, rainfall)
+    moisture = min(1.0, wetness / max(CECID_RAINFALL_THRESHOLD_MM, 1e-9))
+    current_rain = max(
+        0.0,
+        float(rainfall_mm),
+    )
+    if current_rain <= CECID_DRY_RAIN_MAX_MM:
+        drying = 1.0
+    elif current_rain >= CECID_DRYING_ZERO_MM:
+        drying = 0.0
+    else:
+        drying = (CECID_DRYING_ZERO_MM - current_rain) / (
+            CECID_DRYING_ZERO_MM - CECID_DRY_RAIN_MAX_MM
+        )
+    wind = cecid_wind_survival(wind_speed_ms)
+    return max(0.0, min(1.0, moisture * drying * wind))
 
 
 def fruitfly_spread_modifier(
@@ -619,7 +649,10 @@ class TreeGraphEngine:
         neighbor_threat: float = 0.0,
         neighbor_direction: Optional[str] = None,
         initial_rainfall_history: Optional[List[float]] = None,
+        cecid_antecedent_weather: Optional[List[Dict]] = None,
         stage_per_tree: Optional[List[OrchardStage]] = None,
+        cecid_source_pressures: Optional[Mapping[int, float]] = None,
+        cecid_habitat_network: Optional[CecidHabitatNetwork] = None,
     ) -> None:
         # Deep-copy node states so original graph is preserved
         from collections import deque
@@ -638,6 +671,9 @@ class TreeGraphEngine:
                 treatment_susceptibility_factor=n.treatment_susceptibility_factor,
                 treatment_source_factor=n.treatment_source_factor,
                 treatment_active=n.treatment_active,
+                cecid_source_pressure=n.cecid_source_pressure,
+                cecid_source_assumed=n.cecid_source_assumed,
+                cecid_source_label=n.cecid_source_label,
             )
             for n in graph.nodes
         ]
@@ -683,6 +719,81 @@ class TreeGraphEngine:
         else:
             for _ in range(CECID_RAIN_HISTORY_HOURS):
                 self.rainfall_history.append(0.0)
+
+        from core.biological_rules import CecidSourceCohortModel
+        self.cecid_source_pressures = (
+            None if cecid_source_pressures is None
+            else {int(key): float(value) for key, value in cecid_source_pressures.items()}
+        )
+        self.cecid_cohort_model = (
+            CecidSourceCohortModel(
+                self.cecid_source_pressures,
+                antecedent_rainfall=list(initial_rainfall_history or []),
+            )
+            if self.cecid_source_pressures is not None
+            else None
+        )
+        self.active_cecid_source_pressures: Optional[Dict[int, float]] = (
+            {} if self.cecid_cohort_model is not None else None
+        )
+        self.cecid_habitat_tracker = (
+            CecidHabitatTracker(cecid_habitat_network)
+            if cecid_habitat_network is not None else None
+        )
+        self.cecid_habitat_diagnostics: List[Dict[str, Any]] = []
+        if self.cecid_cohort_model is not None and cecid_antecedent_weather:
+            cecid_gate = next(
+                (gate for gate in self.gates if isinstance(gate, CecidFlyGate)),
+                None,
+            )
+            if cecid_gate is not None:
+                stage_for_gate = (
+                    cecid_gate.REQUIRED_STAGE
+                    if self.stage_per_tree is not None
+                    else self.orchard_stage
+                )
+                replay_history: deque = deque(
+                    [0.0] * CECID_RAIN_HISTORY_HOURS,
+                    maxlen=CECID_RAIN_HISTORY_HOURS,
+                )
+                replay_components: Dict[str, Dict[str, Any]] = {}
+
+                def antecedent_window_open(entry: Dict) -> bool:
+                    replay_history.append(float(entry.get("rainfall_mm", 0.0)))
+                    cecid_gate.set_time_context(entry.get("datetime"))
+                    components = cecid_gate.suitability_components(
+                        wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
+                        rainfall_mm=float(entry.get("rainfall_mm", 0.0)),
+                        rainfall_history=replay_history,
+                        orchard_stage=stage_for_gate,
+                        hour=int(entry.get("hour", 0)),
+                    )
+                    replay_components["current"] = components
+                    return bool(components["hard_open"])
+
+                def advance_antecedent_habitat(
+                    entry: Dict,
+                    active_cohorts: Dict[str, Dict[str, Any]],
+                    _window_open: bool,
+                ) -> None:
+                    if self.cecid_habitat_tracker is None:
+                        return
+                    components = replay_components.get("current", {})
+                    self.cecid_habitat_tracker.step(
+                        active_cohorts=active_cohorts,
+                        eligible=bool(
+                            components.get("hard_open")
+                            and float(components.get("suitability_score", 0.0)) > 0.0
+                        ),
+                        wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
+                        wind_from_deg=float(entry.get("wind_dir_deg", 0.0)),
+                    )
+
+                self.active_cecid_source_pressures = self.cecid_cohort_model.warm_up(
+                    cecid_antecedent_weather,
+                    antecedent_window_open,
+                    step_observer=advance_antecedent_habitat,
+                )
 
         self.lambda0 = lambda0
         self.alpha = alpha
@@ -758,6 +869,8 @@ class TreeGraphEngine:
             # biological_rules.py), so both modes use identical trigger logic.
             from core.biological_rules import CecidFlyGate, FruitFlyGate
             for gate in self.gates:
+                if hasattr(gate, "set_time_context"):
+                    gate.set_time_context(w.get("datetime"))
                 # When per-tree stages are set, the stage slot of is_open becomes
                 # a no-op (we feed it gate.REQUIRED_STAGE) so only environmental
                 # triggers gate the step; per-tree stage filters source trees.
@@ -766,6 +879,28 @@ class TreeGraphEngine:
                     if self.stage_per_tree is not None and gate.REQUIRED_STAGE is not None
                     else self.orchard_stage
                 )
+                if isinstance(gate, CecidFlyGate) and self.cecid_cohort_model is not None:
+                    components = gate.suitability_components(
+                        wind_speed_ms=wind_speed,
+                        rainfall_mm=current_rain,
+                        rainfall_history=self.rainfall_history,
+                        orchard_stage=stage_for_gate,
+                        hour=hour,
+                    )
+                    self.active_cecid_source_pressures = self.cecid_cohort_model.step(
+                        timestep=step,
+                        timestamp=w.get("datetime"),
+                        rainfall_mm=current_rain,
+                        emergence_window_open=bool(components["hard_open"]),
+                    )
+                    if self.cecid_habitat_tracker is not None:
+                        self._spread_cecid_habitat(
+                            gate=gate,
+                            step=step,
+                            weather=w,
+                            stage_for_gate=stage_for_gate,
+                        )
+                        continue
                 if not gate.is_open(
                     hour=hour,
                     wind_speed_ms=wind_speed,
@@ -777,7 +912,7 @@ class TreeGraphEngine:
                 ):
                     continue
                 if isinstance(gate, CecidFlyGate):
-                    self._spread_cecid(wind_speed, wind_dir_rad)
+                    self._spread_cecid(wind_speed, wind_dir_rad, gate=gate)
                 elif isinstance(gate, FruitFlyGate):
                     self._spread_fruitfly(wind_dir_rad, temperature)
                 else:
@@ -812,6 +947,94 @@ class TreeGraphEngine:
 
         result.graph = self.graph
         return result
+
+    @property
+    def cecid_cohort_events(self) -> List[Dict[str, Any]]:
+        return list(self.cecid_cohort_model.events) if self.cecid_cohort_model else []
+
+    def _spread_cecid_habitat(
+        self,
+        gate,
+        step: int,
+        weather: Dict[str, Any],
+        stage_for_gate: OrchardStage,
+    ) -> None:
+        """Apply the same source/weed/target relay model used by grid mode."""
+        if self.cecid_cohort_model is None or self.cecid_habitat_tracker is None:
+            return
+        components = gate.suitability_components(
+            wind_speed_ms=weather["wind_speed_ms"],
+            rainfall_mm=weather.get("rainfall_mm", 0.0),
+            rainfall_history=self.rainfall_history,
+            orchard_stage=stage_for_gate,
+            hour=weather["hour"],
+        )
+        eligible = bool(components["hard_open"] and components["suitability_score"] > 0.0)
+        contributions = self.cecid_habitat_tracker.step(
+            active_cohorts=self.cecid_cohort_model.active_cohorts(),
+            eligible=eligible,
+            wind_speed_ms=weather["wind_speed_ms"],
+            wind_from_deg=weather["wind_dir_deg"],
+        )
+
+        required_stage = int(OrchardStage.FRUITLET)
+        wind_neighbor = (
+            wind_neighbor_factor(weather["wind_dir_deg"], self.neighbor_bearing)
+            if self.neighbor_bearing is not None else 1.0
+        )
+        neighbor_total = 0.0
+        for target_key, arrivals in contributions.items():
+            target_index = int(target_key)
+            if not 0 <= target_index < len(self.graph.nodes):
+                continue
+            destination = self.graph.nodes[target_index]
+            if destination.state in (TreeState.INFESTED, TreeState.DEAD):
+                continue
+            if self.stage_per_tree is not None and self.stage_per_tree[target_index] != required_stage:
+                continue
+            for arrival in arrivals:
+                source_index = int(arrival["source"])
+                if not 0 <= source_index < len(self.graph.nodes):
+                    continue
+                source = self.graph.nodes[source_index]
+                active_pressure = max(0.0, float(arrival["cohort_pressure"]))
+                path_efficiency = max(0.0, float(arrival["path_efficiency"]))
+                probability = (
+                    gate.base_dispersal_prob
+                    * float(components["suitability_score"])
+                    * active_pressure
+                    * path_efficiency
+                    * source.treatment_source_factor
+                )
+                neighbor_boost = (
+                    self.per_tree_threats[target_index]
+                    * NEIGHBOR_THREAT_WEIGHT
+                    * wind_neighbor
+                    * float(components["suitability_score"])
+                    * min(1.0, active_pressure)
+                    * min(1.35, path_efficiency)
+                    * source.treatment_source_factor
+                )
+                probability += neighbor_boost
+                neighbor_total += neighbor_boost
+                if destination.state == TreeState.BAGGED:
+                    probability *= 1.0 - BAG_RESISTANCE
+                probability *= destination.treatment_susceptibility_factor
+                probability = max(0.0, min(1.0, probability))
+                destination.risk = 1.0 - (1.0 - destination.risk) * (1.0 - probability)
+
+        self.cecid_habitat_diagnostics.append({
+            "timestep": int(step),
+            "datetime": str(weather.get("datetime")) if weather.get("datetime") is not None else None,
+            "eligible": eligible,
+            "wind_speed_ms": float(weather["wind_speed_ms"]),
+            "wind_speed_kmh": float(weather["wind_speed_ms"]) * 3.6,
+            "wind_from_deg": float(weather["wind_dir_deg"]),
+            "downwind_bearing_deg": (float(weather["wind_dir_deg"]) + 180.0) % 360.0,
+            "wind_survival_score": float(components["wind_survival_score"]),
+            "neighbor_contribution": neighbor_total,
+            **self.cecid_habitat_tracker.last_diagnostics,
+        })
 
     # ── internal helpers ─────────────────────────────────────────
     def _accumulate_risks(
@@ -871,6 +1094,7 @@ class TreeGraphEngine:
         self,
         wind_speed_ms: float,
         wind_dir_rad: float,
+        gate=None,
     ) -> None:
         """
         Accumulate Cecid Fly spread with biological modifiers.
@@ -883,18 +1107,42 @@ class TreeGraphEngine:
         Contributions from multiple infested sources combine via
         union-of-independent-probabilities on node.risk.
         """
-        modifier = cecid_spread_modifier(wind_speed_ms, self.rainfall_history)
+        if gate is not None:
+            modifier = gate.suitability_components(
+                wind_speed_ms=wind_speed_ms,
+                rainfall_mm=float(self.rainfall_history[-1]) if self.rainfall_history else 0.0,
+                rainfall_history=self.rainfall_history,
+                orchard_stage=OrchardStage.FRUITLET,
+                hour=(
+                    gate.current_datetime.astimezone(gate.current_datetime.tzinfo).hour
+                    if getattr(gate, "current_datetime", None) is not None
+                    else 0
+                ),
+            )["suitability_score"]
+        else:
+            modifier = cecid_spread_modifier(wind_speed_ms, self.rainfall_history)
         required_stage_int = int(OrchardStage.FRUITLET)
 
-        for src_idx in self.graph.infested_indices():
+        if self.active_cecid_source_pressures is None:
+            source_items = [(idx, 1.0) for idx in self.graph.infested_indices()]
+        else:
+            source_items = list(self.active_cecid_source_pressures.items())
+
+        for src_idx, source_pressure in source_items:
+            if not (0 <= src_idx < len(self.graph.nodes)):
+                continue
             src = self.graph.nodes[src_idx]
             # Per-tree phenology: only FRUITLET trees can emit Cecid Fly dispersal.
             if (
+                self.active_cecid_source_pressures is None
+                and
                 self.stage_per_tree is not None
                 and self.stage_per_tree[src_idx] != required_stage_int
             ):
                 continue
             for edge in self.graph.neighbours(src_idx):
+                if edge.d_ij > CECID_MAX_RANGE_M:
+                    continue
                 dst = self.graph.nodes[edge.dst]
                 if dst.state in (TreeState.INFESTED, TreeState.DEAD):
                     continue
@@ -904,11 +1152,33 @@ class TreeGraphEngine:
                 ):
                     continue
 
+                direction_factor = cecid_wind_direction_factor(
+                    wind_speed_ms,
+                    math.degrees(wind_dir_rad),
+                    math.degrees(edge.bearing),
+                )
                 prob = crown_spread_prob(
                     edge, wind_dir_rad,
                     lambda0=self.lambda0, alpha=self.alpha,
-                    beta=self.beta, wind_bias=self.wind_bias, dt=TG_DT,
-                ) * modifier
+                    beta=self.beta, wind_bias=0.0, dt=TG_DT,
+                ) * modifier * direction_factor * max(0.0, float(source_pressure))
+                dst_threat = (
+                    self.per_tree_threats[edge.dst]
+                    if edge.dst < len(self.per_tree_threats) else 0.0
+                )
+                if dst_threat > 0.0:
+                    wind_neighbor = (
+                        wind_neighbor_factor(math.degrees(wind_dir_rad), self.neighbor_bearing)
+                        if self.neighbor_bearing is not None else 1.0
+                    )
+                    prob += (
+                        dst_threat
+                        * NEIGHBOR_THREAT_WEIGHT
+                        * wind_neighbor
+                        * modifier
+                        * min(1.0, max(0.0, float(source_pressure)))
+                        * direction_factor
+                    )
 
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE

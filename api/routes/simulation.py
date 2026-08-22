@@ -15,12 +15,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import extract, select
+from sqlalchemy import extract, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..models.schemas import SimulationRequest, SimulationResponse
-from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Pest
+from ..models.schemas import CecidWeedZone, SimulationRequest, SimulationResponse
+from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Orchard, Pest, Tree
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
@@ -88,6 +88,23 @@ def _feature_centroid(feature: Dict[str, Any]) -> Optional[Tuple[float, float]]:
         return None
 
     return None
+
+
+def _orchard_centroid(
+    orchard_geojson: Dict[str, Any],
+) -> Tuple[float, float]:
+    """Return the mean feature centroid as ``(lon, lat)``."""
+    centers = [
+        center
+        for feature in (orchard_geojson.get("features", []) if orchard_geojson else [])
+        if (center := _feature_centroid(feature)) is not None
+    ]
+    if not centers:
+        return float(settings.DEFAULT_LON), float(settings.DEFAULT_LAT)
+    return (
+        sum(center[0] for center in centers) / len(centers),
+        sum(center[1] for center in centers) / len(centers),
+    )
 
 
 def _tag_weather_source(
@@ -374,6 +391,8 @@ async def run_simulation(
     to model pest spread based on weather conditions.
     """
     try:
+        request = await _resolve_cecid_weed_zones(request, db)
+
         # Merge field observations into tree_overrides when requested
         if request.use_observations_as_seeds:
             request = await _apply_observation_seeds(request, db)
@@ -381,51 +400,51 @@ async def run_simulation(
         # Fetch weather data
         logger.info(f"Fetching weather forecast for simulation")
         
-        # Extract center point from GeoJSON for weather lookup
-        features = request.orchard_geojson.get("features", [])
-        if features:
-            geom_type = features[0].get("geometry", {}).get("type", "")
-            if geom_type == "Point":
-                # Point features: average all tree coordinates
-                lons, lats = [], []
-                for f in features:
-                    c = f.get("geometry", {}).get("coordinates", [0, 0])
-                    lons.append(c[0])
-                    lats.append(c[1])
-                lon = sum(lons) / len(lons)
-                lat = sum(lats) / len(lats)
-            else:
-                # Polygon features: use first coordinate ring
-                coords = features[0].get("geometry", {}).get("coordinates", [[[0, 0]]])
-                if coords and coords[0]:
-                    lon = coords[0][0][0]
-                    lat = coords[0][0][1]
-                else:
-                    lon, lat = settings.DEFAULT_LON, settings.DEFAULT_LAT
-        else:
-            lon, lat = settings.DEFAULT_LON, settings.DEFAULT_LAT
+        # Weather and solar timing use the selected orchard's centroid.
+        lon, lat = _orchard_centroid(request.orchard_geojson)
         
         # Get weather forecast — or use manual override if any of the
         # manual_weather* fields are populated (precedence: series > blocks > constant)
-        from utils.weather_builder import build_weather_series, compute_gate_diagnostics
+        from utils.weather_builder import (
+            build_manual_antecedent_weather,
+            build_weather_series,
+            compute_gate_diagnostics,
+        )
 
         manual_series = build_weather_series(request)
         if manual_series is not None:
             weather_source = "manual"
             weather_data = _tag_weather_source(manual_series, weather_source)
+            weather_context = build_manual_antecedent_weather(request) or []
+            weather_provenance = {
+                "provider": "manual",
+                "source": "manual",
+                "coordinates": {"lat": lat, "lon": lon},
+                "timezone": "Asia/Manila",
+                "anchor_time": weather_data[0].get("datetime") if weather_data else None,
+                "fetched_at": format_rfc3339(datetime.now(timezone.utc)),
+                "fallback_reason": None,
+                "synthetic_seed": None,
+            }
             logger.info("Using manual weather override for simulation")
         else:
-            weather_data = await weather_service.get_forecast(
+            weather_bundle = await weather_service.get_forecast_bundle(
                 lat=lat,
                 lon=lon,
                 hours=request.hours,
             )
+            weather_data = weather_bundle["forecast"]
+            weather_context = weather_bundle["antecedent"]
+            weather_provenance = weather_bundle["provenance"]
             weather_source = _weather_source_from_data(weather_data, default="open-meteo")
 
         # Run simulation
         result = await simulation_service.run_simulation(
             request=request,
             weather_data=weather_data,
+            weather_context=weather_context,
+            weather_provenance=weather_provenance,
+            orchard_coordinates={"lat": lat, "lon": lon},
         )
 
         gate_diagnostics = None
@@ -435,10 +454,39 @@ async def run_simulation(
                 pest_type=request.pest_type.value,
                 orchard_stage=request.orchard_stage.value,
                 sugar_index=result.metadata.sugar_index,
-                initial_rainfall_history=request.manual_weather_prefix_rain,
+                initial_rainfall_history=[
+                    float(entry.get("rainfall_mm", 0.0)) for entry in weather_context
+                ],
+                cecid_rainfall_threshold_mm=request.cecid_rainfall_threshold_mm,
+                fruit_fly_temp_threshold_c=request.fruit_fly_temp_threshold_c,
+                latitude=lat,
+                longitude=lon,
+                favorable_threshold=(
+                    0.25 if request.cecid_favorable_threshold is None
+                    else request.cecid_favorable_threshold
+                ),
             )
-            # Optional per-hour gate diagnostics for scenario calibration
-            if getattr(request, "debug_gates", False):
+            habitat_by_step = {
+                int(item.get("timestep", -1)): item
+                for item in (result.metadata.cecid_habitat_diagnostics or [])
+                if isinstance(item, dict)
+            }
+            for item in gate_diagnostics:
+                habitat = habitat_by_step.get(int(item.get("step", -1)))
+                if habitat:
+                    item.update({
+                        key: value
+                        for key, value in habitat.items()
+                        if key not in {"timestep", "datetime"}
+                    })
+                    habitat_reasons = habitat.get("habitat_limiting_reasons") or []
+                    item["limiting_factors"] = list(dict.fromkeys([
+                        *(item.get("limiting_factors") or []),
+                        *habitat_reasons,
+                    ]))
+            # Cecid diagnostics are always returned so live runs are as
+            # explainable as custom timeline runs.
+            if getattr(request, "debug_gates", False) or request.pest_type.value == "cecid":
                 diagnostics = gate_diagnostics
                 result.gate_diagnostics = diagnostics
         except Exception as diag_err:
@@ -474,6 +522,29 @@ async def run_simulation(
         )
 
 
+async def _resolve_cecid_weed_zones(
+    request: SimulationRequest,
+    db: AsyncSession,
+) -> SimulationRequest:
+    """Snapshot orchard weed habitat when a Cecid request omits an override."""
+    if request.pest_type.value != "cecid" or request.cecid_weed_zones is not None:
+        return request
+
+    orchard_id = _orchard_id_from_request(request, default="")
+    query = select(Orchard).where(Orchard.orchard_uid == orchard_id)
+    if str(orchard_id).isdigit():
+        query = select(Orchard).where(or_(
+            Orchard.orchard_uid == orchard_id,
+            Orchard.orchard_id == int(orchard_id),
+        ))
+    orchard = (await db.execute(query)).scalar_one_or_none()
+    zones = [
+        CecidWeedZone.model_validate(zone)
+        for zone in (getattr(orchard, "cecid_weed_zones", None) or [])
+    ] if orchard else []
+    return request.model_copy(update={"cecid_weed_zones": zones})
+
+
 async def _apply_observation_seeds(
     request: SimulationRequest,
     db: AsyncSession,
@@ -484,13 +555,27 @@ async def _apply_observation_seeds(
 
     try:
         cutoff = utcnow_naive() - timedelta(days=request.observations_lookback_days)
-        result = await db.execute(
-            select(InfestationRecord).where(
+        pest_terms = (
+            ("%cecid%", "%gall midge%", "%kurikong%")
+            if request.pest_type.value == "cecid"
+            else ("%fruit fly%", "%fruitfly%", "%bactrocera%")
+        )
+        query = (
+            select(InfestationRecord)
+            .join(Pest, Pest.pest_id == InfestationRecord.pest_id)
+            .where(
                 InfestationRecord.infected_status == True,
                 InfestationRecord.simulation_id.is_(None),
                 InfestationRecord.record_date >= cutoff,
+                or_(*(Pest.name.ilike(term) for term in pest_terms)),
             )
         )
+        orchard_id = _orchard_id_from_request(request, default="")
+        if str(orchard_id).isdigit():
+            query = query.join(Tree, Tree.tree_id == InfestationRecord.tree_id).where(
+                Tree.orchard_id == int(orchard_id)
+            )
+        result = await db.execute(query)
         records = result.scalars().all()
         if not records:
             return request

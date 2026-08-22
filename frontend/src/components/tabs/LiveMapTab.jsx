@@ -102,6 +102,15 @@ const RISK_LEGEND_ENTRIES = [
   { label: 'Low',      color: '#22c55e' },
 ]
 
+const TREE_STATE_LEGEND_ENTRIES = [
+  { label: 'Healthy', color: '#22c55e' },
+  { label: 'Infected', color: '#ef4444' },
+  { label: 'Bagged', color: '#3b82f6' },
+  { label: 'Dead', color: '#424242' },
+  { label: 'Historical', color: '#ff9800' },
+  { label: 'Suspect', color: '#9c27b0' },
+]
+
 const ZONE_TYPE_OPTIONS = [
   { value: 'stage', label: 'Stage' },
   { value: 'status', label: 'Status' },
@@ -239,6 +248,7 @@ export default function LiveMapTab({
   return (
     <div className="operations-map-panel">
       <div className="operations-map-stage" style={{ position: 'relative' }}>
+        <div className="map-top-controls" role="toolbar" aria-label="Map controls">
         <button
           type="button"
           className="btn btn-light btn-sm map-overlay-btn"
@@ -248,9 +258,12 @@ export default function LiveMapTab({
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
 
-        <div className="map-zone-tools map-zone-editor">
-          <span className="map-zone-editor-label">Zone Editor</span>
-          <div style={{ flexShrink: 0, width: 156 }}>
+        <div className="map-zone-tools map-zone-editor" role="group" aria-label="Zone editor">
+          <span className="map-zone-editor-label">
+            <i className="bi bi-bounding-box-circles" />
+            Zone Editor
+          </span>
+          <div className="map-zone-type-wrap">
             <MpSelect
               small
               className="map-zone-type-select"
@@ -380,6 +393,7 @@ export default function LiveMapTab({
               </button>
             </>
           )}
+        </div>
         </div>
 
         {showWeedManager && zoneEditorType === 'cecid' && !activeDrawing && (
@@ -600,13 +614,27 @@ export default function LiveMapTab({
 
         {showLegend && (
           <div className="map-risk-legend">
-            <div className="map-risk-legend-title">Risk Level</div>
-            {RISK_LEGEND_ENTRIES.map((entry) => (
-              <div key={entry.label} className="map-risk-legend-item">
-                <div className="map-risk-legend-swatch" style={{ background: entry.color }} />
-                {entry.label}
+            <div className="map-risk-legend-title">Map legend</div>
+            <div className="map-risk-legend-columns">
+              <div>
+                <div className="map-risk-legend-group-title">Risk level</div>
+                {RISK_LEGEND_ENTRIES.map((entry) => (
+                  <div key={entry.label} className="map-risk-legend-item">
+                    <div className="map-risk-legend-swatch" style={{ background: entry.color }} />
+                    {entry.label}
+                  </div>
+                ))}
               </div>
-            ))}
+              <div>
+                <div className="map-risk-legend-group-title">Tree state</div>
+                {TREE_STATE_LEGEND_ENTRIES.map((entry) => (
+                  <div key={entry.label} className="map-risk-legend-item">
+                    <div className="map-risk-legend-swatch is-tree-state" style={{ background: entry.color }} />
+                    {entry.label}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

@@ -22,13 +22,14 @@ function priorityColor(p) {
   return 'success'
 }
 
-export default function DecisionSupportCard({ metrics, defaultOpen = true }) {
+export default function DecisionSupportCard({ metrics, defaultOpen = true, embedded = false }) {
   if (!metrics) {
     return (
       <CollapsibleCard
         iconName="clipboard2-pulse"
         title="Decision Support"
         defaultOpen={defaultOpen}
+        embedded={embedded}
         cardClass="decision-support-card"
       >
         <div className="text-muted small">
@@ -47,6 +48,7 @@ export default function DecisionSupportCard({ metrics, defaultOpen = true }) {
       iconName="clipboard2-pulse"
       title="Decision Support"
       defaultOpen={defaultOpen}
+      embedded={embedded}
       cardClass="decision-support-card"
       cardStyle={{ boxShadow: 'inset 3px 0 0 var(--mp-primary), var(--mp-shadow-card)' }}
     >

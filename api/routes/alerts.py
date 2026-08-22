@@ -12,25 +12,40 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
+from ..core.security import get_current_active_user
 from ..models.schemas import (
     AlertResponse,
     AlertListResponse,
     AlertAcknowledge,
     AlertActionStatusEnum,
     AlertActionUpdate,
+    AlertEmailRecipientCreate,
+    AlertEmailRecipientResponse,
     AlertStatusEnum,
     AlertSeverityEnum,
     WeatherForecastCheckRequest,
 )
 from ..core.config import settings
-from db.models import AlertStatus
+from db.models import AlertStatus, UserAccount, UserRoleEnum
+from ..services.alert_recipient_service import alert_recipient_service
 from ..services.alert_service import alert_service
+from ..services.notification_service import notification_service
 from ..services.weather_service import weather_service
 from utils.datetime_utils import format_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
+
+
+def _require_admin(current_user: UserAccount) -> None:
+    role = (
+        current_user.role
+        if isinstance(current_user.role, UserRoleEnum)
+        else UserRoleEnum(str(current_user.role))
+    )
+    if role != UserRoleEnum.ADMIN:
+        raise HTTPException(status_code=403, detail="Administrator access is required.")
 
 
 def _memory_alert_to_response(alert: dict) -> AlertResponse:
@@ -540,18 +555,32 @@ async def check_weather_forecast(
     created_responses: list[AlertResponse] = []
     for alert_data in alert_data_list:
         try:
-            alert = await alert_service.create_alert(db, alert_data, send_notifications=False)
+            alert = await alert_service.create_alert(db, alert_data, send_notifications=True)
             await db.flush()
             created_responses.append(_db_alert_to_response(alert))
         except Exception as exc:
             logger.warning("DB unavailable for weather alert, using memory: %s", exc)
-            alert_service.store_alert_in_memory(alert_data)
+            newly_stored = alert_service.store_alert_in_memory(alert_data)
+            email_sent = False
+            sms_sent = False
+            if newly_stored:
+                email_sent, sms_sent = await alert_service.send_notifications_for_alert_data(
+                    alert_data,
+                )
+                alert_service.update_memory_alert(
+                    alert_data.alert_id,
+                    email_sent=email_sent,
+                    email_sent_at=(
+                        format_rfc3339(utcnow_naive()) if email_sent else None
+                    ),
+                    sms_sent=sms_sent,
+                )
             created_responses.append(_memory_alert_to_response({
                 **alert_data.model_dump(),
                 "triggered_at": format_rfc3339(utcnow_naive()),
                 "status": "active",
-                "email_sent": False,
-                "sms_sent": False,
+                "email_sent": email_sent,
+                "sms_sent": sms_sent,
                 "acknowledged_by": None,
                 "acknowledged_at": None,
                 "resolved_at": None,
@@ -567,6 +596,126 @@ async def check_weather_forecast(
         active_count=len(created_responses),
         alerts=created_responses,
     )
+
+
+@router.get(
+    "/email/status",
+    summary="Get alert email configuration status",
+    description="Return non-secret provider and designated-recipient diagnostics.",
+)
+async def get_alert_email_status(
+    db: AsyncSession = Depends(get_db),
+):
+    """Expose only masked email delivery diagnostics."""
+    recipients = await alert_recipient_service.effective_emails(db)
+    return notification_service.email_status(recipients)
+
+
+@router.get(
+    "/email/recipients",
+    response_model=list[AlertEmailRecipientResponse],
+    summary="List designated alert email recipients",
+    description="List active recipients assigned by an administrator.",
+)
+async def list_alert_email_recipients(
+    current_user: UserAccount = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the admin-managed recipient list, importing `.env` defaults once."""
+    _require_admin(current_user)
+    recipients = await alert_recipient_service.list_active(
+        db,
+        bootstrap_environment=True,
+    )
+    await db.commit()
+    return recipients
+
+
+@router.post(
+    "/email/recipients",
+    response_model=AlertEmailRecipientResponse,
+    status_code=201,
+    summary="Add an alert email recipient",
+    description="Assign a farmer or other significant person to receive alert emails.",
+)
+async def add_alert_email_recipient(
+    body: AlertEmailRecipientCreate,
+    current_user: UserAccount = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create or reactivate one designated recipient."""
+    _require_admin(current_user)
+    recipient = await alert_recipient_service.add_or_reactivate(
+        db,
+        email=body.email,
+        name=body.name,
+        created_by_user_id=current_user.user_id,
+    )
+    await db.commit()
+    return recipient
+
+
+@router.delete(
+    "/email/recipients/{recipient_id}",
+    response_model=AlertEmailRecipientResponse,
+    summary="Remove an alert email recipient",
+    description="Stop sending future alert emails to a designated recipient.",
+)
+async def remove_alert_email_recipient(
+    recipient_id: int,
+    current_user: UserAccount = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deactivate a recipient while preserving intentional empty-list state."""
+    _require_admin(current_user)
+    recipient = await alert_recipient_service.deactivate(db, recipient_id)
+    if recipient is None:
+        raise HTTPException(status_code=404, detail="Alert email recipient not found.")
+    await db.commit()
+    return recipient
+
+
+@router.post(
+    "/email/test",
+    summary="Send a test alert email",
+    description="Send one test message to all configured designated farmers (admin only).",
+)
+async def send_test_alert_email(
+    current_user: UserAccount = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Let an administrator verify provider and inbox delivery end to end."""
+    _require_admin(current_user)
+
+    recipients = await alert_recipient_service.effective_emails(db)
+    status_payload = notification_service.email_status(recipients)
+    if not status_payload["configured"]:
+        detail = status_payload.get("configuration_error") or status_payload.get("last_error") or (
+            "Email notifications are not fully configured. Check server environment settings."
+        )
+        raise HTTPException(status_code=503, detail=detail)
+
+    sent = await notification_service.send_email_alert(
+        subject="[MangoPoint] Test farmer notification",
+        message=(
+            "This is a test of MangoPoint's off-site pest alert email channel. "
+            "If you received it, the designated farmer notification setup is working."
+        ),
+        alert_id=f"email-test-{int(utcnow_naive().timestamp())}",
+        recipients=recipients,
+    )
+    if not sent:
+        raise HTTPException(
+            status_code=502,
+            detail=notification_service.last_error or "The email provider rejected the test email.",
+        )
+
+    return {
+        "sent": True,
+        "recipient_count": len(recipients),
+        "provider": notification_service.email_provider,
+        "message": "Test email accepted by the configured provider.",
+    }
 
 
 @router.get(

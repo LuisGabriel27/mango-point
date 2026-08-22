@@ -5,6 +5,7 @@ Request and response schemas for the API endpoints.
 """
 
 from datetime import datetime
+import re
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from enum import Enum
@@ -927,6 +928,37 @@ class AlertCreate(BaseModel):
     action_due_at: Optional[datetime] = None
     action_completed_at: Optional[datetime] = None
     suggested_simulation_params: Optional[Dict[str, Any]] = None
+
+
+class AlertEmailRecipientCreate(BaseModel):
+    """Admin request for assigning an alert email recipient."""
+    email: str = Field(min_length=3, max_length=254)
+    name: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
+            raise ValueError("Enter a valid email address")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        normalized = (value or "").strip()
+        return normalized or None
+
+
+class AlertEmailRecipientResponse(BaseModel):
+    """Admin-visible recipient entry."""
+    model_config = ConfigDict(from_attributes=True)
+
+    recipient_id: int
+    email: str
+    name: Optional[str] = None
+    is_active: bool
+    created_at: datetime
 
 
 class AlertResponse(BaseModel):

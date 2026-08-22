@@ -6,10 +6,10 @@ Environment-based configuration using Pydantic settings.
 
 import json
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
 
@@ -63,12 +63,29 @@ class Settings(BaseSettings):
     DEFAULT_LAT: float = ORCHARD_LAT
     DEFAULT_LON: float = ORCHARD_LON
     
+    # Email delivery provider. "brevo" uses HTTPS and works on networks that
+    # block outbound SMTP; "smtp" retains the existing provider-neutral path.
+    ALERT_EMAIL_PROVIDER: str = "smtp"
+    BREVO_API_KEY: Optional[str] = None
+    BREVO_API_TIMEOUT_SECONDS: int = 20
+
     # SMTP Email Settings
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
-    SMTP_FROM_EMAIL: str = "alerts@mangopoint.local"
+    SMTP_FROM_EMAIL: Optional[str] = None
+    SMTP_FROM_NAME: str = "MangoPoint Alerts"
+    SMTP_SECURITY: str = "starttls"
+    SMTP_TIMEOUT_SECONDS: int = 15
+
+    # Designated farmers do not need dashboard accounts. Their addresses stay
+    # in server-side configuration and are never exposed to the browser.
+    ALERT_EMAIL_ENABLED: bool = False
+    ALERT_EMAIL_RECIPIENTS: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    ALERT_EMAIL_RETRY_ATTEMPTS: int = 3
+    ALERT_EMAIL_RETRY_DELAY_SECONDS: float = 2.0
+    ALERT_EMAIL_APP_URL: Optional[str] = None
     
     # Twilio SMS Settings (stub)
     TWILIO_ACCOUNT_SID: Optional[str] = None
@@ -141,6 +158,64 @@ class Settings(BaseSettings):
                     return [str(item).strip() for item in parsed if str(item).strip()]
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
+
+    @field_validator("ALERT_EMAIL_RECIPIENTS", mode="before")
+    @classmethod
+    def parse_alert_email_recipients(cls, value: Any) -> Any:
+        """Support JSON arrays and comma/semicolon-separated email addresses."""
+        if value is None or value == "":
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [
+                item.strip()
+                for item in stripped.replace(";", ",").split(",")
+                if item.strip()
+            ]
+        return value
+
+    @field_validator("SMTP_SECURITY", mode="before")
+    @classmethod
+    def parse_smtp_security(cls, value: Any) -> str:
+        """Normalize supported SMTP transport security modes."""
+        normalized = str(value or "starttls").strip().lower()
+        aliases = {
+            "tls": "starttls",
+            "start_tls": "starttls",
+            "starttls": "starttls",
+            "ssl": "ssl",
+            "smtps": "ssl",
+            "none": "none",
+            "plain": "none",
+        }
+        if normalized not in aliases:
+            raise ValueError("SMTP_SECURITY must be starttls, ssl, or none")
+        return aliases[normalized]
+
+    @field_validator("ALERT_EMAIL_PROVIDER", mode="before")
+    @classmethod
+    def parse_alert_email_provider(cls, value: Any) -> str:
+        """Normalize supported alert-email delivery providers."""
+        normalized = str(value or "smtp").strip().lower()
+        aliases = {
+            "smtp": "smtp",
+            "gmail": "smtp",
+            "brevo": "brevo",
+            "brevo_api": "brevo",
+            "https": "brevo",
+        }
+        if normalized not in aliases:
+            raise ValueError("ALERT_EMAIL_PROVIDER must be smtp or brevo")
+        return aliases[normalized]
 
 
 @lru_cache()

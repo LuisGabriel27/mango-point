@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import guimarasWondersFarmOrthophotoUrl from '../assets/guimaras-wonders-farm-orthophoto.png'
+import {
+  GUIMARAS_WONDERS_FARM_ID,
+  GUIMARAS_WONDERS_FARM_OVERLAY_COORDINATES,
+} from '../utils/bundledOrchards'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
@@ -47,6 +52,11 @@ const ORTHO_COORDINATES = [
 const DEFAULT_ORTHOPHOTO_OVERLAY = {
   url: '/ortho.png',
   coordinates: ORTHO_COORDINATES,
+}
+
+const GUIMARAS_WONDERS_FARM_OVERLAY = {
+  url: guimarasWondersFarmOrthophotoUrl,
+  coordinates: GUIMARAS_WONDERS_FARM_OVERLAY_COORDINATES,
 }
 
 const DEFAULT_LAT = 10.585
@@ -510,13 +520,24 @@ function validImageCoordinates(coordinates) {
     ))
 }
 
-function normalizedOverlay(overlay) {
+function isGuimarasWondersFarm(viewportKey, overlayUrl) {
+  const orchardKey = String(viewportKey ?? '').trim().toLowerCase()
+  const imageUrl = String(overlayUrl ?? '').trim().toLowerCase()
+  return orchardKey === GUIMARAS_WONDERS_FARM_ID
+    || orchardKey.startsWith(`${GUIMARAS_WONDERS_FARM_ID}:`)
+    || imageUrl.includes(`/orchards/${GUIMARAS_WONDERS_FARM_ID}/`)
+}
+
+function normalizedOverlay(overlay, viewportKey) {
+  const isGuimarasWonders = isGuimarasWondersFarm(viewportKey, overlay?.url)
   if (overlay?.url && validImageCoordinates(overlay.coordinates)) {
     return {
       url: overlay.url,
       coordinates: overlay.coordinates.map((point) => [Number(point[0]), Number(point[1])]),
+      fallbackUrl: isGuimarasWonders ? GUIMARAS_WONDERS_FARM_OVERLAY.url : null,
     }
   }
+  if (isGuimarasWonders) return GUIMARAS_WONDERS_FARM_OVERLAY
   return DEFAULT_ORTHOPHOTO_OVERLAY
 }
 
@@ -675,21 +696,29 @@ function ensureCecidZoneLayers(map) {
   if (!map.getLayer('cecid-zone-draft-vertices')) map.addLayer(CECID_DRAFT_VERTEX_LAYER)
 }
 
-async function resolveOverlayImageUrl(url) {
+async function resolveOverlayImageUrl(url, fallbackUrl = null) {
   if (!url || !url.startsWith('/orchards/')) return { imageUrl: url, objectUrl: null }
 
   const token = sessionStorage.getItem('access_token')
   const assetUrl = API_BASE
     ? `${API_BASE.replace(/\/$/, '')}${url}`
     : url
-  const response = await fetch(assetUrl, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    cache: 'no-store',
-  })
-  if (!response.ok) throw new Error(`Unable to load orchard orthophoto (${response.status})`)
-
-  const objectUrl = URL.createObjectURL(await response.blob())
-  return { imageUrl: objectUrl, objectUrl }
+  try {
+    const response = await fetch(assetUrl, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: 'no-store',
+    })
+    const contentType = response.headers.get('content-type') ?? ''
+    if (response.ok && contentType.startsWith('image/')) {
+      const objectUrl = URL.createObjectURL(await response.blob())
+      return { imageUrl: objectUrl, objectUrl }
+    }
+    if (fallbackUrl) return { imageUrl: fallbackUrl, objectUrl: null }
+    throw new Error(`Unable to load orchard orthophoto (${response.status})`)
+  } catch (error) {
+    if (fallbackUrl) return { imageUrl: fallbackUrl, objectUrl: null }
+    throw error
+  }
 }
 
 // Primary: extract exact grid lines from simulation cell polygon boundaries
@@ -821,8 +850,8 @@ export default function RiskMap({
 
   const activeGeojson = geojson?.features?.length ? geojson : baseGeojson
   const activeOverlay = useMemo(
-    () => normalizedOverlay(orthophotoOverlay),
-    [orthophotoOverlay],
+    () => normalizedOverlay(orthophotoOverlay, viewportKey),
+    [orthophotoOverlay, viewportKey],
   )
   const points = useMemo(
     () => normalizePoints(activeGeojson, treeOverrides, stageOverrides),
@@ -889,7 +918,10 @@ export default function RiskMap({
         if (map.getLayer('ortho-layer')) map.removeLayer('ortho-layer')
         if (map.getSource('ortho-src')) map.removeSource('ortho-src')
 
-        const resolved = await resolveOverlayImageUrl(activeOverlay.url)
+        const resolved = await resolveOverlayImageUrl(
+          activeOverlay.url,
+          activeOverlay.fallbackUrl,
+        )
         if (cancelled) {
           if (resolved.objectUrl) URL.revokeObjectURL(resolved.objectUrl)
           return

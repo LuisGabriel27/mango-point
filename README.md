@@ -138,6 +138,64 @@ The setup command applies the versioned files in `db/migrations/` after the
 domain schema. The migration adds the transactional sync outbox, synchronization
 state. Orchard files remain local-only and are not uploaded to Supabase.
 
+## Farmer email alerts
+
+MangoPoint can send every new, deduplicated risk or biological-gate alert to a
+designated list of farmers. Farmers do not need dashboard accounts. Recipient
+addresses and provider credentials stay in the backend `.env` file and must never be
+placed in `frontend/.env`, SQL files, or committed to Git.
+
+For networks that block SMTP, use Brevo's transactional HTTPS API. Its Free plan
+currently supports up to 300 email sends per day. Create a Brevo account, verify
+the address used by `SMTP_FROM_EMAIL` as a sender, generate an API key, and configure:
+
+```env
+ALERT_EMAIL_PROVIDER=brevo
+BREVO_API_KEY=your-brevo-api-key
+BREVO_API_TIMEOUT_SECONDS=20
+
+ALERT_EMAIL_ENABLED=true
+ALERT_EMAIL_RECIPIENTS=farmer.one@example.com,farmer.two@example.com
+ALERT_EMAIL_APP_URL=http://localhost:3000
+
+SMTP_FROM_EMAIL=your-verified-sender@example.com
+SMTP_FROM_NAME=MangoPoint Alerts
+
+# Required for forecast alerts while nobody has the dashboard open.
+ALERT_MONITORING_ENABLED=true
+ALERT_MONITORING_INTERVAL_SECONDS=3600
+```
+
+This path sends `POST https://api.brevo.com/v3/smtp/email` over standard HTTPS
+port 443 and does not use `SMTP_USER` or `SMTP_PASSWORD`. See Brevo's official
+[transactional email API](https://developers.brevo.com/reference/send-transac-email),
+[API-key authentication](https://developers.brevo.com/docs/authentication-schemes),
+[sender verification](https://developers.brevo.com/docs/getting-started-with-senders-and-domains), and
+[Free-plan limits](https://help.brevo.com/hc/en-us/articles/208580669-FAQs-What-are-the-limits-of-the-Free-plan).
+
+Where SMTP is permitted, set `ALERT_EMAIL_PROVIDER=smtp`. Gmail can then be used
+for low-volume installations with `smtp.gmail.com`, port `587`, and
+`SMTP_SECURITY=starttls`. Use a Google App Password instead of the normal account
+password; Google requires 2-Step Verification for App Passwords. See
+[Google's App Password documentation](https://support.google.com/accounts/answer/185833)
+and [SMTP settings](https://support.google.com/mail/answer/7104828).
+
+Restart the API after changing `.env`. Then sign in as an administrator and use
+`POST /alerts/email/test` in `http://localhost:8000/docs`. Non-secret diagnostics
+are available from `GET /alerts/email/status`. Successful alert deliveries are
+marked `email_sent=true` and show an **Emailed** badge in the notification list.
+
+Administrators can manage the live recipient list from the dashboard notification
+menu using **Add emails**. The first time that dialog is opened, addresses from
+`ALERT_EMAIL_RECIPIENTS` are imported into the local database. From then on, the
+admin-managed list is authoritative, including when every recipient is removed.
+Recipient addresses are not added to the cloud synchronization outbox.
+
+The API process must remain running for unattended monitoring. The scheduler
+checks enabled orchards using the existing forecast/gate rules; it does not
+require a browser session. Existing deduplication prevents the same active alert
+from being emailed repeatedly during each scheduled scan.
+
 ## Supabase cloud backup
 
 Supabase is used as a server-side backup target. Do not put these values in

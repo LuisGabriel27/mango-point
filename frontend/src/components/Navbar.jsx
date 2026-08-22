@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import AlertRecipientModal from './AlertRecipientModal'
+import { AlertList } from './cards/AlertPanel'
 
 const TABS = [
   { id: 'live-map', label: 'Live Map' },
@@ -9,13 +11,19 @@ const TABS = [
   { id: 'history', label: 'History' },
 ]
 
-const SEV_COLOR = { critical: '#dc2626', high: '#d97706', medium: '#2563eb', low: '#6b7280' }
-const SEV_ICON  = { critical: 'exclamation-octagon-fill', high: 'exclamation-triangle-fill', medium: 'info-circle-fill', low: 'bell-fill' }
-
-export default function Navbar({ alertCount = 0, alerts = [], activeTab, onTabChange }) {
+export default function Navbar({
+  alerts = [],
+  alertLoading = false,
+  activeTab,
+  onTabChange,
+  onAlertRefresh,
+  onApplySuggested,
+  onControlsOpen,
+}) {
   const { user, logout } = useAuth()
   const [clock, setClock] = useState('')
   const [bellOpen, setBellOpen] = useState(false)
+  const [recipientModalOpen, setRecipientModalOpen] = useState(false)
   const bellRef = useRef(null)
 
   useEffect(() => {
@@ -29,31 +37,36 @@ export default function Navbar({ alertCount = 0, alerts = [], activeTab, onTabCh
   }, [])
 
   useEffect(() => {
-    const handler = (e) => {
-      if (bellRef.current && !bellRef.current.contains(e.target)) setBellOpen(false)
+    const handler = (event) => {
+      if (bellRef.current && !bellRef.current.contains(event.target)) setBellOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const active = alerts.filter((a) => a.status === 'active')
+  const active = alerts.filter((alert) => alert.status === 'active')
+  const handleApplySuggested = (params) => {
+    onApplySuggested?.(params)
+    setBellOpen(false)
+  }
 
   return (
-    <nav className="main-navbar">
+    <>
+      <nav className="main-navbar">
       <a className="navbar-brand" href="/">
         <img src="/mangopoint.png" className="navbar-logo" alt="MangoPoint" />
         <span>MangoPoint</span>
       </a>
 
       <div className="navbar-tabs">
-        {TABS.map((t) => (
+        {TABS.map((tab) => (
           <button
-            key={t.id}
+            key={tab.id}
             type="button"
-            className={`navbar-tab${activeTab === t.id ? ' active' : ''}`}
-            onClick={() => onTabChange?.(t.id)}
+            className={`navbar-tab${activeTab === tab.id ? ' active' : ''}`}
+            onClick={() => onTabChange?.(tab.id)}
           >
-            {t.label}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -67,59 +80,57 @@ export default function Navbar({ alertCount = 0, alerts = [], activeTab, onTabCh
           </div>
         )}
 
-        {/* Notification bell */}
+        <button
+          type="button"
+          className="navbar-controls-btn"
+          onClick={onControlsOpen}
+          aria-label="Open simulation workspace"
+          title="Open controls"
+        >
+          <i className="bi bi-sliders2" />
+          <span>Controls</span>
+        </button>
+
         <div className="navbar-bell-wrap" ref={bellRef}>
           <button
             type="button"
             className={`navbar-bell-btn${bellOpen ? ' is-open' : ''}`}
-            onClick={() => setBellOpen((o) => !o)}
+            onClick={() => setBellOpen((open) => !open)}
             aria-label="Notifications"
+            aria-expanded={bellOpen}
           >
             <i className="bi bi-bell-fill" />
-            {active.length > 0 && (
-              <span className="navbar-bell-badge">{active.length}</span>
-            )}
+            {active.length > 0 && <span className="navbar-bell-badge">{active.length}</span>}
           </button>
 
           {bellOpen && (
             <div className="navbar-bell-dropdown">
               <div className="navbar-bell-header">
                 <span><i className="bi bi-bell-fill me-1" />Alerts</span>
-                <span className="navbar-bell-count">{active.length} active</span>
+                <div className="navbar-bell-header-actions">
+                  {String(user?.role || '').toLowerCase() === 'admin' && (
+                    <button
+                      type="button"
+                      className="navbar-alert-recipient-btn"
+                      onClick={() => {
+                        setBellOpen(false)
+                        setRecipientModalOpen(true)
+                      }}
+                    >
+                      <i className="bi bi-envelope-plus-fill" />
+                      Add emails
+                    </button>
+                  )}
+                  <span className="navbar-bell-count">{active.length} active</span>
+                </div>
               </div>
-              <div className="navbar-bell-list">
-                {active.length === 0 ? (
-                  <div className="navbar-bell-empty">
-                    <i className="bi bi-check-circle-fill text-success me-1" />
-                    No active alerts
-                  </div>
-                ) : (
-                  active.map((a) => {
-                    const ts = a.triggered_at
-                      ? new Date(a.triggered_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                      : ''
-                    return (
-                      <div key={a.alert_id} className="navbar-bell-item">
-                        <div className="navbar-bell-item-top">
-                          <i
-                            className={`bi bi-${SEV_ICON[a.severity] ?? 'bell-fill'} me-1`}
-                            style={{ color: SEV_COLOR[a.severity] ?? '#6b7280' }}
-                          />
-                          <span className="navbar-bell-sev" style={{ color: SEV_COLOR[a.severity] ?? '#6b7280' }}>
-                            {a.severity?.toUpperCase()}
-                          </span>
-                          <span className="navbar-bell-ts">{ts}</span>
-                        </div>
-                        <div className="navbar-bell-msg">{a.message}</div>
-                        {a.zone_name && (
-                          <div className="navbar-bell-zone">
-                            <i className="bi bi-geo-alt me-1" />{a.zone_name}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })
-                )}
+              <div className="navbar-bell-list navbar-alert-action-list">
+                <AlertList
+                  alerts={alerts}
+                  loading={alertLoading}
+                  onRefresh={onAlertRefresh}
+                  onApplySuggested={handleApplySuggested}
+                />
               </div>
             </div>
           )}
@@ -129,6 +140,10 @@ export default function Navbar({ alertCount = 0, alerts = [], activeTab, onTabCh
           <i className="bi bi-box-arrow-right me-1" />Logout
         </button>
       </div>
-    </nav>
+      </nav>
+      {recipientModalOpen && (
+        <AlertRecipientModal onClose={() => setRecipientModalOpen(false)} />
+      )}
+    </>
   )
 }

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from ..core.config import settings
 from db.models import Alert, AlertSeverity, AlertStatus
 from ..models.schemas import AlertActionStatusEnum, AlertCreate, AlertResponse, AlertSeverityEnum
+from .alert_recipient_service import alert_recipient_service
 from .notification_service import notification_service
 from utils.datetime_utils import format_rfc3339, utcnow_naive
 
@@ -37,8 +38,8 @@ class AlertService:
             # In-memory alert store for when database is unavailable
         self._memory_alerts: List[Dict[str, Any]] = []
     
-    def store_alert_in_memory(self, alert_data: "AlertCreate") -> None:
-        """Store alert in memory when database is unavailable."""
+    def store_alert_in_memory(self, alert_data: "AlertCreate") -> bool:
+        """Store a new alert in memory and report whether it was newly added."""
         memory_alert = {
             "alert_id": alert_data.alert_id,
             "simulation_run_id": alert_data.simulation_run_id,
@@ -73,6 +74,7 @@ class AlertService:
                 else None
             ),
             "email_sent": False,
+            "email_sent_at": None,
             "sms_sent": False,
             "acknowledged_by": None,
             "acknowledged_at": None,
@@ -101,10 +103,11 @@ class AlertService:
                     existing.get("alert_id"),
                     alert_data.alert_id,
                 )
-                return
+                return False
 
         self._memory_alerts.append(memory_alert)
         logger.info(f"Stored alert {alert_data.alert_id} in memory (database unavailable)")
+        return True
     
     def get_memory_alerts(
         self,
@@ -991,7 +994,7 @@ class AlertService:
         
         # Send notifications
         if send_notifications:
-            await self._send_notifications(alert)
+            await self._send_notifications(alert, db=db)
         
         logger.info(f"Alert {alert.alert_id} created and persisted")
         return alert
@@ -1024,9 +1027,16 @@ class AlertService:
 
         return None
     
-    async def _send_notifications(self, alert: Alert) -> None:
-        """Send email and SMS notifications for an alert."""
+    async def _send_notifications(
+        self,
+        alert: Any,
+        db: Optional[AsyncSession] = None,
+    ) -> Tuple[bool, bool]:
+        """Send configured notifications and return email/SMS delivery flags."""
         message = self._notification_message(alert)
+        email_delivered = False
+        sms_delivered = False
+        recipients = await alert_recipient_service.effective_emails(db)
         
         # Email notification
         try:
@@ -1039,10 +1049,14 @@ class AlertService:
                 subject=f"[MangoPoint] {alert.severity.value.upper()} {alert_kind}",
                 message=message,
                 alert_id=alert.alert_id,
+                recipients=recipients,
             )
             if email_sent:
-                alert.email_sent = True
-                alert.email_sent_at = utcnow_naive()
+                email_delivered = True
+                if hasattr(alert, "email_sent"):
+                    alert.email_sent = True
+                if hasattr(alert, "email_sent_at"):
+                    alert.email_sent_at = utcnow_naive()
                 logger.info(f"Email notification sent for alert {alert.alert_id}")
         except Exception as e:
             logger.error(f"Failed to send email for alert {alert.alert_id}: {e}")
@@ -1054,11 +1068,23 @@ class AlertService:
                 alert_id=alert.alert_id,
             )
             if sms_sent:
-                alert.sms_sent = True
-                alert.sms_sent_at = utcnow_naive()
+                sms_delivered = True
+                if hasattr(alert, "sms_sent"):
+                    alert.sms_sent = True
+                if hasattr(alert, "sms_sent_at"):
+                    alert.sms_sent_at = utcnow_naive()
                 logger.info(f"SMS notification sent for alert {alert.alert_id}")
         except Exception as e:
             logger.error(f"Failed to send SMS for alert {alert.alert_id}: {e}")
+
+        return email_delivered, sms_delivered
+
+    async def send_notifications_for_alert_data(
+        self,
+        alert_data: AlertCreate,
+    ) -> Tuple[bool, bool]:
+        """Notify for an in-memory alert when persistence is unavailable."""
+        return await self._send_notifications(alert_data)
 
     @staticmethod
     def _notification_message(alert: Alert) -> str:

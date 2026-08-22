@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 import MpSelect from '../MpSelect'
 import { apiErrorMessage } from '../../api'
@@ -13,6 +13,7 @@ export default function OrchardSwitcher({
   onUpload,
   loading,
   defaultTreeCount = 0,
+  embedded = false,
 }) {
   const [showAddForm, setShowAddForm] = useState(false)
   const [name, setName] = useState('')
@@ -22,6 +23,52 @@ export default function OrchardSwitcher({
   const [dsm, setDsm] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [message, setMessage] = useState(null)
+  const addButtonRef = useRef(null)
+  const modalRef = useRef(null)
+  const nameInputRef = useRef(null)
+  const uploadingRef = useRef(uploading)
+
+  useEffect(() => {
+    uploadingRef.current = uploading
+  }, [uploading])
+
+  useEffect(() => {
+    if (!showAddForm) return undefined
+
+    const previousFocus = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    window.requestAnimationFrame(() => nameInputRef.current?.focus())
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !uploadingRef.current) {
+        setShowAddForm(false)
+        return
+      }
+      if (event.key !== 'Tab' || !modalRef.current) return
+      const focusable = [...modalRef.current.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.body.style.overflow = previousOverflow
+      if (previousFocus?.focus) previousFocus.focus()
+      else addButtonRef.current?.focus()
+    }
+  }, [showAddForm])
 
   const options = [
     { label: 'Default Orchard (BPI)', value: DEFAULT_ORCHARD_ID },
@@ -71,30 +118,35 @@ export default function OrchardSwitcher({
   }
 
   return (
-    <CollapsibleCard iconName="pin-map" title="Orchard View">
+    <>
+    <CollapsibleCard iconName="pin-map" title="Orchard" embedded={embedded}>
       <label className="small fw-medium mb-1 d-block">
         <i className="bi bi-map me-1" /> Active Orchard
       </label>
-      <MpSelect
-        value={selectedId ?? ''}
-        onChange={onSelect}
-        options={options}
-        className="mb-2"
-      />
+      <div className="orchard-select-row mb-2">
+        <MpSelect
+          value={selectedId ?? ''}
+          onChange={onSelect}
+          options={options}
+        />
+        <button
+          type="button"
+          className="btn btn-outline-secondary btn-sm sidebar-square-btn"
+          onClick={onRefresh}
+          disabled={loading}
+          aria-label="Refresh orchards"
+          title="Refresh orchards"
+        >
+          {loading
+            ? <span className="spinner-border spinner-border-sm" />
+            : <i className="bi bi-arrow-clockwise" />}
+        </button>
+      </div>
       <button
+        ref={addButtonRef}
         type="button"
-        className="btn btn-outline-secondary btn-sm w-100 mb-2"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        {loading
-          ? <><span className="spinner-border spinner-border-sm me-1" />Loading...</>
-          : <><i className="bi bi-arrow-clockwise me-1" />Refresh Orchards</>}
-      </button>
-      <button
-        type="button"
-        className="btn btn-success btn-sm w-100 mb-2"
-        onClick={() => setShowAddForm((value) => !value)}
+        className="btn btn-outline-success btn-sm w-100 mb-2"
+        onClick={() => setShowAddForm(true)}
       >
         <i className="bi bi-plus-circle me-1" />
         Add Orchard
@@ -106,12 +158,48 @@ export default function OrchardSwitcher({
         </div>
       )}
 
+      {selected && (
+        <div className="small text-muted">
+          <i className="bi bi-tree me-1" />
+          {treeCount} tree{treeCount !== 1 ? 's' : ''}
+          {selected.location && <> &middot; {selected.location}</>}
+        </div>
+      )}
+    </CollapsibleCard>
+
       {showAddForm && (
-        <form onSubmit={handleSubmit} className="border rounded-2 p-2 mb-2 bg-light">
+        <div
+          className="orchard-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !uploading) setShowAddForm(false)
+          }}
+        >
+          <div
+            ref={modalRef}
+            className="orchard-modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="orchard-modal-title"
+          >
+            <div className="orchard-modal-header">
+              <div>
+                <div className="orchard-modal-eyebrow">Orchard setup</div>
+                <h2 id="orchard-modal-title" className="orchard-modal-title">Add orchard</h2>
+              </div>
+              <button
+                type="button"
+                className="btn-close"
+                aria-label="Close add orchard dialog"
+                onClick={() => setShowAddForm(false)}
+                disabled={uploading}
+              />
+            </div>
+            <form onSubmit={handleSubmit} className="orchard-modal-form">
           <label className="small fw-medium mb-1 d-block" htmlFor="orchard-upload-name">
             Orchard Name
           </label>
           <input
+            ref={nameInputRef}
             id="orchard-upload-name"
             className="form-control form-control-sm mb-2"
             value={name}
@@ -170,7 +258,7 @@ export default function OrchardSwitcher({
             disabled={uploading}
           />
 
-          <div className="d-flex gap-2">
+          <div className="orchard-modal-actions">
             <button type="submit" className="btn btn-success btn-sm flex-fill" disabled={uploading}>
               {uploading
                 ? <><span className="spinner-border spinner-border-sm me-1" />Uploading</>
@@ -185,16 +273,10 @@ export default function OrchardSwitcher({
               Cancel
             </button>
           </div>
-        </form>
-      )}
-
-      {selected && (
-        <div className="small text-muted">
-          <i className="bi bi-tree me-1" />
-          {treeCount} tree{treeCount !== 1 ? 's' : ''}
-          {selected.location && <> &middot; {selected.location}</>}
+            </form>
+          </div>
         </div>
       )}
-    </CollapsibleCard>
+    </>
   )
 }

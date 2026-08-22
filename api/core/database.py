@@ -239,25 +239,38 @@ async def _ensure_default_orchard(conn) -> None:
                 points.append((float(coordinates[0]), float(coordinates[1])))
         centroid_lon = sum(point[0] for point in points) / len(points) if points else None
         centroid_lat = sum(point[1] for point in points) / len(points) if points else None
-        await conn.execute(text("""
-            INSERT INTO orchard (
-                orchard_uid, name, location, tree_count, geojson,
-                cecid_weed_zones, centroid_lon, centroid_lat,
-                is_active, monitoring_enabled, orchard_stage,
-                days_since_flowering, monitored_pest_types
-            ) VALUES (
-                'default-orchard', 'Default Orchard (BPI)',
-                'Guimaras, Philippines', :tree_count, CAST(:geojson AS JSONB),
-                '[]'::jsonb, :centroid_lon, :centroid_lat,
-                TRUE, TRUE, 'mature', 60, '["cecid", "fruitfly"]'::jsonb
-            )
-            ON CONFLICT (orchard_uid) DO NOTHING
-        """), {
-            "tree_count": len(points),
-            "geojson": json.dumps(geojson),
-            "centroid_lon": centroid_lon,
-            "centroid_lat": centroid_lat,
-        })
+        async def insert_default_orchard() -> None:
+            await conn.execute(text("""
+                INSERT INTO orchard (
+                    orchard_uid, name, location, tree_count, geojson,
+                    cecid_weed_zones, centroid_lon, centroid_lat,
+                    is_active, monitoring_enabled, orchard_stage,
+                    days_since_flowering, monitored_pest_types,
+                    created_at, updated_at
+                ) VALUES (
+                    'default-orchard', 'Default Orchard (BPI)',
+                    'Guimaras, Philippines', :tree_count, CAST(:geojson AS JSONB),
+                    '[]'::jsonb, :centroid_lon, :centroid_lat,
+                    TRUE, TRUE, 'mature', 60, '["cecid", "fruitfly"]'::jsonb,
+                    NOW(), NOW()
+                )
+                ON CONFLICT (orchard_uid) DO NOTHING
+            """), {
+                "tree_count": len(points),
+                "geojson": json.dumps(geojson),
+                "centroid_lon": centroid_lon,
+                "centroid_lat": centroid_lat,
+            })
+
+        # Keep optional default-data registration inside a savepoint so a
+        # legacy constraint cannot abort the entire startup migration. The
+        # lightweight connection used by unit tests does not expose savepoints.
+        begin_nested = getattr(conn, "begin_nested", None)
+        if begin_nested is None:
+            await insert_default_orchard()
+        else:
+            async with begin_nested():
+                await insert_default_orchard()
         logger.info("Registered bundled default-orchard with %d trees", len(points))
     except Exception as exc:
         logger.warning("Could not register bundled default-orchard: %s", exc)
@@ -306,6 +319,8 @@ async def init_db():
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS last_monitoring_scan_at TIMESTAMP;"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW();"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ALTER COLUMN created_at SET DEFAULT NOW();"))
+        await conn.execute(text("ALTER TABLE IF EXISTS orchard ALTER COLUMN updated_at SET DEFAULT NOW();"))
         await conn.execute(text(
             "UPDATE orchard SET orchard_uid = 'orchard-' || orchard_id "
             "WHERE orchard_uid IS NULL OR orchard_uid = '';"

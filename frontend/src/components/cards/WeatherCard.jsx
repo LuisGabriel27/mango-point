@@ -734,8 +734,10 @@ export default function WeatherCard({
   weatherTimeline,
   onTimelineChange,
   onRetry,
+  embedded = false,
 }) {
   const [scenarioKey, setScenarioKey] = useState('live')
+  const [showDetails, setShowDetails] = useState(false)
 
   const current = weather?.current
 
@@ -746,6 +748,7 @@ export default function WeatherCard({
 
   const handleScenarioSelect = (scenario) => {
     setScenarioKey(scenario.key)
+    setShowDetails(scenario.key === 'custom' || scenario.key === 'timeline')
     if (scenario.key === 'live') {
       onTimelineChange?.({ ...(weatherTimeline || {}), enabled: false })
       onOverrideToggle?.(false)
@@ -768,7 +771,7 @@ export default function WeatherCard({
   const isOverrideOn = scenarioKey !== 'live'
 
   return (
-    <CollapsibleCard iconName="cloud-sun" title="Weather">
+    <CollapsibleCard iconName="cloud-sun" title="Weather" embedded={embedded}>
       {/* Live weather display */}
       {current ? (
         <div className="mb-2">
@@ -836,7 +839,22 @@ export default function WeatherCard({
         </div>
       )}
 
-      {scenarioKey === 'timeline' && (
+      {(scenarioKey === 'timeline' || scenarioKey === 'custom') && (
+        <button
+          type="button"
+          className="sim-expandable-row mb-2"
+          onClick={() => setShowDetails((value) => !value)}
+          aria-expanded={showDetails}
+        >
+          <i className={`bi bi-${scenarioKey === 'timeline' ? 'calendar3-range' : 'sliders'} sim-expandable-icon`} />
+          <span className="sim-expandable-label">
+            {scenarioKey === 'timeline' ? 'Weather timeline details' : 'Custom weather details'}
+          </span>
+          <i className={`bi bi-chevron-${showDetails ? 'up' : 'down'} sim-expandable-chevron`} />
+        </button>
+      )}
+
+      {showDetails && scenarioKey === 'timeline' && (
         <TimelineEditor
           timeline={weatherTimeline}
           onChange={(next) => {
@@ -847,7 +865,7 @@ export default function WeatherCard({
       )}
 
       {/* Custom controls — only shown in Custom mode */}
-      {scenarioKey === 'custom' && (
+      {showDetails && scenarioKey === 'custom' && (
         <div className="border rounded p-2 mt-1" style={{ fontSize: '.82rem' }}>
 
           {/* Date & time */}

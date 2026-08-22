@@ -15,6 +15,7 @@ Tables:
     - environmental_condition:  Weather data per simulation
     - mango_stage:              Phenological stage tracking
     - alert:                    Risk alert log
+    - alert_email_recipient:    Admin-managed alert email recipients
     - weather_cache:            Weather API response cache
     - sync_outbox:              Transactional cloud-backup queue
     - sync_state:               Cloud-backup checkpoint/status
@@ -580,6 +581,41 @@ class Alert(Base):
     __table_args__ = (
         Index("idx_alert_status", "status"),
         Index("idx_alert_severity", "severity"),
+    )
+
+
+# ═══════════════════════════════════════════════
+#  8a. Alert email recipient
+# ═══════════════════════════════════════════════
+
+class AlertEmailRecipient(Base):
+    """Designated person who receives off-site alert emails."""
+    __tablename__ = "alert_email_recipient"
+
+    recipient_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("user_account.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow_naive,
+        onupdate=utcnow_naive,
+    )
+
+    __table_args__ = (
+        Index("idx_alert_email_recipient_email", "email", unique=True),
+        Index("idx_alert_email_recipient_active", "is_active"),
     )
 
 

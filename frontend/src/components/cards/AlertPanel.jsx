@@ -4,8 +4,8 @@ import api from '../../api'
 
 const SEV_BADGE = { critical: 'danger', high: 'warning', medium: 'info', low: 'secondary' }
 
-function AlertItem({ alert, onUpdate, onApplySuggested }) {
-  const [ackNotes, setAckNotes] = useState('')
+export function AlertItem({ alert, onUpdate, onApplySuggested }) {
+  const [ackNotes] = useState('')
   const [acting, setActing] = useState(false)
 
   const handleAck = async () => {
@@ -27,7 +27,6 @@ function AlertItem({ alert, onUpdate, onApplySuggested }) {
   const ts = alert.triggered_at
     ? new Date(alert.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : ''
-
   const isWeatherAlert = alert.zone_name?.toLowerCase().includes('weather forecast')
 
   return (
@@ -41,13 +40,21 @@ function AlertItem({ alert, onUpdate, onApplySuggested }) {
           <span className={`badge bg-${SEV_BADGE[alert.severity] ?? 'secondary'}`}>
             {alert.severity?.toUpperCase()}
           </span>
+          {alert.email_sent && (
+            <span
+              className="badge bg-success-subtle text-success-emphasis border border-success-subtle"
+              title="Email delivered to the designated farmers"
+            >
+              <i className="bi bi-envelope-check me-1" />Emailed
+            </span>
+          )}
         </div>
         <small className="text-muted">{ts}</small>
       </div>
       <div className="mb-1">{alert.message}</div>
       {alert.recommended_actions?.length > 0 && (
         <ul className="mb-1 ps-3 text-muted" style={{ fontSize: '.75rem' }}>
-          {alert.recommended_actions.slice(0, 2).map((a, i) => <li key={i}>{a}</li>)}
+          {alert.recommended_actions.slice(0, 2).map((action, index) => <li key={index}>{action}</li>)}
         </ul>
       )}
       <div className="d-flex gap-1 flex-wrap mt-1">
@@ -77,30 +84,43 @@ function AlertItem({ alert, onUpdate, onApplySuggested }) {
   )
 }
 
-export default function AlertPanel({ alerts = [], loading, onRefresh, onApplySuggested }) {
-  const active = alerts.filter((a) => a.status === 'active')
+export function AlertList({ alerts = [], loading, onRefresh, onApplySuggested }) {
+  const active = alerts.filter((alert) => alert.status === 'active')
 
+  if (loading) {
+    return <div className="text-muted small"><span className="spinner-border spinner-border-sm me-1" />Loading…</div>
+  }
+  if (active.length === 0) {
+    return (
+      <div className="text-muted small">
+        <i className="bi bi-check-circle me-1 text-success" />No active alerts
+      </div>
+    )
+  }
+  return active.map((alert) => (
+    <AlertItem
+      key={alert.alert_id}
+      alert={alert}
+      onUpdate={onRefresh}
+      onApplySuggested={onApplySuggested}
+    />
+  ))
+}
+
+export default function AlertPanel({ alerts = [], loading, onRefresh, onApplySuggested }) {
+  const active = alerts.filter((alert) => alert.status === 'active')
   const badge = active.length > 0 ? (
     <span className="badge bg-danger rounded-pill ms-1">{active.length}</span>
   ) : null
 
   return (
-    <CollapsibleCard
-      iconName="exclamation-triangle"
-      title="Alerts"
-      headerExtra={badge}
-    >
-      {loading ? (
-        <div className="text-muted small"><span className="spinner-border spinner-border-sm me-1" />Loading…</div>
-      ) : active.length === 0 ? (
-        <div className="text-muted small">
-          <i className="bi bi-check-circle me-1 text-success" />No active alerts
-        </div>
-      ) : (
-        active.map((a) => (
-          <AlertItem key={a.alert_id} alert={a} onUpdate={onRefresh} onApplySuggested={onApplySuggested} />
-        ))
-      )}
+    <CollapsibleCard iconName="exclamation-triangle" title="Alerts" headerExtra={badge}>
+      <AlertList
+        alerts={alerts}
+        loading={loading}
+        onRefresh={onRefresh}
+        onApplySuggested={onApplySuggested}
+      />
     </CollapsibleCard>
   )
 }

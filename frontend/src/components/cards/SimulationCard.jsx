@@ -125,6 +125,27 @@ function SectionLabel({ iconName, text }) {
   )
 }
 
+function AdvancedPanel({ iconName, title, summary, open, onToggle, children, className = '' }) {
+  return (
+    <div className={`simulation-advanced-panel ${className}`}>
+      <button
+        type="button"
+        className="sim-expandable-row"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <i className={`bi bi-${iconName} sim-expandable-icon`} />
+        <span className="sim-expandable-label">
+          {title}
+          {summary && <small className="simulation-advanced-summary">{summary}</small>}
+        </span>
+        <i className={`bi bi-chevron-${open ? 'up' : 'down'} sim-expandable-chevron`} />
+      </button>
+      {open && <div className="simulation-advanced-body">{children}</div>}
+    </div>
+  )
+}
+
 function BtnGroup({ options, value, onChange, small = false }) {
   return (
     <div className={`sim-btn-group${small ? ' sim-btn-group-sm' : ''}`}>
@@ -240,6 +261,7 @@ export default function SimulationCard({
   suggestedParams,
   onClearSuggested,
   loadedParams,
+  embedded = false,
 }) {
   const [simMode, setSimMode] = useState('grid')
   const [pestType, setPestType] = useState('fruitfly')
@@ -251,6 +273,8 @@ export default function SimulationCard({
   const [treatmentType, setTreatmentType] = useState('targeted_spray')
   const [treatmentEfficacy, setTreatmentEfficacy] = useState(0.65)
   const [simHours, setSimHours] = useState('48')
+  const [showModelPressure, setShowModelPressure] = useState(false)
+  const [showTreatment, setShowTreatment] = useState(false)
   const [showImpact, setShowImpact] = useState(false)
   const [impact, setImpact] = useState(DEFAULTS)
   const [running, setRunning] = useState(false)
@@ -516,7 +540,7 @@ export default function SimulationCard({
   }
 
   return (
-    <CollapsibleCard iconName="cpu" title="Simulation">
+    <CollapsibleCard iconName="cpu" title="Simulation" embedded={embedded}>
       {suggestedParams?._rain_summary && (
         <div
           className="alert alert-primary py-2 px-2 mb-2 d-flex align-items-start gap-2"
@@ -532,22 +556,6 @@ export default function SimulationCard({
           />
         </div>
       )}
-      <SectionLabel iconName="diagram-3" text="Spread Model" />
-      <BtnGroup
-        value={simMode}
-        onChange={setSimMode}
-        options={[
-          { value: 'grid', label: 'Grid (CA)', icon: 'grid' },
-          { value: 'tree_graph', label: 'Tree Graph', icon: 'diagram-3' },
-        ]}
-      />
-      {simMode === 'tree_graph' && (
-        <div className="alert alert-info py-1 px-2 mt-1 mb-0" style={{ fontSize: '.78rem' }}>
-          <i className="bi bi-info-circle me-1" />
-          Tree Graph uses crown-to-crown distances. Supply <code>crown_radius_m</code> in GeoJSON properties or set a global fallback.
-        </div>
-      )}
-
       <SectionLabel iconName="bug" text="Pest & Phenology" />
       <label className="small fw-medium mb-1 d-block"><i className="bi bi-bug me-1" />Pest</label>
       <BtnGroup
@@ -586,6 +594,42 @@ export default function SimulationCard({
       />
       <small className="text-muted d-block mb-0">Higher = riper fruit = stronger Fruit Fly attraction.</small>
 
+      <SectionLabel iconName="clock-history" text="Forecast Duration" />
+      <BtnGroup
+        value={simHours}
+        onChange={setSimHours}
+        options={[
+          { value: '24', label: '24 h' },
+          { value: '48', label: '48 h' },
+          { value: '72', label: '72 h' },
+          { value: '168', label: '7 day' },
+        ]}
+      />
+
+      <div className="simulation-advanced-stack mt-3">
+      <AdvancedPanel
+        iconName="diagram-3"
+        title="Model & Neighbor Pressure"
+        summary={`${simMode === 'tree_graph' ? 'Tree Graph' : 'Grid'} · ${Math.round(neighborThreat * 100)}% pressure${neighborThreat > 0 ? ` ${neighborDir}` : ''}`}
+        open={showModelPressure}
+        onToggle={() => setShowModelPressure((value) => !value)}
+      >
+      <SectionLabel iconName="diagram-3" text="Spread Model" />
+      <BtnGroup
+        value={simMode}
+        onChange={setSimMode}
+        options={[
+          { value: 'grid', label: 'Grid (CA)', icon: 'grid' },
+          { value: 'tree_graph', label: 'Tree Graph', icon: 'diagram-3' },
+        ]}
+      />
+      {simMode === 'tree_graph' && (
+        <div className="alert alert-info py-1 px-2 mt-1 mb-0" style={{ fontSize: '.78rem' }}>
+          <i className="bi bi-info-circle me-1" />
+          Tree Graph uses crown-to-crown distances. Supply <code>crown_radius_m</code> in GeoJSON properties or set a global fallback.
+        </div>
+      )}
+
       <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" />
       <Slider id="neighbor-threat" label="Threat Level" iconName="bar-chart-steps"
         min={0} max={1} step={0.1} value={neighborThreat}
@@ -612,7 +656,15 @@ export default function SimulationCard({
           : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
       </small>
 
-      <SectionLabel iconName="shield-plus" text="Treatment Scenario" />
+      </AdvancedPanel>
+
+      <AdvancedPanel
+        iconName="shield-plus"
+        title="Treatment Scenario"
+        summary={treatmentEnabled ? `${treatmentType.replace(/_/g, ' ')} · ${Math.round(treatmentEfficacy * 100)}%` : 'Not included'}
+        open={showTreatment}
+        onToggle={() => setShowTreatment((value) => !value)}
+      >
       <label className="sim-toggle-row mb-1" htmlFor="treatment-enabled">
         <div className="sim-toggle-body">
           <i className="bi bi-shield-plus sim-toggle-icon" />
@@ -647,18 +699,8 @@ export default function SimulationCard({
           )}
         </div>
       )}
-
-      <SectionLabel iconName="clock-history" text="Forecast Duration" />
-      <BtnGroup
-        value={simHours}
-        onChange={setSimHours}
-        options={[
-          { value: '24', label: '24 h' },
-          { value: '48', label: '48 h' },
-          { value: '72', label: '72 h' },
-          { value: '168', label: '7 day' },
-        ]}
-      />
+      </AdvancedPanel>
+      </div>
 
       {timelineActive && timelineSummary && pestType === 'cecid' && (
         <div className={`alert ${timelineSummary.favorable_hours > 0 && orchardStage === 'fruitlet' ? 'alert-success' : 'alert-warning'} py-2 px-2 mt-2 mb-0`} style={{ fontSize: '.76rem' }}>
@@ -681,9 +723,15 @@ export default function SimulationCard({
         type="button"
         className="sim-expandable-row mt-3"
         onClick={() => setShowImpact((v) => !v)}
+        aria-expanded={showImpact}
       >
         <i className="bi bi-cash-stack sim-expandable-icon" />
-        <span className="sim-expandable-label">Crop Impact Assumptions</span>
+        <span className="sim-expandable-label">
+          Crop Impact Assumptions
+          <small className="simulation-advanced-summary">
+            {impact.yield_per_tree_kg} kg/tree · PHP {impact.farmgate_price_php_per_kg}/kg
+          </small>
+        </span>
         <i className={`bi bi-chevron-${showImpact ? 'up' : 'down'} sim-expandable-chevron`} />
       </button>
       {showImpact && (
@@ -723,9 +771,15 @@ export default function SimulationCard({
         type="button"
         className="sim-expandable-row"
         onClick={() => setShowCalibration((v) => !v)}
+        aria-expanded={showCalibration}
       >
         <i className="bi bi-sliders sim-expandable-icon" />
-        <span className="sim-expandable-label">Accuracy Settings</span>
+        <span className="sim-expandable-label">
+          Accuracy Settings
+          <small className="simulation-advanced-summary">
+            {SENSITIVITY_PRESETS[sensitivity]?.label ?? 'Standard'} · {useObsSeeds ? `${obsLookbackDays} day observations` : 'No observation seeds'}
+          </small>
+        </span>
         <i className={`bi bi-chevron-${showCalibration ? 'up' : 'down'} sim-expandable-chevron`} />
       </button>
       {showCalibration && (
@@ -787,6 +841,10 @@ export default function SimulationCard({
         </div>
       )}
 
+      {pestType === 'cecid' && (
+        <CecidTimelineResult diagnostics={gateDiagnostics} />
+      )}
+      <div className="simulation-action-footer">
       <hr className="mt-3 mb-2" />
       <button id="run-sim-btn" type="button" className="btn btn-success w-100 fw-semibold"
         onClick={handleRun} disabled={running || !orchardGeojson}>
@@ -800,9 +858,7 @@ export default function SimulationCard({
           {status.msg}
         </div>
       )}
-      {pestType === 'cecid' && (
-        <CecidTimelineResult diagnostics={gateDiagnostics} />
-      )}
+      </div>
     </CollapsibleCard>
   )
 }

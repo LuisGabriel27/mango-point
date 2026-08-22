@@ -25,7 +25,7 @@ from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
 from ..core.config import settings
-from utils.datetime_utils import format_rfc3339, parse_rfc3339
+from utils.datetime_utils import format_rfc3339, parse_rfc3339, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -793,6 +793,7 @@ async def _persist_or_store_alerts(
     if not alerts:
         return
 
+    notification_attempted: set[str] = set()
     try:
         from ..core.database import async_session_maker
 
@@ -808,6 +809,7 @@ async def _persist_or_store_alerts(
                     )
                     continue
                 await alert_service.create_alert(db, alert_data, send_notifications=True)
+                notification_attempted.add(alert_data.alert_id)
                 created_count += 1
             await db.commit()
             logger.info(
@@ -823,7 +825,19 @@ async def _persist_or_store_alerts(
             db_err,
         )
         for alert_data in alerts:
-            alert_service.store_alert_in_memory(alert_data)
+            newly_stored = alert_service.store_alert_in_memory(alert_data)
+            if newly_stored and alert_data.alert_id not in notification_attempted:
+                email_sent, sms_sent = await alert_service.send_notifications_for_alert_data(
+                    alert_data,
+                )
+                alert_service.update_memory_alert(
+                    alert_data.alert_id,
+                    email_sent=email_sent,
+                    email_sent_at=(
+                        format_rfc3339(utcnow_naive()) if email_sent else None
+                    ),
+                    sms_sent=sms_sent,
+                )
         logger.info(
             "Stored %d %s alert(s) in memory for simulation %s",
             len(alerts),

@@ -13,10 +13,46 @@ import {
   normalizeCecidWeedZones,
   saveCecidWeedZones,
 } from '../utils/cecidWeedZones'
+import {
+  DEFAULT_SIDEBAR_WORKFLOW,
+  parseStoredSidebarCollapsed,
+  sidebarWorkflowForEvent,
+} from '../utils/sidebarWorkspace'
+import guimarasWondersFarmTrees from '../assets/guimaras-wonders-farm-trees.json'
+import {
+  GUIMARAS_WONDERS_FARM_ID,
+  GUIMARAS_WONDERS_FARM_OVERLAY_COORDINATES,
+  mergeBundledOrchards,
+} from '../utils/bundledOrchards'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
 const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
 const SELECTED_ORCHARD_STORAGE_KEY = 'mangopoint.selectedOrchardId.v1'
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'mangopoint.sidebarCollapsed.v1'
+
+const GUIMARAS_WONDERS_FARM_ORCHARD = {
+  orchard_id: GUIMARAS_WONDERS_FARM_ID,
+  name: 'Guimaras Wonders Farm',
+  location: 'Guimaras, Philippines',
+  tree_count: guimarasWondersFarmTrees.features.length,
+  geojson: guimarasWondersFarmTrees,
+  centroid_lon: 122.61253175014424,
+  centroid_lat: 10.631031789835638,
+  orthophoto_bounds: [
+    122.61086363208625,
+    10.629772719131637,
+    122.61419986820223,
+    10.63229086053964,
+  ],
+  orthophoto_coordinates: GUIMARAS_WONDERS_FARM_OVERLAY_COORDINATES,
+  description: 'Bundled Guimaras Wonders Farm orchard map.',
+  is_active: true,
+  monitoring_enabled: true,
+  orchard_stage: 'mature',
+  days_since_flowering: 60,
+  monitored_pest_types: ['cecid', 'fruitfly'],
+  cecid_weed_zones: [],
+}
 
 const DEFAULT_MANUAL_WEATHER = {
   temperature_c: 30,
@@ -41,6 +77,24 @@ function writeStoredSelectedOrchardId(orchardId) {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(SELECTED_ORCHARD_STORAGE_KEY, orchardId || DEFAULT_ORCHARD_ID)
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function readStoredSidebarCollapsed() {
+  if (typeof window === 'undefined') return false
+  try {
+    return parseStoredSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY))
+  } catch (_) {
+    return false
+  }
+}
+
+function writeStoredSidebarCollapsed(collapsed) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(Boolean(collapsed)))
   } catch (_) {
     /* ignore */
   }
@@ -280,9 +334,15 @@ function isCurrentSimulationRiskAlert(alert, runId) {
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live-map')
+  const [sidebarWorkflow, setSidebarWorkflow] = useState(DEFAULT_SIDEBAR_WORKFLOW)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readStoredSidebarCollapsed)
+  const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false)
+  const [suggestedSimParams, setSuggestedSimParams] = useState(null)
 
   // Orchard state
-  const [orchards, setOrchards] = useState([])
+  const [orchards, setOrchards] = useState(() => (
+    mergeBundledOrchards([], GUIMARAS_WONDERS_FARM_ORCHARD)
+  ))
   const [selectedOrchardId, setSelectedOrchardId] = useState(readStoredSelectedOrchardId)
   const selectedOrchardIdRef = useRef(selectedOrchardId)
   const [orchardLoading, setOrchardLoading] = useState(false)
@@ -428,7 +488,6 @@ export default function DashboardPage() {
     )),
     [activeOrchardAlerts, currentSimulationRunId],
   )
-  const activeAlertCount = activeOrchardAlerts.filter(isActiveAlert).length
 
   // Build decision support metrics from simulation data
   // (SimulationResponse has no dedicated decision_support field — compute it here)
@@ -525,7 +584,10 @@ export default function DashboardPage() {
     setOrchardLoading(true)
     try {
       const res = await api.getOrchards({ active_only: true, include_geojson: true })
-      const list = res.data.orchards ?? []
+      const list = mergeBundledOrchards(
+        res.data.orchards ?? [],
+        GUIMARAS_WONDERS_FARM_ORCHARD,
+      )
       setOrchards(list)
       const activeSelectedId = selectedIdOverride || DEFAULT_ORCHARD_ID
       const selectedRecord = list.find((o) => o.orchard_id === activeSelectedId)
@@ -694,6 +756,16 @@ export default function DashboardPage() {
   useEffect(() => { fetchAlerts() }, [])
   useEffect(() => { fetchWeather() }, [fetchWeather])
   useEffect(() => { fetchMonitoring() }, [])
+  useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed) }, [sidebarCollapsed])
+
+  const handleSuggestedSimulation = useCallback((params) => {
+    setSuggestedSimParams(params)
+    setSidebarWorkflow((current) => sidebarWorkflowForEvent('alert-prefill', current))
+    setSidebarCollapsed(false)
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 991.98px)').matches) {
+      setSidebarMobileOpen(true)
+    }
+  }, [])
 
   // ── Auto-refresh intervals ────────────────────────────────────────────
   useEffect(() => {
@@ -819,6 +891,8 @@ export default function DashboardPage() {
   const handleHistoricalSimulationLoad = useCallback((data) => {
     const params = parseMaybeJson(data.request_payload ?? data.input_parameters, {})
     setActiveTab('live-map')
+    setSidebarWorkflow((current) => sidebarWorkflowForEvent('historical-result', current))
+    setSidebarCollapsed(false)
     applySimulationResult(data, { startAtLastFrame: true })
     restoreStageContext(params, { defer: true })
     restoreWeatherContext(params)
@@ -831,6 +905,8 @@ export default function DashboardPage() {
   const handleHistoricalTemplateLoad = useCallback((params) => {
     const safeParams = parseMaybeJson(params, {})
     setActiveTab('live-map')
+    setSidebarWorkflow((current) => sidebarWorkflowForEvent('historical-template', current))
+    setSidebarCollapsed(false)
     restoreStageContext(safeParams)
     restoreWeatherContext(safeParams)
     setSimulationTemplate({
@@ -1170,7 +1246,15 @@ export default function DashboardPage() {
 
   return (
     <div className="app-shell">
-      <Navbar alertCount={activeAlertCount} alerts={activeOrchardAlerts} activeTab={activeTab} onTabChange={setActiveTab} />
+      <Navbar
+        alerts={activeOrchardAlerts}
+        alertLoading={alertLoading}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        onAlertRefresh={fetchAlerts}
+        onApplySuggested={handleSuggestedSimulation}
+        onControlsOpen={() => setSidebarMobileOpen(true)}
+      />
 
       <div className="viewport-layout">
         {/* ── Main content area (map + tabs) ── */}
@@ -1325,10 +1409,15 @@ export default function DashboardPage() {
           playbackFrames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
           onFrameSeek={setCurrentFrameIdx}
-          alerts={activeOrchardAlerts}
-          alertLoading={alertLoading}
-          onAlertRefresh={fetchAlerts}
           decisionMetrics={decisionMetrics}
+          suggestedSimParams={suggestedSimParams}
+          onClearSuggestedSimParams={() => setSuggestedSimParams(null)}
+          activeWorkflow={sidebarWorkflow}
+          onWorkflowChange={setSidebarWorkflow}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
+          mobileOpen={sidebarMobileOpen}
+          onMobileOpenChange={setSidebarMobileOpen}
         />
       </div>
 

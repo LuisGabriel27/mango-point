@@ -77,6 +77,8 @@ const api = {
   clearAlerts: () => client.delete('/alerts/clear'),
   getAlertEmailRecipients: () => client.get('/alerts/email/recipients'),
   addAlertEmailRecipient: (body) => client.post('/alerts/email/recipients', body),
+  updateAlertEmailRecipient: (recipientId, body) =>
+    client.patch(`/alerts/email/recipients/${recipientId}`, body),
   removeAlertEmailRecipient: (recipientId) =>
     client.delete(`/alerts/email/recipients/${recipientId}`),
 

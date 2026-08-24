@@ -1,5 +1,5 @@
 -- Admin-managed recipients for off-site pest alert emails.
--- The table is intentionally excluded from sync_outbox replication.
+-- Protected cloud replication is enabled by migration 202608240001.
 
 BEGIN;
 

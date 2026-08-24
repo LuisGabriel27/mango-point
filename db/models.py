@@ -623,6 +623,20 @@ class AlertEmailRecipient(Base):
 #  9. WeatherCache
 # ═══════════════════════════════════════════════
 
+class AlertEmailRecipientState(Base):
+    """Persist whether the admin-managed recipient list is authoritative."""
+    __tablename__ = "alert_email_recipient_state"
+
+    state_id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    is_managed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow_naive,
+        onupdate=utcnow_naive,
+    )
+
+
 class WeatherCache(Base):
     """Cache for weather API responses."""
     __tablename__ = "weather_cache"

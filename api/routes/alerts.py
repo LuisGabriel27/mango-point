@@ -21,13 +21,17 @@ from ..models.schemas import (
     AlertActionUpdate,
     AlertEmailRecipientCreate,
     AlertEmailRecipientResponse,
+    AlertEmailRecipientUpdate,
     AlertStatusEnum,
     AlertSeverityEnum,
     WeatherForecastCheckRequest,
 )
 from ..core.config import settings
 from db.models import AlertStatus, UserAccount, UserRoleEnum
-from ..services.alert_recipient_service import alert_recipient_service
+from ..services.alert_recipient_service import (
+    AlertRecipientEmailConflictError,
+    alert_recipient_service,
+)
 from ..services.alert_service import alert_service
 from ..services.notification_service import notification_service
 from ..services.weather_service import weather_service
@@ -615,7 +619,7 @@ async def get_alert_email_status(
     "/email/recipients",
     response_model=list[AlertEmailRecipientResponse],
     summary="List designated alert email recipients",
-    description="List active recipients assigned by an administrator.",
+    description="List active and paused recipients assigned by an administrator.",
 )
 async def list_alert_email_recipients(
     current_user: UserAccount = Depends(get_current_active_user),
@@ -623,7 +627,7 @@ async def list_alert_email_recipients(
 ):
     """Return the admin-managed recipient list, importing `.env` defaults once."""
     _require_admin(current_user)
-    recipients = await alert_recipient_service.list_active(
+    recipients = await alert_recipient_service.list_all(
         db,
         bootstrap_environment=True,
     )
@@ -655,20 +659,51 @@ async def add_alert_email_recipient(
     return recipient
 
 
+@router.patch(
+    "/email/recipients/{recipient_id}",
+    response_model=AlertEmailRecipientResponse,
+    summary="Update an alert email recipient",
+    description="Edit recipient details or pause/resume future alert emails.",
+)
+async def update_alert_email_recipient(
+    recipient_id: int,
+    body: AlertEmailRecipientUpdate,
+    current_user: UserAccount = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update one designated recipient without changing alert delivery logic."""
+    _require_admin(current_user)
+    try:
+        recipient = await alert_recipient_service.update(
+            db,
+            recipient_id,
+            email=body.email,
+            name=body.name,
+            update_name="name" in body.model_fields_set,
+            is_active=body.is_active,
+        )
+    except AlertRecipientEmailConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if recipient is None:
+        raise HTTPException(status_code=404, detail="Alert email recipient not found.")
+    await db.commit()
+    return recipient
+
+
 @router.delete(
     "/email/recipients/{recipient_id}",
     response_model=AlertEmailRecipientResponse,
-    summary="Remove an alert email recipient",
-    description="Stop sending future alert emails to a designated recipient.",
+    summary="Permanently delete an alert email recipient",
+    description="Permanently remove a designated recipient and their contact details.",
 )
 async def remove_alert_email_recipient(
     recipient_id: int,
     current_user: UserAccount = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deactivate a recipient while preserving intentional empty-list state."""
+    """Hard-delete a recipient while preserving intentional empty-list state."""
     _require_admin(current_user)
-    recipient = await alert_recipient_service.deactivate(db, recipient_id)
+    recipient = await alert_recipient_service.hard_delete(db, recipient_id)
     if recipient is None:
         raise HTTPException(status_code=404, detail="Alert email recipient not found.")
     await db.commit()

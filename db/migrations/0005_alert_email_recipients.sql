@@ -1,6 +1,6 @@
 -- Admin-managed recipients for off-site pest alert emails.
--- This table intentionally has no sync-outbox trigger because recipient
--- addresses are operational contact data, not simulation/domain records.
+-- Cloud replication is enabled separately by 0007 after the supporting
+-- management-state table exists.
 
 CREATE TABLE IF NOT EXISTS alert_email_recipient (
     recipient_id SERIAL PRIMARY KEY,

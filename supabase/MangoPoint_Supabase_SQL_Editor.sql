@@ -263,8 +263,8 @@ CREATE INDEX IF NOT EXISTS idx_alert_id ON alert (alert_id);
 CREATE INDEX IF NOT EXISTS idx_alert_status ON alert (status);
 CREATE INDEX IF NOT EXISTS idx_alert_severity ON alert (severity);
 
--- Admin-managed notification recipients. These addresses remain operational
--- contact data and are intentionally excluded from sync_outbox replication.
+-- Admin-managed notification recipients. These contact records are backed up
+-- through the server-side PostgreSQL connection and hidden from public APIs.
 CREATE TABLE IF NOT EXISTS alert_email_recipient (
     recipient_id SERIAL PRIMARY KEY,
     email VARCHAR(255) NOT NULL,
@@ -283,6 +283,46 @@ DROP TRIGGER IF EXISTS trg_alert_email_recipient_set_updated_at ON alert_email_r
 CREATE TRIGGER trg_alert_email_recipient_set_updated_at
 BEFORE UPDATE ON alert_email_recipient
 FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
+
+CREATE TABLE IF NOT EXISTS alert_email_recipient_state (
+    state_id INTEGER PRIMARY KEY DEFAULT 1,
+    is_managed BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_alert_email_recipient_state_singleton CHECK (state_id = 1)
+);
+
+ALTER TABLE alert_email_recipient_state
+    ALTER COLUMN state_id SET DEFAULT 1,
+    ALTER COLUMN is_managed SET DEFAULT FALSE,
+    ALTER COLUMN updated_at SET DEFAULT NOW();
+
+INSERT INTO alert_email_recipient_state (state_id, is_managed, updated_at)
+VALUES (1, EXISTS (SELECT 1 FROM alert_email_recipient), NOW())
+ON CONFLICT (state_id) DO NOTHING;
+
+DROP TRIGGER IF EXISTS trg_alert_email_recipient_state_sync
+    ON alert_email_recipient_state;
+
+ALTER TABLE alert_email_recipient ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alert_email_recipient_state ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON TABLE alert_email_recipient FROM anon;
+        REVOKE ALL PRIVILEGES ON TABLE alert_email_recipient_state FROM anon;
+        IF to_regclass('alert_email_recipient_recipient_id_seq') IS NOT NULL THEN
+            REVOKE ALL PRIVILEGES ON SEQUENCE alert_email_recipient_recipient_id_seq FROM anon;
+        END IF;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL PRIVILEGES ON TABLE alert_email_recipient FROM authenticated;
+        REVOKE ALL PRIVILEGES ON TABLE alert_email_recipient_state FROM authenticated;
+        IF to_regclass('alert_email_recipient_recipient_id_seq') IS NOT NULL THEN
+            REVOKE ALL PRIVILEGES ON SEQUENCE alert_email_recipient_recipient_id_seq FROM authenticated;
+        END IF;
+    END IF;
+END $$;
 
 -- Transient cache: intentionally excluded from cloud replication below.
 CREATE TABLE IF NOT EXISTS weather_cache (
@@ -431,18 +471,46 @@ FOR EACH ROW EXECUTE FUNCTION enqueue_mangopoint_sync_event('id');
 -- Orchard files and their manifest remain local-only.
 DROP TRIGGER IF EXISTS trg_orchard_asset_sync ON orchard_asset;
 
--- Farmer/significant-person contact addresses are managed by the application
--- and are never copied through the local-to-cloud sync outbox.
 DROP TRIGGER IF EXISTS trg_alert_email_recipient_sync ON alert_email_recipient;
+CREATE TRIGGER trg_alert_email_recipient_sync
+AFTER INSERT OR UPDATE OR DELETE ON alert_email_recipient
+FOR EACH ROW EXECUTE FUNCTION enqueue_mangopoint_sync_event('recipient_id');
 
--- Queue existing rows once. weather_cache, orchard_asset, and
--- alert_email_recipient are intentionally omitted.
+DROP TRIGGER IF EXISTS trg_alert_email_recipient_state_sync
+    ON alert_email_recipient_state;
+CREATE TRIGGER trg_alert_email_recipient_state_sync
+AFTER INSERT OR UPDATE OR DELETE ON alert_email_recipient_state
+FOR EACH ROW EXECUTE FUNCTION enqueue_mangopoint_sync_event('state_id');
+
+-- Queue existing durable rows once. weather_cache and orchard_asset are omitted.
 INSERT INTO sync_outbox (entity_type, entity_key, operation)
 SELECT 'user_account', user_id::TEXT, 'upsert' FROM user_account source
 WHERE NOT EXISTS (
     SELECT 1 FROM sync_outbox queued
     WHERE queued.entity_type = 'user_account'
       AND queued.entity_key = source.user_id::TEXT
+      AND queued.operation = 'upsert'
+      AND queued.synced_at IS NULL
+);
+
+INSERT INTO sync_outbox (entity_type, entity_key, operation)
+SELECT 'alert_email_recipient', recipient_id::TEXT, 'upsert'
+FROM alert_email_recipient source
+WHERE NOT EXISTS (
+    SELECT 1 FROM sync_outbox queued
+    WHERE queued.entity_type = 'alert_email_recipient'
+      AND queued.entity_key = source.recipient_id::TEXT
+      AND queued.operation = 'upsert'
+      AND queued.synced_at IS NULL
+);
+
+INSERT INTO sync_outbox (entity_type, entity_key, operation)
+SELECT 'alert_email_recipient_state', state_id::TEXT, 'upsert'
+FROM alert_email_recipient_state source
+WHERE NOT EXISTS (
+    SELECT 1 FROM sync_outbox queued
+    WHERE queued.entity_type = 'alert_email_recipient_state'
+      AND queued.entity_key = source.state_id::TEXT
       AND queued.operation = 'upsert'
       AND queued.synced_at IS NULL
 );

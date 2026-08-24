@@ -7,7 +7,7 @@ Request and response schemas for the API endpoints.
 from datetime import datetime
 import re
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 from core.config import (
     TG_LAMBDA0,
@@ -948,6 +948,37 @@ class AlertEmailRecipientCreate(BaseModel):
     def normalize_name(cls, value: Optional[str]) -> Optional[str]:
         normalized = (value or "").strip()
         return normalized or None
+
+
+class AlertEmailRecipientUpdate(BaseModel):
+    """Admin request for editing or pausing an alert email recipient."""
+    email: Optional[str] = Field(default=None, min_length=3, max_length=254)
+    name: Optional[str] = Field(default=None, max_length=200)
+    is_active: Optional[bool] = None
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: Optional[str]) -> str:
+        if value is None:
+            raise ValueError("Email cannot be empty")
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
+            raise ValueError("Enter a valid email address")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: Optional[str]) -> Optional[str]:
+        normalized = (value or "").strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set:
+            raise ValueError("Provide at least one recipient field to update")
+        if "is_active" in self.model_fields_set and self.is_active is None:
+            raise ValueError("is_active cannot be empty")
+        return self
 
 
 class AlertEmailRecipientResponse(BaseModel):

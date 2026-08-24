@@ -98,7 +98,50 @@ def test_sync_migration_has_transactional_triggers_and_excludes_weather_cache():
     assert "DROP TRIGGER IF EXISTS trg_orchard_asset_sync" in asset_migration
 
 
+def test_recipient_management_state_base_migration_repairs_database_defaults():
+    local_migration = (
+        ROOT / "db" / "migrations" / "0006_alert_email_recipient_state.sql"
+    ).read_text(encoding="utf-8")
+    cloud_migration = (
+        ROOT
+        / "supabase"
+        / "migrations"
+        / "202608240000_alert_email_recipient_state.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS alert_email_recipient_state" in local_migration
+    assert "ALTER COLUMN updated_at SET DEFAULT NOW()" in local_migration
+    assert "sync_outbox" not in local_migration
+    assert "DROP TRIGGER IF EXISTS trg_alert_email_recipient_state_sync" in cloud_migration
+
+
+def test_recipient_records_use_protected_cloud_sync_and_queue_existing_rows():
+    local_migration = (
+        ROOT / "db" / "migrations" / "0007_enable_alert_recipient_cloud_sync.sql"
+    ).read_text(encoding="utf-8")
+    cloud_migration = (
+        ROOT
+        / "supabase"
+        / "migrations"
+        / "202608240001_enable_alert_recipient_cloud_sync.sql"
+    ).read_text(encoding="utf-8")
+
+    for table_name, key_name in (
+        ("alert_email_recipient", "recipient_id"),
+        ("alert_email_recipient_state", "state_id"),
+    ):
+        assert f"trg_{table_name}_sync" in local_migration
+        assert f"enqueue_mangopoint_sync_event('{key_name}')" in local_migration
+        assert f"SELECT '{table_name}'" in local_migration
+
+    assert "ENABLE ROW LEVEL SECURITY" in cloud_migration
+    assert "FROM anon" in cloud_migration
+    assert "FROM authenticated" in cloud_migration
+
+
 def test_restore_order_respects_foreign_keys():
+    assert RESTORE_ORDER.index("user_account") < RESTORE_ORDER.index("alert_email_recipient")
+    assert "alert_email_recipient_state" in RESTORE_ORDER
     assert RESTORE_ORDER.index("orchard") < RESTORE_ORDER.index("tree")
     assert RESTORE_ORDER.index("pest") < RESTORE_ORDER.index("infestation_record")
     assert RESTORE_ORDER.index("simulation_run") < RESTORE_ORDER.index("alert")

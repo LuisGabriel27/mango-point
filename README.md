@@ -189,7 +189,12 @@ Administrators can manage the live recipient list from the dashboard notificatio
 menu using **Add emails**. The first time that dialog is opened, addresses from
 `ALERT_EMAIL_RECIPIENTS` are imported into the local database. From then on, the
 admin-managed list is authoritative, including when every recipient is removed.
-Recipient addresses are not added to the cloud synchronization outbox.
+Admins can edit contact details, pause or resume delivery, and permanently delete
+recipient records from the same dialog.
+Recipient records and their active/paused state are added to the protected cloud
+backup outbox. In Supabase, row-level security is enabled and access is revoked
+from the `anon` and `authenticated` API roles; the server-side PostgreSQL backup
+connection remains the only synchronization path.
 
 The API process must remain running for unattended monitoring. The scheduler
 checks enabled orchards using the existing forecast/gate rules; it does not
@@ -224,12 +229,14 @@ To inspect or restore a cloud copy:
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.sync_cloud --once
+.\.venv\Scripts\python.exe -m scripts.check_recipient_sync
 .\.venv\Scripts\python.exe -m scripts.restore_from_supabase --dry-run
 .\.venv\Scripts\python.exe -m scripts.restore_from_supabase
 ```
 
 The restore command must only be run against a replacement or intentionally
-empty local database. It restores database rows in dependency order. Orchard
+empty local database. It restores database rows, including managed alert email
+recipients, in dependency order. Orchard
 files must be restored separately from your local file backup because they are
 not stored in Supabase.
 

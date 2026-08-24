@@ -8,12 +8,16 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import AlertEmailRecipient
+from db.models import AlertEmailRecipient, AlertEmailRecipientState
 from utils.datetime_utils import utcnow_naive
 
 from .notification_service import NotificationService, notification_service
 
 logger = logging.getLogger(__name__)
+
+
+class AlertRecipientEmailConflictError(ValueError):
+    """Raised when an edit would duplicate another managed email address."""
 
 
 class AlertRecipientService:
@@ -31,6 +35,30 @@ class AlertRecipientService:
         )
         return list(result.scalars().all())
 
+    async def _is_managed(self, db: AsyncSession) -> bool:
+        result = await db.execute(
+            select(AlertEmailRecipientState).where(
+                AlertEmailRecipientState.state_id == 1,
+            )
+        )
+        state = result.scalar_one_or_none()
+        return bool(state and state.is_managed)
+
+    async def _mark_managed(self, db: AsyncSession) -> None:
+        result = await db.execute(
+            select(AlertEmailRecipientState).where(
+                AlertEmailRecipientState.state_id == 1,
+            )
+        )
+        state = result.scalar_one_or_none()
+        if state is None:
+            state = AlertEmailRecipientState(state_id=1, is_managed=True)
+            db.add(state)
+        elif not state.is_managed:
+            state.is_managed = True
+            state.updated_at = utcnow_naive()
+        await db.flush()
+
     async def list_active(
         self,
         db: AsyncSession,
@@ -38,6 +66,19 @@ class AlertRecipientService:
         bootstrap_environment: bool = False,
     ) -> list[AlertEmailRecipient]:
         """List active rows, optionally importing initial `.env` recipients once."""
+        rows = await self.list_all(
+            db,
+            bootstrap_environment=bootstrap_environment,
+        )
+        return [row for row in rows if row.is_active]
+
+    async def list_all(
+        self,
+        db: AsyncSession,
+        *,
+        bootstrap_environment: bool = False,
+    ) -> list[AlertEmailRecipient]:
+        """List active and paused rows, importing initial `.env` recipients once."""
         rows = await self._all_rows(db)
         if not rows and bootstrap_environment:
             for email in self.notifier.default_recipients:
@@ -51,7 +92,10 @@ class AlertRecipientService:
             if rows:
                 await db.flush()
 
-        return [row for row in rows if row.is_active]
+        if bootstrap_environment:
+            await self._mark_managed(db)
+
+        return rows
 
     async def effective_emails(self, db: Optional[AsyncSession]) -> list[str]:
         """Use managed rows once any exist; otherwise retain the `.env` fallback."""
@@ -66,7 +110,7 @@ class AlertRecipientService:
             )
             return list(self.notifier.default_recipients)
 
-        if not rows:
+        if not rows and not await self._is_managed(db):
             return list(self.notifier.default_recipients)
         return [row.email for row in rows if row.is_active]
 
@@ -106,6 +150,48 @@ class AlertRecipientService:
         await db.flush()
         return recipient
 
+    async def update(
+        self,
+        db: AsyncSession,
+        recipient_id: int,
+        *,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+        update_name: bool = False,
+        is_active: Optional[bool] = None,
+    ) -> Optional[AlertEmailRecipient]:
+        """Edit recipient details or toggle whether future alerts are delivered."""
+        result = await db.execute(
+            select(AlertEmailRecipient).where(
+                AlertEmailRecipient.recipient_id == recipient_id,
+            )
+        )
+        recipient = result.scalar_one_or_none()
+        if recipient is None:
+            return None
+
+        if email is not None:
+            normalized_email = email.strip().lower()
+            duplicate_result = await db.execute(
+                select(AlertEmailRecipient).where(
+                    AlertEmailRecipient.email == normalized_email,
+                    AlertEmailRecipient.recipient_id != recipient_id,
+                )
+            )
+            if duplicate_result.scalar_one_or_none() is not None:
+                raise AlertRecipientEmailConflictError(
+                    "That email address is already assigned to another recipient."
+                )
+            recipient.email = normalized_email
+        if update_name:
+            recipient.name = (name or "").strip() or None
+        if is_active is not None:
+            recipient.is_active = is_active
+
+        recipient.updated_at = utcnow_naive()
+        await db.flush()
+        return recipient
+
     async def deactivate(
         self,
         db: AsyncSession,
@@ -122,6 +208,25 @@ class AlertRecipientService:
             return None
         recipient.is_active = False
         recipient.updated_at = utcnow_naive()
+        await db.flush()
+        return recipient
+
+    async def hard_delete(
+        self,
+        db: AsyncSession,
+        recipient_id: int,
+    ) -> Optional[AlertEmailRecipient]:
+        """Permanently remove a recipient while keeping the managed list authoritative."""
+        result = await db.execute(
+            select(AlertEmailRecipient).where(
+                AlertEmailRecipient.recipient_id == recipient_id,
+            )
+        )
+        recipient = result.scalar_one_or_none()
+        if recipient is None:
+            return None
+        await self._mark_managed(db)
+        await db.delete(recipient)
         await db.flush()
         return recipient
 

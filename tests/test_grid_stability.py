@@ -9,6 +9,7 @@ Confirms:
   5. A/B comparison: both modes accept identical inputs and return comparable metrics
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -153,6 +154,78 @@ class TestTreeGraphEndToEnd:
         assert resp.metadata.tg_lambda0 is not None
         assert resp.metadata.tg_alpha is not None
         assert resp.metadata.tg_n_edges is not None
+
+    def test_fruit_fly_default_connects_a_24_metre_local_link(self):
+        """Fruit Fly must not inherit the old shared 20 m topology cut-off."""
+        from core.config import FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M
+
+        lon_step = 24.0 / (111_132.0 * math.cos(math.radians(_ORIGIN_LAT)))
+        orchard = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [_ORIGIN_LON, _ORIGIN_LAT]},
+                    "properties": {"Tree_ID": "T1", "Status": "Unbagged"},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [_ORIGIN_LON + lon_step, _ORIGIN_LAT],
+                    },
+                    "properties": {"Tree_ID": "T2", "Status": "Unbagged"},
+                },
+            ],
+        }
+        resp = _run_sync({
+            **_BASE_REQUEST_KWARGS,
+            "orchard_geojson": orchard,
+            "simulation_mode": "tree_graph",
+            "hours": 1,
+            "initial_infestation_tree_ids": ["T1"],
+        })
+
+        assert resp.metadata.tg_max_neighbor_dist_m == FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M
+        assert resp.metadata.tg_n_edges == 1
+        assert resp.metadata.tg_eligible_tree_count == 2
+        assert resp.metadata.tg_eligible_component_count == 1
+        assert resp.metadata.tg_largest_eligible_component == 2
+        assert resp.metadata.tg_source_reachable_tree_count == 2
+
+    def test_explicit_20_metre_graph_override_remains_authoritative(self):
+        lon_step = 24.0 / (111_132.0 * math.cos(math.radians(_ORIGIN_LAT)))
+        orchard = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [_ORIGIN_LON, _ORIGIN_LAT]},
+                    "properties": {"Tree_ID": "T1", "Status": "Unbagged"},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [_ORIGIN_LON + lon_step, _ORIGIN_LAT],
+                    },
+                    "properties": {"Tree_ID": "T2", "Status": "Unbagged"},
+                },
+            ],
+        }
+        resp = _run_sync({
+            **_BASE_REQUEST_KWARGS,
+            "orchard_geojson": orchard,
+            "simulation_mode": "tree_graph",
+            "hours": 1,
+            "initial_infestation_tree_ids": ["T1"],
+            "tg_max_neighbor_dist_m": 20.0,
+        })
+
+        assert resp.metadata.tg_max_neighbor_dist_m == 20.0
+        assert resp.metadata.tg_n_edges == 0
+        assert resp.metadata.tg_eligible_component_count == 2
+        assert resp.metadata.tg_source_reachable_tree_count == 1
 
     def test_tree_graph_risk_geojson_is_points(self):
         """tree_graph risk_geojson features must be Point geometries."""

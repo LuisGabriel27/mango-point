@@ -22,6 +22,12 @@ function priorityColor(p) {
   return 'success'
 }
 
+function count(v) {
+  const value = Number(v)
+  if (!Number.isFinite(value)) return '—'
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
 export default function DecisionSupportCard({ metrics, defaultOpen = true, embedded = false }) {
   if (!metrics) {
     return (
@@ -42,6 +48,8 @@ export default function DecisionSupportCard({ metrics, defaultOpen = true, embed
   const zones = metrics.zones ?? {}
   const economic = metrics.economic ?? {}
   const actions = metrics.action_plan ?? []
+  const cecid = metrics.cecid ?? null
+  const uncertainty = cecid?.uncertainty ?? null
 
   return (
     <CollapsibleCard
@@ -52,6 +60,52 @@ export default function DecisionSupportCard({ metrics, defaultOpen = true, embed
       cardClass="decision-support-card"
       cardStyle={{ boxShadow: 'inset 3px 0 0 var(--mp-primary), var(--mp-shadow-card)' }}
     >
+      {cecid && (
+        <>
+          <div className="alert alert-info py-2 mb-2" style={{ fontSize: '.79rem' }}>
+            <div className="fw-semibold mb-1">
+              <i className="bi bi-bug me-1" />Cecid result interpretation
+            </div>
+            <div className="d-flex justify-content-between gap-2">
+              <span>Established on eligible fruitlet trees</span>
+              <strong>
+                {count(cecid.establishedTreeCount)} / {count(cecid.eligibleTreeCount)}
+                {cecid.establishedEligibleRate != null ? ` (${pct(cecid.establishedEligibleRate)})` : ''}
+              </strong>
+            </div>
+            <div className="d-flex justify-content-between gap-2">
+              <span>Maximum reachable in an eligible hour</span>
+              <strong>{count(cecid.reachableTreeCount)}</strong>
+            </div>
+            <div className="d-flex justify-content-between gap-2">
+              <span>Soil sources / emergence events</span>
+              <strong>{count(cecid.sourceCount)} / {count(cecid.cohortEventCount)}</strong>
+            </div>
+            {cecid.externalNeighborTreeCount > 0 && (
+              <div className="d-flex justify-content-between gap-2">
+                <span>Trees exposed to external pressure</span>
+                <strong>{count(cecid.externalNeighborTreeCount)}</strong>
+              </div>
+            )}
+            {Number(uncertainty?.runs) > 1 && (
+              <div className="mt-2 pt-2 border-top border-info-subtle">
+                <div className="d-flex justify-content-between gap-2">
+                  <span>{count(uncertainty.runs)}-run scenario range</span>
+                  <strong>{count(uncertainty.minimum)}–{count(uncertainty.maximum)} trees</strong>
+                </div>
+                <div className="text-muted">
+                  Median {count(uncertainty.median)}. This reflects unknown source placement and random establishment; it is not a calibrated confidence interval.
+                </div>
+              </div>
+            )}
+            <div className="text-muted mt-1">
+              Reachable means exposed to adult pressure, not automatically infested. Zone percentages below use all {count(cecid.orchardTreeCount)} orchard trees.
+            </div>
+          </div>
+          <hr className="my-2" />
+        </>
+      )}
+
       {/* Thresholds */}
       <div className="mb-2">
         <small className="text-muted">

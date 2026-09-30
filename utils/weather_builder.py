@@ -21,10 +21,9 @@ Why standalone?
 
 Gate diagnostics
     ``compute_gate_diagnostics`` replays the per-hour weather through the
-    pest gate's ``is_open`` predicate and returns a list of dicts describing
-    why each hour was open or closed. Useful for calibrating cecid scenarios
-    (which require fruitlet stage + 24 h rain ≥ 5 mm + dry current hour +
-    crepuscular hour + low wind to all align).
+    selected pest gate and returns its hard requirements and soft suitability
+    components. Cecid fruitlet stage and solar dawn/dusk are hard requirements;
+    decayed soil wetness, current rain, and wind activity modulate probability.
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -120,3 +121,63 @@ async def test_scan_orchard_updates_timestamp_without_alert_when_gate_closed(mon
     assert summary["alerts_created"] == 0
     assert db.added == []
     assert orchard.last_monitoring_scan_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scan_orchard_creates_actionable_cecid_live_forecast_alert(monkeypatch):
+    service = AlertMonitoringService()
+    db = _FakeDb()
+    orchard = _orchard(
+        orchard_stage="fruitlet",
+        monitored_pest_types=["cecid"],
+        centroid_lon=122.58,
+        centroid_lat=10.585,
+    )
+    start = datetime.fromisoformat("2026-04-28T05:00:00+08:00")
+
+    async def fake_forecast_bundle(lat, lon, hours):
+        return {
+            "antecedent": [
+                {"rainfall_mm": 2.0 if 56 <= step < 60 else 0.0}
+                for step in range(72)
+            ],
+            "provenance": {
+                "provider": "open-meteo",
+                "source": "open-meteo",
+                "timezone": "Asia/Manila",
+            },
+            "forecast": [
+                {
+                    "datetime": (start + timedelta(hours=step)).isoformat(),
+                    "hour": (start + timedelta(hours=step)).hour,
+                    "wind_speed_ms": 1.0,
+                    "wind_dir_deg": 90.0,
+                    "temperature_c": 27.0,
+                    "humidity": 85.0,
+                    "rainfall_mm": 0.0,
+                }
+                for step in range(hours)
+            ],
+        }
+
+    monkeypatch.setattr(
+        "api.services.alert_monitoring_service.weather_service.get_forecast_bundle",
+        fake_forecast_bundle,
+    )
+
+    summary = await service.scan_orchard(
+        db=db,
+        orchard=orchard,
+        hours=8,
+        send_notifications=False,
+        dedupe_hours=0,
+    )
+
+    assert summary["alerts_created"] == 1
+    assert summary["operational_weather"] is True
+    assert summary["forecast_assessment"]["cecid"]["favorable_hours"] == 2
+    assert len(db.added) == 1
+    alert = db.added[0]
+    assert alert.zone_name == "Cecid fly weather forecast"
+    assert alert.suggested_simulation_params["weather_mode"] == "live"
+    assert alert.suggested_simulation_params["auto_run"] is False

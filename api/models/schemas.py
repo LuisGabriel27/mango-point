@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 from core.config import (
+    FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M,
+    SIMULATION_MODEL_VERSION,
     TG_LAMBDA0,
     TG_ALPHA,
     TG_BETA,
@@ -104,6 +106,23 @@ class CecidWeedDensityEnum(str, Enum):
     DENSE = "dense"
 
 
+class ObservationPresenceEnum(str, Enum):
+    """Field-verification result for one inspected tree."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    NOT_INSPECTED = "not_inspected"
+
+
+class ObservationMethodEnum(str, Enum):
+    """Supported ground-truth collection methods."""
+
+    VISUAL_INSPECTION = "visual_inspection"
+    FRUIT_SAMPLING = "fruit_sampling"
+    TRAP_COUNT = "trap_count"
+    OTHER = "other"
+
+
 # ═══════════════════════════════════════════════
 #  GeoJSON Schemas
 # ═══════════════════════════════════════════════
@@ -156,6 +175,53 @@ class CecidWeedZone(BaseModel):
         return normalized
 
 
+class ManagementZone(BaseModel):
+    """Persistent named orchard area used for field work and reports."""
+
+    id: str = Field(..., min_length=1, max_length=120)
+    label: str = Field(..., min_length=1, max_length=120)
+    coordinates: List[List[float]] = Field(
+        ...,
+        min_length=3,
+        description="Open polygon ring as [longitude, latitude] pairs.",
+    )
+    color: Optional[str] = Field(
+        default=None,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+        description="Optional six-digit map color.",
+    )
+
+    @field_validator("label")
+    @classmethod
+    def label_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Management-zone label must not be blank")
+        return value
+
+    @field_validator("coordinates")
+    @classmethod
+    def coordinates_are_lon_lat(cls, value: List[List[float]]) -> List[List[float]]:
+        normalized: List[List[float]] = []
+        for point in value:
+            if len(point) < 2:
+                raise ValueError("Each management-zone point must contain longitude and latitude")
+            lon, lat = float(point[0]), float(point[1])
+            if not -180.0 <= lon <= 180.0 or not -90.0 <= lat <= 90.0:
+                raise ValueError("Management-zone coordinates are outside valid longitude/latitude bounds")
+            normalized.append([lon, lat])
+        if len({(point[0], point[1]) for point in normalized}) < 3:
+            raise ValueError("A management zone requires at least three distinct coordinates")
+        signed_area = sum(
+            normalized[index][0] * normalized[(index + 1) % len(normalized)][1]
+            - normalized[(index + 1) % len(normalized)][0] * normalized[index][1]
+            for index in range(len(normalized))
+        )
+        if abs(signed_area) <= 1e-15:
+            raise ValueError("A management-zone polygon must enclose a non-zero area")
+        return normalized
+
+
 class OrchardCreate(BaseModel):
     """Request schema for creating a managed orchard."""
     name: str = Field(..., min_length=1, max_length=200)
@@ -169,6 +235,7 @@ class OrchardCreate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    management_zones: List[ManagementZone] = Field(default_factory=list)
     cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     description: Optional[str] = Field(default=None)
     is_active: bool = Field(default=True)
@@ -197,6 +264,7 @@ class OrchardUpdate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    management_zones: Optional[List[ManagementZone]] = Field(default=None)
     cecid_weed_zones: Optional[List[CecidWeedZone]] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_active: Optional[bool] = Field(default=None)
@@ -226,6 +294,7 @@ class OrchardResponse(BaseModel):
     area_size: Optional[float] = None
     tree_count: int
     geojson: Optional[Dict[str, Any]] = None
+    management_zones: List[ManagementZone] = Field(default_factory=list)
     cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     centroid_lon: Optional[float] = None
     centroid_lat: Optional[float] = None
@@ -249,6 +318,39 @@ class OrchardListResponse(BaseModel):
     """Response schema for listing orchards."""
     total: int
     orchards: List[OrchardResponse]
+
+
+class TreeBulkUpdateRequest(BaseModel):
+    """Persist a stage and/or status for selected GeoJSON tree IDs."""
+
+    tree_ids: List[str] = Field(..., min_length=1, max_length=10000)
+    status: Optional[str] = Field(
+        default=None,
+        pattern="^(healthy|infected|bagged|dead|history_infected|suspect)$",
+    )
+    stage: Optional[OrchardStageEnum] = None
+
+    @field_validator("tree_ids")
+    @classmethod
+    def normalize_tree_ids(cls, value: List[str]) -> List[str]:
+        normalized = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if not normalized:
+            raise ValueError("At least one tree ID is required")
+        return normalized
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if self.status is None and self.stage is None:
+            raise ValueError("Provide a status, a stage, or both")
+        return self
+
+
+class TreeBulkUpdateResponse(BaseModel):
+    orchard: OrchardResponse
+    requested_count: int
+    updated_count: int
+    updated_tree_ids: List[str]
+    missing_tree_ids: List[str]
 
 
 class TreatmentApplication(BaseModel):
@@ -529,7 +631,8 @@ class SimulationRequest(BaseModel):
         default=None,
         gt=0.0,
         description="(tree_graph) Maximum centre-to-centre distance for graph edges (m). "
-                    f"Default: {TG_MAX_NEIGHBOR_DIST_M}.",
+                    f"Defaults to {FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M} for Fruit Fly and "
+                    f"{TG_MAX_NEIGHBOR_DIST_M} for other graph uses.",
     )
 
     # ── manual weather override ───────────────────────────────────
@@ -576,6 +679,11 @@ class SimulationRequest(BaseModel):
         description="Adult-only weed habitat relay polygons. Omitted values are resolved from "
                     "the selected orchard; an explicit list is authoritative for this run.",
     )
+    management_zones: Optional[List[ManagementZone]] = Field(
+        default=None,
+        description="Named reporting/field-work polygons. Omitted values are snapshotted from "
+                    "the selected orchard; an explicit list is authoritative for replay.",
+    )
     manual_weather_prefix_rain: Optional[List[float]] = Field(
         default=None,
         description="Optional pre-seed for the engine's 72-hour antecedent rainfall context "
@@ -598,6 +706,14 @@ class SimulationRequest(BaseModel):
         default=None, ge=0.0, le=1.0,
         description="Suitability score required for a favorable Cecid diagnostic/alert. "
                     "Defaults to 0.25; it does not turn the soft weather factors into hard gates.",
+    )
+    cecid_uncertainty_runs: int = Field(
+        default=1,
+        ge=1,
+        le=9,
+        description="Number of deterministic Cecid realizations used to summarize uncertainty "
+                    "from assumed source placement and stochastic establishment. The first "
+                    "realization remains the displayed/replayable map.",
     )
     fruit_fly_temp_threshold_c: Optional[float] = Field(
         default=None, ge=15.0, le=40.0,
@@ -705,6 +821,7 @@ class TimestepEntry(BaseModel):
 
 class SimulationMetadata(BaseModel):
     """Metadata for simulation run."""
+    model_version: str = SIMULATION_MODEL_VERSION
     run_id: str
     pest_type: str
     hours: int
@@ -726,6 +843,8 @@ class SimulationMetadata(BaseModel):
     neighbor_direction: Optional[str] = None
     initial_seed_strategy: Optional[str] = None
     initial_seed_count: int = 0
+    initial_infected_count: int = 0
+    n_newly_infested: int = 0
     initial_seed_cells: Optional[List[Dict[str, int]]] = None
     initial_seed_tree_ids: Optional[List[str]] = None
     treatment_summary: Optional[Dict[str, Any]] = None
@@ -739,6 +858,10 @@ class SimulationMetadata(BaseModel):
     tg_wind_bias: Optional[float] = None
     tg_max_neighbor_dist_m: Optional[float] = None
     tg_default_crown_radius_m: Optional[float] = None
+    tg_eligible_tree_count: Optional[int] = None
+    tg_eligible_component_count: Optional[int] = None
+    tg_largest_eligible_component: Optional[int] = None
+    tg_source_reachable_tree_count: Optional[int] = None
 
     # Per-quadrant phenology breakdown (present when quadrant_stages was supplied
     # or always as a 100%-single-stage object when it wasn't). Keys: dormant,
@@ -754,11 +877,15 @@ class SimulationMetadata(BaseModel):
     weather_provenance: Optional[Dict[str, Any]] = None
     cecid_sources: Optional[List[Dict[str, Any]]] = None
     cecid_source_count: int = 0
+    cecid_assumed_source_count: int = 0
+    cecid_explicit_source_count: int = 0
     cecid_cohort_events: Optional[List[Dict[str, Any]]] = None
     cecid_source_assumptions: Optional[Dict[str, Any]] = None
     cecid_weed_zones: Optional[List[Dict[str, Any]]] = None
+    management_zones: Optional[List[Dict[str, Any]]] = None
     cecid_habitat_summary: Optional[Dict[str, Any]] = None
     cecid_habitat_diagnostics: Optional[List[Dict[str, Any]]] = None
+    cecid_uncertainty_summary: Optional[Dict[str, Any]] = None
 
 
 class SimulationResponse(BaseModel):
@@ -824,14 +951,47 @@ class WeatherResponse(BaseModel):
 class ObservationSubmission(BaseModel):
     """Request schema for POST /submit-observation."""
     tree_id: str = Field(..., description="ID of the tree where pest was observed")
+    orchard_id: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Public orchard ID. Required when a tree label is not a database ID.",
+    )
     observed_pest: PestTypeEnum = Field(..., description="Type of pest observed")
     timestamp: datetime = Field(..., description="Observation timestamp")
-    severity: float = Field(..., ge=0.0, le=1.0, description="Severity level (0-1)")
-    observer_id: Optional[str] = Field(None, description="Observer identifier")
-    notes: Optional[str] = Field(None, description="Additional notes")
-    image_url: Optional[str] = Field(None, description="URL to observation image")
-    lon: Optional[float] = Field(None, description="Longitude of observation")
-    lat: Optional[float] = Field(None, description="Latitude of observation")
+    presence: ObservationPresenceEnum = Field(
+        default=ObservationPresenceEnum.PRESENT,
+        description="Presence, absence, or not inspected.",
+    )
+    severity: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional severity level (0-1)")
+    affected_count: Optional[int] = Field(None, ge=0, description="Affected fruit, traps, or sampled units")
+    inspected_count: Optional[int] = Field(None, ge=0, description="Total inspected units")
+    method: Optional[ObservationMethodEnum] = Field(None, description="Field collection method")
+    observer_id: Optional[str] = Field(None, max_length=200, description="Observer identifier")
+    notes: Optional[str] = Field(None, max_length=4000, description="Additional notes")
+    image_url: Optional[str] = Field(None, max_length=1000, description="URL to observation image")
+    lon: Optional[float] = Field(None, ge=-180, le=180, description="Longitude of observation")
+    lat: Optional[float] = Field(None, ge=-90, le=90, description="Latitude of observation")
+    simulation_run_id: Optional[str] = Field(None, max_length=100, description="Forecast/run being verified")
+    forecast_risk: Optional[float] = Field(None, ge=0.0, le=1.0, description="Predicted risk at inspection")
+    forecast_lead_hours: Optional[int] = Field(None, ge=0, le=8760)
+
+    @field_validator("tree_id")
+    @classmethod
+    def tree_id_must_not_be_blank(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("tree_id must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def counts_are_consistent(self):
+        if (
+            self.affected_count is not None
+            and self.inspected_count is not None
+            and self.affected_count > self.inspected_count
+        ):
+            raise ValueError("affected_count cannot exceed inspected_count")
+        return self
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -840,7 +1000,7 @@ class ObservationSubmission(BaseModel):
                 "observed_pest": "cecid",
                 "timestamp": "2026-02-15T10:30:00Z",
                 "severity": 0.7,
-                "notes": "Moderate gall midge infestation on young leaves"
+                "notes": "Moderate fruit damage consistent with Cecid Fly"
             }
         }
     )
@@ -850,10 +1010,67 @@ class ObservationResponse(BaseModel):
     """Response schema for observation submission."""
     id: int
     tree_id: str
+    database_tree_id: int
+    orchard_id: Optional[str] = None
     observed_pest: PestTypeEnum
     timestamp: str
-    severity: float
+    presence: ObservationPresenceEnum
+    severity: Optional[float] = None
+    affected_count: Optional[int] = None
+    inspected_count: Optional[int] = None
+    method: Optional[ObservationMethodEnum] = None
+    observer_id: Optional[str] = None
+    notes: Optional[str] = None
+    image_url: Optional[str] = None
+    lon: Optional[float] = None
+    lat: Optional[float] = None
+    simulation_run_id: Optional[str] = None
+    forecast_risk: Optional[float] = None
+    forecast_lead_hours: Optional[int] = None
     created_at: str
+
+
+class ObservationBulkSubmission(BaseModel):
+    """Apply one inspection result to multiple selected orchard trees."""
+
+    orchard_id: str = Field(..., min_length=1, max_length=100)
+    tree_ids: List[str] = Field(..., min_length=1, max_length=10000)
+    observed_pest: PestTypeEnum
+    timestamp: datetime
+    presence: ObservationPresenceEnum = ObservationPresenceEnum.PRESENT
+    severity: Optional[float] = Field(None, ge=0.0, le=1.0)
+    affected_count: Optional[int] = Field(None, ge=0)
+    inspected_count: Optional[int] = Field(None, ge=0)
+    method: Optional[ObservationMethodEnum] = None
+    observer_id: Optional[str] = Field(None, max_length=200)
+    notes: Optional[str] = Field(None, max_length=4000)
+    image_url: Optional[str] = Field(None, max_length=1000)
+    simulation_run_id: Optional[str] = Field(None, max_length=100)
+    forecast_risk: Optional[float] = Field(None, ge=0.0, le=1.0)
+    forecast_lead_hours: Optional[int] = Field(None, ge=0, le=8760)
+
+    @field_validator("tree_ids")
+    @classmethod
+    def normalize_tree_ids(cls, value: List[str]) -> List[str]:
+        normalized = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if not normalized:
+            raise ValueError("At least one tree ID is required")
+        return normalized
+
+    @model_validator(mode="after")
+    def counts_are_consistent(self):
+        if (
+            self.affected_count is not None
+            and self.inspected_count is not None
+            and self.affected_count > self.inspected_count
+        ):
+            raise ValueError("affected_count cannot exceed inspected_count")
+        return self
+
+
+class ObservationBulkResponse(BaseModel):
+    observations: List[ObservationResponse]
+    count: int
 
 
 # ═══════════════════════════════════════════════
@@ -906,6 +1123,12 @@ class WeatherForecastCheckRequest(BaseModel):
     lon: Optional[float] = Field(default=None, ge=-180, le=180, description="Longitude (defaults to server default)")
     orchard_stage: Optional[str] = Field(default=None, description="Current phenological stage of the orchard")
     monitored_pest_types: Optional[List[str]] = Field(default=None, description="Pest types to check (defaults to both)")
+    hours: int = Field(
+        default=48,
+        ge=1,
+        le=168,
+        description="Future forecast hours to screen; 72 antecedent hours are added automatically",
+    )
 
 
 class AlertCreate(BaseModel):

@@ -10,7 +10,7 @@ from typing import Any, Optional
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
@@ -180,6 +180,22 @@ async def get_current_user(
 
     try:
         result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
+        user = result.scalar_one_or_none()
+
+        # Offline fallback tokens use the temporary subject ``0`` because no
+        # database row is available when they are issued.  Once PostgreSQL is
+        # reachable again, resolve that signed token to the persisted account
+        # with the same username.  Returning the temporary model here would
+        # make authenticated reads appear healthy while writes fail foreign-key
+        # checks such as ``created_by_user_id``.
+        if user is None and offline_user is not None:
+            recovered_result = await db.execute(
+                select(UserAccount).where(
+                    func.lower(UserAccount.username)
+                    == str(offline_user.username).strip().lower()
+                )
+            )
+            user = recovered_result.scalar_one_or_none()
     except Exception as exc:
         if offline_user is not None and is_database_unavailable(exc):
             return offline_user
@@ -187,10 +203,12 @@ async def get_current_user(
             raise database_unavailable_http_exception() from exc
         raise
 
-    user = result.scalar_one_or_none()
     if user is None:
         if offline_user is not None:
-            return offline_user
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Offline session no longer matches a database account. Please sign in again.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authenticated user no longer exists.",

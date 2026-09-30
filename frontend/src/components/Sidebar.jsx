@@ -4,6 +4,7 @@ import WeatherCard from './cards/WeatherCard'
 import SimulationCard from './cards/SimulationCard'
 import PlaybackCard from './cards/PlaybackCard'
 import DecisionSupportCard from './cards/DecisionSupportCard'
+import ObservationForm from './cards/ObservationForm'
 import {
   DEFAULT_SIDEBAR_WORKFLOW,
   nextSidebarWorkflowId,
@@ -17,6 +18,7 @@ export default function Sidebar({
   onOrchardSelect,
   onOrchardRefresh,
   onOrchardUpload,
+  onOrchardStageChange,
   orchardLoading,
   weather,
   manualWeather,
@@ -29,10 +31,13 @@ export default function Sidebar({
   orchardCoordinates,
   orchardGeojson,
   treeOverrides,
+  statusZones,
   treeStageOverrides,
   phenologyZones,
+  managementZones,
   cecidWeedZones,
   legacyCecidEmergenceZones,
+  selectedPestType = 'fruitfly',
   onPestTypeChange,
   onClearTreeStageOverrides,
   onSimulationComplete,
@@ -50,6 +55,12 @@ export default function Sidebar({
   mobileOpen = false,
   onMobileOpenChange,
   defaultTreeCount = 0,
+  observationTreeIds = [],
+  observationForecastRisk = null,
+  observationForecastLeadHours = null,
+  observationLon = null,
+  observationLat = null,
+  currentSimulationRunId = null,
 }) {
   const asideRef = useRef(null)
   const closeButtonRef = useRef(null)
@@ -238,6 +249,7 @@ export default function Sidebar({
                 onSelect={onOrchardSelect}
                 onRefresh={onOrchardRefresh}
                 onUpload={onOrchardUpload}
+                onStageChange={onOrchardStageChange}
                 loading={orchardLoading}
                 defaultTreeCount={defaultTreeCount}
                 embedded
@@ -266,8 +278,10 @@ export default function Sidebar({
                 orchardGeojson={orchardGeojson}
                 orchardId={selectedOrchardId}
                 treeOverrides={treeOverrides}
+                statusZones={statusZones}
                 treeStageOverrides={treeStageOverrides}
                 phenologyZones={phenologyZones}
+                managementZones={managementZones}
                 cecidWeedZones={cecidWeedZones}
                 legacyCecidEmergenceZones={legacyCecidEmergenceZones}
                 onPestTypeChange={onPestTypeChange}
@@ -312,6 +326,26 @@ export default function Sidebar({
               <div hidden={!decisionMetrics}>
                 <DecisionSupportCard metrics={decisionMetrics} embedded />
               </div>
+            </div>
+
+            <div
+              id="sidebar-panel-verify"
+              className="sidebar-workflow-panel"
+              role="tabpanel"
+              aria-labelledby="sidebar-tab-verify"
+              hidden={activeWorkflow !== 'verify'}
+            >
+              <ObservationForm
+                orchardId={selectedOrchardId}
+                selectedTreeIds={observationTreeIds}
+                defaultPest={selectedPestType}
+                simulationRunId={currentSimulationRunId}
+                forecastRisk={observationForecastRisk}
+                forecastLeadHours={observationForecastLeadHours}
+                observationLon={observationLon}
+                observationLat={observationLat}
+                embedded
+              />
             </div>
           </div>
         </div>

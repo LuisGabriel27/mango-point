@@ -94,7 +94,8 @@ class Settings(BaseSettings):
     
     # Alert thresholds
     ALERT_RISK_THRESHOLD: float = 0.75
-    ALERT_MONITORING_ENABLED: bool = False
+    # Lightweight forecast screening only; simulations always remain user-triggered.
+    ALERT_MONITORING_ENABLED: bool = True
     ALERT_MONITORING_INTERVAL_SECONDS: int = 3600
     ALERT_MONITORING_FORECAST_HOURS: int = 48
     ALERT_MONITORING_DEDUPE_HOURS: int = 6

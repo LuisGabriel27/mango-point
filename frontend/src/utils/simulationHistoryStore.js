@@ -5,6 +5,10 @@ const FALLBACK_KEY = 'mangopoint.simulationHistory.v1'
 const FALLBACK_LIMIT = 25
 const DEFAULT_ORCHARD_ID = 'default-orchard'
 
+// Keep in sync with core/config.py. It identifies changes that can alter a
+// fixed-seed simulation result, not ordinary UI/API changes.
+export const CURRENT_SIMULATION_MODEL_VERSION = '2026.10-cecid-map-interpretation-v7'
+
 let dbPromise = null
 
 function browserWindow() {
@@ -144,9 +148,53 @@ function inferWeatherSource(run, requestPayload) {
   return 'open-meteo'
 }
 
+export function buildReplayableSimulationRequest(requestPayload, run = {}) {
+  const payload = { ...parseMaybeJson(requestPayload, {}) }
+  // Older experimental runs could force 6/12 assumed Cecid sources. Current
+  // replays always use explicit/observed sources or the normal seeded 1–3 fallback.
+  delete payload.cecid_assumed_source_count
+  const responsePayload = parseMaybeJson(run?.response_payload, {})
+  const metadata = parseMaybeJson(
+    run?.metadata ?? responsePayload?.metadata,
+    {},
+  )
+  const generatedSeed = run?.random_seed ?? responsePayload?.random_seed ?? metadata?.random_seed
+  const numericSeed = Number(generatedSeed)
+
+  if (payload.random_seed == null && Number.isInteger(numericSeed)) {
+    payload.random_seed = numericSeed
+  }
+
+  const modelVersion = metadata?.model_version
+  const effectiveGraphDistance = Number(metadata?.tg_max_neighbor_dist_m)
+  if (
+    modelVersion === CURRENT_SIMULATION_MODEL_VERSION
+    && payload.simulation_mode === 'tree_graph'
+    && payload.tg_max_neighbor_dist_m == null
+    && Number.isFinite(effectiveGraphDistance)
+    && effectiveGraphDistance > 0
+  ) {
+    payload.tg_max_neighbor_dist_m = effectiveGraphDistance
+  }
+
+  if (modelVersion) {
+    const dashboardState = parseMaybeJson(payload.dashboard_state, {})
+    payload.dashboard_state = {
+      ...(dashboardState && typeof dashboardState === 'object' ? dashboardState : {}),
+      simulation_model_version:
+        dashboardState?.simulation_model_version ?? String(modelVersion),
+    }
+  }
+
+  return payload
+}
+
 export function normalizeSimulationRunForHistory(run) {
   const now = new Date().toISOString()
-  const requestPayload = parseMaybeJson(run?.request_payload ?? run?.input_parameters, {})
+  const requestPayload = buildReplayableSimulationRequest(
+    run?.request_payload ?? run?.input_parameters,
+    run,
+  )
   const metadata = parseMaybeJson(run?.metadata, {})
   const history = parseMaybeJson(run?.history, {})
   const runId = normalizeId(run?.run_id ?? metadata.run_id, generatedRunId())

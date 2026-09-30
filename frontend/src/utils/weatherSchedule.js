@@ -5,6 +5,47 @@ export const WEATHER_DEFAULTS = {
   rainfall_mm: 0,
 }
 
+// Canonical frontend mirror of core/config.py + core/cecid_habitat.py.
+// Keep these names and values covered by parity tests whenever the research
+// assumptions are recalibrated.
+export const CECID_WEATHER_SPEC = Object.freeze({
+  soil_wetness_half_life_hours: 48,
+  drying_full_score_rain_mm: 0.1,
+  drying_zero_score_rain_mm: 1,
+  gentle_wind_max_kmh: 5,
+  wind_activity_scale_kmh: 6,
+  wind_direction_start_kmh: 3.2,
+  wind_direction_full_kmh: 15,
+  wind_direction_max_assist: 0.35,
+  calm_wind_max_ms: 3,
+  favorable_threshold: 0.25,
+})
+
+export function cecidWindActivity(windSpeedMs) {
+  const speedKmh = Math.max(0, finiteNumber(windSpeedMs, 0)) * 3.6
+  if (speedKmh <= CECID_WEATHER_SPEC.gentle_wind_max_kmh) return 1
+  const excess = speedKmh - CECID_WEATHER_SPEC.gentle_wind_max_kmh
+  const scaledExcess = excess / CECID_WEATHER_SPEC.wind_activity_scale_kmh
+  return 1 / (1 + scaledExcess ** 2)
+}
+
+// Compatibility export for older imports. This score models controlled
+// movement activity, not measured adult mortality or survival.
+export function cecidWindSurvival(windSpeedMs) {
+  return cecidWindActivity(windSpeedMs)
+}
+
+export function cecidWindDirectionAssist(windSpeedMs) {
+  const speedKmh = Math.max(0, finiteNumber(windSpeedMs, 0)) * 3.6
+  const span = CECID_WEATHER_SPEC.wind_direction_full_kmh
+    - CECID_WEATHER_SPEC.wind_direction_start_kmh
+  const progress = Math.max(0, Math.min(
+    1,
+    (speedKmh - CECID_WEATHER_SPEC.wind_direction_start_kmh) / span,
+  ))
+  return CECID_WEATHER_SPEC.wind_direction_max_assist * progress
+}
+
 export const DEFAULT_GUIDED_PHASES = [
   {
     id: 'rain-buildup',
@@ -288,7 +329,7 @@ export function solarTimesForGuimaras(value, latitude = 10.585, longitude = 122.
 }
 
 function soilWetness(rainHistory) {
-  const decay = 2 ** (-1 / 48)
+  const decay = 2 ** (-1 / CECID_WEATHER_SPEC.soil_wetness_half_life_hours)
   return rainHistory.reduce((wetness, rainfall) => wetness * decay + Math.max(0, rainfall), 0)
 }
 
@@ -337,10 +378,13 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
     const wetness = soilWetness(rainHistory)
     maxWetness = Math.max(maxWetness, wetness)
     const moistureScore = Math.min(1, wetness / Math.max(threshold, Number.EPSILON))
-    const dryingScore = entry.rainfall_mm <= 0.1
+    const dryingScore = entry.rainfall_mm <= CECID_WEATHER_SPEC.drying_full_score_rain_mm
       ? 1
-      : entry.rainfall_mm >= 1 ? 0 : (1 - entry.rainfall_mm) / 0.9
-    const windScore = Math.exp(-((entry.wind_speed_ms / 4) ** 2))
+      : entry.rainfall_mm >= CECID_WEATHER_SPEC.drying_zero_score_rain_mm
+        ? 0
+        : (CECID_WEATHER_SPEC.drying_zero_score_rain_mm - entry.rainfall_mm)
+          / (CECID_WEATHER_SPEC.drying_zero_score_rain_mm - CECID_WEATHER_SPEC.drying_full_score_rain_mm)
+    const windScore = cecidWindActivity(entry.wind_speed_ms)
     const suitability = moistureScore * dryingScore * windScore
 
     const currentDate = guimarasDateAt(startDatetime, index)
@@ -352,15 +396,18 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
     const crepuscular = solar
       ? Math.min(Math.abs(currentDate - solar.sunrise), Math.abs(currentDate - solar.sunset)) <= 3600000
       : (entry.hour_of_day >= 5 && entry.hour_of_day < 7) || (entry.hour_of_day >= 17 && entry.hour_of_day < 19)
-    const status = !crepuscular ? 'closed' : suitability >= 0.25 ? 'favorable' : 'limited'
+    const status = !crepuscular
+      ? 'closed'
+      : suitability >= CECID_WEATHER_SPEC.favorable_threshold ? 'favorable' : 'limited'
     if (status === 'favorable') favorableHours += 1
     else if (status === 'limited') limitedHours += 1
     else closedHours += 1
 
-    if (entry.wind_speed_ms <= 3) hasCalmHour = true
-    if (crepuscular && entry.rainfall_mm <= 0.1) {
+    const calmWind = entry.wind_speed_ms <= CECID_WEATHER_SPEC.calm_wind_max_ms
+    if (calmWind) hasCalmHour = true
+    if (crepuscular && entry.rainfall_mm <= CECID_WEATHER_SPEC.drying_full_score_rain_mm) {
       hasDryCrepuscularWindow = true
-      if (entry.wind_speed_ms <= 3) hasCalmCrepuscularWindow = true
+      if (calmWind) hasCalmCrepuscularWindow = true
     }
     preview.push({
       step: index,
@@ -371,6 +418,8 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
       moisture_score: moistureScore,
       drying_score: dryingScore,
       wind_score: windScore,
+      wind_activity_score: windScore,
+      wind_direction_assist: cecidWindDirectionAssist(entry.wind_speed_ms),
     })
   }
 

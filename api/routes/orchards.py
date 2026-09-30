@@ -30,8 +30,11 @@ from ..models.schemas import (
     OrchardListResponse,
     OrchardResponse,
     OrchardUpdate,
+    TreeBulkUpdateRequest,
+    TreeBulkUpdateResponse,
 )
 from db.models import Orchard, OrchardAsset
+from api.services.orchard_tree_service import ensure_tree_row, find_tree_feature, update_geojson_trees
 from utils.datetime_utils import format_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -272,6 +275,7 @@ def orchard_to_response(
         area_size=float(orchard.area_size) if orchard.area_size is not None else None,
         tree_count=orchard.tree_count or 0,
         geojson=orchard.geojson if include_geojson else None,
+        management_zones=getattr(orchard, "management_zones", None) or [],
         cecid_weed_zones=getattr(orchard, "cecid_weed_zones", None) or [],
         centroid_lon=orchard.centroid_lon,
         centroid_lat=orchard.centroid_lat,
@@ -494,6 +498,9 @@ async def create_orchard(
             area_size=payload.area_size,
             tree_count=tree_count,
             geojson=payload.geojson,
+            management_zones=[
+                zone.model_dump(mode="json") for zone in payload.management_zones
+            ],
             cecid_weed_zones=[
                 zone.model_dump(mode="json") for zone in payload.cecid_weed_zones
             ],
@@ -616,6 +623,8 @@ async def upload_orchard(
             location=auto_location,
             tree_count=count_geojson_trees(geojson),
             geojson=geojson,
+            management_zones=[],
+            cecid_weed_zones=[],
             centroid_lon=centroid_lon,
             centroid_lat=centroid_lat,
             orthophoto_path=_relative_project_path(orthophoto_path),
@@ -751,6 +760,11 @@ async def update_orchard(
         orchard = await _get_orchard_or_404(db, orchard_id)
         updates = payload.model_dump(exclude_unset=True)
 
+        if "management_zones" in updates and payload.management_zones is not None:
+            updates["management_zones"] = [
+                zone.model_dump(mode="json") for zone in payload.management_zones
+            ]
+
         if "cecid_weed_zones" in updates and payload.cecid_weed_zones is not None:
             updates["cecid_weed_zones"] = [
                 zone.model_dump(mode="json") for zone in payload.cecid_weed_zones
@@ -798,6 +812,72 @@ async def update_orchard(
             raise database_unavailable_http_exception() from exc
         logger.error("Failed to update orchard: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update orchard.") from exc
+
+
+@router.patch(
+    "/{orchard_id}/trees",
+    response_model=TreeBulkUpdateResponse,
+    summary="Persist selected tree stages or statuses",
+    description=(
+        "Apply one stage and/or status to a polygon/lasso selection. The orchard "
+        "GeoJSON is authoritative; matching database rows are linked lazily by "
+        "their stable external tree IDs."
+    ),
+)
+async def update_orchard_trees(
+    orchard_id: str,
+    payload: TreeBulkUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TreeBulkUpdateResponse:
+    """Persist a bulk tree edit without replacing unrelated map properties."""
+    try:
+        orchard = await _get_orchard_or_404(db, orchard_id)
+        stage = payload.stage.value if payload.stage is not None else None
+        updated_geojson, updated_ids, missing_ids = update_geojson_trees(
+            orchard.geojson,
+            payload.tree_ids,
+            status=payload.status,
+            stage=stage,
+        )
+
+        orchard.geojson = updated_geojson
+        for external_id in updated_ids:
+            feature = find_tree_feature(updated_geojson, external_id)
+            tree = await ensure_tree_row(
+                db,
+                orchard,
+                external_id,
+                feature=feature,
+            )
+            if tree is None:
+                continue
+            if payload.status is not None:
+                tree.status = payload.status
+            if stage is not None:
+                tree.current_stage = stage
+
+        await db.flush()
+        return TreeBulkUpdateResponse(
+            orchard=orchard_to_response(orchard),
+            requested_count=len(payload.tree_ids),
+            updated_count=len(updated_ids),
+            updated_tree_ids=updated_ids,
+            missing_tree_ids=missing_ids,
+        )
+    except HTTPException:
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A selected tree conflicts with an existing orchard tree ID.",
+        ) from exc
+    except Exception as exc:
+        await db.rollback()
+        if is_database_unavailable(exc):
+            raise database_unavailable_http_exception() from exc
+        logger.error("Failed to update orchard trees: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to update selected trees.") from exc
 
 
 @router.delete(

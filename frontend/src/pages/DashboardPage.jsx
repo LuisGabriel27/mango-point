@@ -8,11 +8,21 @@ import SurveillanceTab from '../components/tabs/SurveillanceTab'
 import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
 import api from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
+import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
+import { summarizeCecidResult } from '../utils/cecidResultSummary'
 import { buildGuidedBlocks, createDefaultWeatherTimeline } from '../utils/weatherSchedule'
 import {
   normalizeCecidWeedZones,
   saveCecidWeedZones,
 } from '../utils/cecidWeedZones'
+import {
+  normalizeManagementZones,
+  saveManagementZones,
+} from '../utils/managementZones'
+import {
+  overlappingManagementZones,
+  treeIdsInPolygon,
+} from '../utils/zoneSelection'
 import {
   DEFAULT_SIDEBAR_WORKFLOW,
   parseStoredSidebarCollapsed,
@@ -51,6 +61,7 @@ const GUIMARAS_WONDERS_FARM_ORCHARD = {
   orchard_stage: 'mature',
   days_since_flowering: 60,
   monitored_pest_types: ['cecid', 'fruitfly'],
+  management_zones: [],
   cecid_weed_zones: [],
 }
 
@@ -158,20 +169,6 @@ function treePointsFromGeojson(geojson) {
     .filter(Boolean)
 }
 
-function pointInPolygon(point, polygon) {
-  if (!Array.isArray(polygon) || polygon.length < 3) return false
-  const [x, y] = point
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, yi] = polygon[i]
-    const [xj, yj] = polygon[j]
-    const intersects = ((yi > y) !== (yj > y))
-      && (x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi)
-    if (intersects) inside = !inside
-  }
-  return inside
-}
-
 function parseMaybeJson(value, fallback) {
   if (value == null) return fallback
   if (typeof value !== 'string') return value
@@ -192,6 +189,23 @@ function normalizeStageZones(value) {
       return {
         id: zone.id ?? `restored-stage-zone-${index + 1}`,
         stage: zone.stage ?? 'mature',
+        coordinates,
+        tree_count: zone.tree_count ?? 0,
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeStatusZones(value) {
+  const zones = parseMaybeJson(value, [])
+  if (!Array.isArray(zones)) return []
+  return zones
+    .map((zone, index) => {
+      const coordinates = parseMaybeJson(zone?.coordinates, [])
+      if (!Array.isArray(coordinates) || coordinates.length < 3) return null
+      return {
+        id: zone.id ?? `restored-status-zone-${index + 1}`,
+        status: zone.status ?? 'infected',
         coordinates,
         tree_count: zone.tree_count ?? 0,
       }
@@ -302,11 +316,7 @@ function stageOverridesFromZones(zones, treePoints) {
     const coordinates = Array.isArray(zone?.coordinates) ? zone.coordinates : []
     if (coordinates.length < 3 || !zone?.stage) continue
 
-    for (const point of treePoints) {
-      if (pointInPolygon([point.lon, point.lat], coordinates)) {
-        overrides[point.tree_id] = zone.stage
-      }
-    }
+    for (const treeId of treeIdsInPolygon(treePoints, coordinates)) overrides[treeId] = zone.stage
   }
 
   return overrides
@@ -357,6 +367,7 @@ export default function DashboardPage() {
   const [stageZoneDraft, setStageZoneDraft] = useState([])
   const [playbackFrames, setPlaybackFrames] = useState([])
   const [currentFrameIdx, setCurrentFrameIdx] = useState(0)
+  const [cecidMapMode, setCecidMapMode] = useState('representative')
   const [mapRefreshKey, setMapRefreshKey] = useState(0)
   const [simulationTemplate, setSimulationTemplate] = useState(null)
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
@@ -367,6 +378,19 @@ export default function DashboardPage() {
   const [statusZoneStatus, setStatusZoneStatus] = useState('infected')
   const [statusZoneDraft, setStatusZoneDraft] = useState([])
   const [statusZones, setStatusZones] = useState([])
+  const [treeEditScope, setTreeEditScope] = useState('scenario')
+  const [treeEditSaveState, setTreeEditSaveState] = useState('idle')
+  const [treeEditSaveError, setTreeEditSaveError] = useState('')
+
+  // Persistent named areas used by field teams and future zone reports.
+  const [managementZones, setManagementZones] = useState([])
+  const [managementZoneDrawing, setManagementZoneDrawing] = useState(false)
+  const [managementZoneLabel, setManagementZoneLabel] = useState('Zone 1')
+  const [managementZoneDraft, setManagementZoneDraft] = useState([])
+  const [managementZoneEditingId, setManagementZoneEditingId] = useState(null)
+  const [managementZoneSaveState, setManagementZoneSaveState] = useState('idle')
+  const [managementZoneSaveError, setManagementZoneSaveError] = useState('')
+  const managementZoneSaveVersionRef = useRef(0)
 
   // Persistent orchard weed habitat plus read-only legacy soil-source assumptions.
   const [cecidWeedZones, setCecidWeedZones] = useState([])
@@ -398,11 +422,20 @@ export default function DashboardPage() {
 
   // Tree management modal
   const [selectedTree, setSelectedTree] = useState(null)
+  const [observationPrefill, setObservationPrefill] = useState({
+    treeIds: [], forecastRisk: null, forecastLeadHours: null, lon: null, lat: null,
+  })
 
   // Fallback GeoJSON from static file (mirrors Python app's DEFAULT_ORCHARD)
   const [fallbackGeojson, setFallbackGeojson] = useState(fallbackTreeGeojson)
   useEffect(() => {
     selectedOrchardIdRef.current = selectedOrchardId
+  }, [selectedOrchardId])
+
+  useEffect(() => {
+    setObservationPrefill({
+      treeIds: [], forecastRisk: null, forecastLeadHours: null, lon: null, lat: null,
+    })
   }, [selectedOrchardId])
 
   useEffect(() => {
@@ -464,6 +497,10 @@ export default function DashboardPage() {
     () => JSON.stringify(selectedOrchardRecord?.cecid_weed_zones ?? []),
     [selectedOrchardRecord?.cecid_weed_zones],
   )
+  const selectedOrchardManagementZonesKey = useMemo(
+    () => JSON.stringify(selectedOrchardRecord?.management_zones ?? []),
+    [selectedOrchardRecord?.management_zones],
+  )
 
   useEffect(() => {
     setCecidWeedZones(normalizeCecidWeedZones(selectedOrchardRecord?.cecid_weed_zones))
@@ -473,9 +510,50 @@ export default function DashboardPage() {
     setCecidZoneSaveError('')
   }, [selectedOrchardId, selectedOrchardWeedZonesKey])
 
-  // Displayed geojson: current playback frame, or final sim snapshot, or null
+  useEffect(() => {
+    setManagementZones(normalizeManagementZones(selectedOrchardRecord?.management_zones))
+    setManagementZoneEditingId(null)
+    setManagementZoneSaveState('idle')
+    setManagementZoneSaveError('')
+  }, [selectedOrchardId, selectedOrchardManagementZonesKey])
+
+  const stageZoneSelectedCount = useMemo(
+    () => treeIdsInPolygon(orchardTreePoints, stageZoneDraft).length,
+    [orchardTreePoints, stageZoneDraft],
+  )
+  const statusZoneSelectedCount = useMemo(
+    () => treeIdsInPolygon(orchardTreePoints, statusZoneDraft).length,
+    [orchardTreePoints, statusZoneDraft],
+  )
+  const managementZoneSelectedCount = useMemo(
+    () => treeIdsInPolygon(orchardTreePoints, managementZoneDraft).length,
+    [managementZoneDraft, orchardTreePoints],
+  )
+  const cecidZoneSelectedCount = useMemo(
+    () => treeIdsInPolygon(orchardTreePoints, cecidZoneDraft).length,
+    [cecidZoneDraft, orchardTreePoints],
+  )
+
+  // Cecid defaults to a repeated-run likelihood map. Playback remains the
+  // exact representative realization and never changes the model result.
   const currentFrame = playbackFrames.length > 0 ? (playbackFrames[currentFrameIdx] ?? null) : null
-  const mapGeojson = currentFrame?.risk_geojson ?? simData?.risk_geojson ?? null
+  const cecidEnsembleRuns = Number(
+    simData?.metadata?.cecid_uncertainty_summary?.runs ?? 0,
+  )
+  const cecidTreeLikelihoodAvailable = Boolean(
+    simData?.risk_geojson?.features?.some((feature) => (
+      Number(feature?.properties?.ensemble_runs) > 1
+    )),
+  )
+  const cecidLikelihoodAvailable = simData?.pest_type === 'cecid'
+    && cecidEnsembleRuns > 1
+    && cecidTreeLikelihoodAvailable
+  const mapGeojson = cecidLikelihoodAvailable && cecidMapMode === 'likelihood'
+    ? simData?.risk_geojson ?? null
+    : currentFrame?.risk_geojson ?? simData?.risk_geojson ?? null
+  const displayedFrame = cecidLikelihoodAvailable && cecidMapMode === 'likelihood'
+    ? null
+    : currentFrame
 
   const activeOrchardAlerts = useMemo(
     () => alerts.filter((alert) => isOrchardAlert(alert, selectedOrchardId)),
@@ -504,6 +582,9 @@ export default function DashboardPage() {
     const z1 = zone1 / total, z2 = zone2 / total, z3 = zone3 / total
     const peak = simData.peak_risk ?? 0
     const nInfested = simData.n_infested_final ?? 0
+    const cecid = simData.pest_type === 'cecid'
+      ? summarizeCecidResult(simData)
+      : null
     const pestReduction = z3 < 0.3 ? 0.45 : z3 < 0.6 ? 0.25 : 0.10
     const savings = total * 180 * pestReduction
 
@@ -556,6 +637,7 @@ export default function DashboardPage() {
       economic: { pesticide_reduction: pestReduction, estimated_savings: savings },
       action_plan: actions,
       summary_message: summary,
+      cecid,
     }
   }, [simData])
 
@@ -642,6 +724,60 @@ export default function DashboardPage() {
     persistCecidWeedZones(cecidWeedZones)
   }, [cecidWeedZones, persistCecidWeedZones])
 
+  const persistManagementZones = useCallback(async (nextZones) => {
+    const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+    const normalized = normalizeManagementZones(nextZones)
+    const saveVersion = managementZoneSaveVersionRef.current + 1
+    managementZoneSaveVersionRef.current = saveVersion
+    setManagementZones(normalized)
+    setManagementZoneSaveState('saving')
+    setManagementZoneSaveError('')
+
+    const outcome = await saveManagementZones(orchardId, normalized, api.updateOrchard)
+    if (
+      managementZoneSaveVersionRef.current !== saveVersion
+      || selectedOrchardIdRef.current !== orchardId
+    ) return
+    if (!outcome.ok) {
+      setManagementZoneSaveState('error')
+      setManagementZoneSaveError(outcome.message)
+      return
+    }
+    const savedRecord = outcome.response.data
+    setManagementZones(outcome.zones)
+    setOrchards((current) => current.map((record) => (
+      record.orchard_id === orchardId ? { ...record, ...savedRecord } : record
+    )))
+    setManagementZoneSaveState('saved')
+  }, [])
+
+  const retryManagementZoneSave = useCallback(() => {
+    persistManagementZones(managementZones)
+  }, [managementZones, persistManagementZones])
+
+  const persistTreeSelection = useCallback(async (treeIds, patch) => {
+    if (treeEditScope !== 'orchard' || treeIds.length === 0) return
+    const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+    setTreeEditSaveState('saving')
+    setTreeEditSaveError('')
+    try {
+      const response = await api.updateOrchardTrees(orchardId, {
+        tree_ids: treeIds,
+        ...patch,
+      })
+      const savedRecord = response.data.orchard
+      setOrchards((current) => current.map((record) => (
+        record.orchard_id === orchardId ? { ...record, ...savedRecord } : record
+      )))
+      setTreeEditSaveState('saved')
+    } catch (error) {
+      setTreeEditSaveState('error')
+      setTreeEditSaveError(
+        error?.response?.data?.detail || error?.message || 'Could not save selected trees.',
+      )
+    }
+  }, [treeEditScope])
+
   const handleOrchardUpload = useCallback(async ({ name, treeGeojson, orthophoto, dtm, dsm }) => {
     const formData = new FormData()
     formData.append('name', name)
@@ -666,6 +802,10 @@ export default function DashboardPage() {
     setStatusZones([])
     setStatusZoneDrawing(false)
     setStatusZoneDraft([])
+    setManagementZones(normalizeManagementZones(uploaded.management_zones))
+    setManagementZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
     setCecidWeedZones(normalizeCecidWeedZones(uploaded.cecid_weed_zones))
     setLegacyCecidEmergenceZones([])
     setCecidZoneDrawing(false)
@@ -689,6 +829,10 @@ export default function DashboardPage() {
     setStatusZones([])
     setStatusZoneDrawing(false)
     setStatusZoneDraft([])
+    setManagementZones([])
+    setManagementZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
     setCecidWeedZones([])
     setLegacyCecidEmergenceZones([])
     setCecidZoneDrawing(false)
@@ -700,35 +844,37 @@ export default function DashboardPage() {
     fetchAlerts()
   }, [fetchAlerts, selectOrchardId])
 
+  const handleOrchardStageChange = useCallback(async (stage) => {
+    const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+    const response = await api.updateOrchard(orchardId, { orchard_stage: stage })
+    const saved = response.data
+    setOrchards((current) => current.map((orchard) => (
+      String(orchard.orchard_id) === String(orchardId)
+        ? { ...orchard, ...saved }
+        : orchard
+    )))
+
+    try {
+      await api.checkWeatherForecast({
+        orchard_id: orchardId,
+        lat: saved?.centroid_lat ?? null,
+        lon: saved?.centroid_lon ?? null,
+        orchard_stage: saved?.orchard_stage ?? stage,
+        monitored_pest_types: saved?.monitored_pest_types ?? null,
+        hours: 48,
+      })
+    } catch (_) {
+      // The saved stage remains valid; the hourly backend monitor will retry.
+    }
+    fetchAlerts()
+    return saved
+  }, [fetchAlerts])
+
   const handleOrchardRefresh = useCallback(async () => {
-    // Clear all simulation and alert state for a fresh start
-    setSimData(null)
-    setTreeOverrides({})
-    setTreeStageOverrides({})
-    setPhenologyZones([])
-    setStageZoneDrawing(false)
-    setStageZoneDraft([])
-    setStatusZones([])
-    setStatusZoneDrawing(false)
-    setStatusZoneDraft([])
-    setCecidWeedZones([])
-    setLegacyCecidEmergenceZones([])
-    setCecidZoneDrawing(false)
-    setCecidZoneDraft([])
-    setCecidZoneEditingId(null)
-    setPlaybackFrames([])
-    setCurrentFrameIdx(0)
-    setSimulationTemplate(null)
-    setZoneHistory([])
-    setSelectedTree(null)
-    setAlerts([])
-
-    // Clear server-side in-memory alerts
-    try { await api.clearAlerts() } catch (_) { /* ignore */ }
-
-    // Re-fetch orchards and alerts fresh
+    // Refresh server data without treating the action as an orchard reset.
+    // Scenario-only stage/status selections and the current result stay put;
+    // persistent management/weed zones are reconciled from the API response.
     await fetchOrchards(selectedOrchardIdRef.current)
-    setMapRefreshKey((value) => value + 1)
     setHistoryRefreshKey((key) => key + 1)
     fetchAlerts()
   }, [fetchOrchards, fetchAlerts])
@@ -759,13 +905,26 @@ export default function DashboardPage() {
   useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed) }, [sidebarCollapsed])
 
   const handleSuggestedSimulation = useCallback((params) => {
-    setSuggestedSimParams(params)
+    const prepared = prepareAlertSimulationSuggestion(params)
+    if (
+      prepared.orchardId
+      && prepared.orchardId !== selectedOrchardIdRef.current
+      && orchards.some((orchard) => String(orchard.orchard_id) === prepared.orchardId)
+    ) {
+      handleOrchardSelect(prepared.orchardId)
+    }
+    if (prepared.useLiveWeather) {
+      setWeatherOverrideActive(false)
+      fetchWeather(true)
+    }
+    // Copy the object so clicking the same alert can restore controls again.
+    setSuggestedSimParams({ ...prepared.params })
     setSidebarWorkflow((current) => sidebarWorkflowForEvent('alert-prefill', current))
     setSidebarCollapsed(false)
     if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 991.98px)').matches) {
       setSidebarMobileOpen(true)
     }
-  }, [])
+  }, [fetchWeather, handleOrchardSelect, orchards])
 
   // ── Auto-refresh intervals ────────────────────────────────────────────
   useEffect(() => {
@@ -777,13 +936,30 @@ export default function DashboardPage() {
   // ── Simulation complete handler ───────────────────────────────────────
   const applySimulationResult = useCallback((data, options = {}) => {
     setSimData(data)
+    if (data?.pest_type) setSelectedPestType(data.pest_type)
     const frames = Array.isArray(data.time_series) ? data.time_series : []
     setPlaybackFrames(frames)
     setCurrentFrameIdx(options.startAtLastFrame && frames.length ? frames.length - 1 : 0)
+    const ensembleRuns = Number(data?.metadata?.cecid_uncertainty_summary?.runs ?? 0)
+    setCecidMapMode(data?.pest_type === 'cecid' && ensembleRuns > 1
+      ? 'likelihood'
+      : 'representative')
     fetchAlerts()
     window.setTimeout(fetchAlerts, 1200)
     fetchMonitoring()
   }, [fetchAlerts, fetchMonitoring])
+
+  const handleFrameSeek = useCallback((frameIndex) => {
+    setCurrentFrameIdx(frameIndex)
+    if (simData?.pest_type === 'cecid') setCecidMapMode('representative')
+  }, [simData?.pest_type])
+
+  const handleCecidMapModeChange = useCallback((mode) => {
+    setCecidMapMode(mode)
+    if (mode === 'representative' && playbackFrames.length) {
+      setCurrentFrameIdx(playbackFrames.length - 1)
+    }
+  }, [playbackFrames.length])
 
   const handleSimulationComplete = useCallback((data) => {
     const params = parseMaybeJson(data?.request_payload ?? data?.input_parameters, {})
@@ -805,8 +981,13 @@ export default function DashboardPage() {
     const safeParams = parseMaybeJson(params, {})
     const dashboardState = parseMaybeJson(safeParams.dashboard_state, {})
     const savedStageOverrides = parseMaybeJson(safeParams.tree_stage_overrides, {})
+    const savedStatusOverrides = parseMaybeJson(safeParams.tree_overrides, {})
     const savedZones = normalizeStageZones(
       dashboardState.phenology_zones ?? safeParams.phenology_zones,
+    )
+    const restoredStatusZones = normalizeStatusZones(dashboardState.status_zones)
+    const restoredManagementZones = normalizeManagementZones(
+      safeParams.management_zones ?? dashboardState.management_zones,
     )
     const restoredCecidWeedZones = normalizeCecidWeedZones(
       safeParams.cecid_weed_zones ?? dashboardState.cecid_weed_zones,
@@ -821,8 +1002,16 @@ export default function DashboardPage() {
     const applyRestoredStages = () => {
       setPhenologyZones(restoredZones)
       setTreeStageOverrides(savedStageOverrides)
+      setStatusZones(restoredStatusZones)
+      setTreeOverrides(savedStatusOverrides)
+      setStatusZoneDraft([])
+      setStatusZoneDrawing(false)
       setStageZoneDraft([])
       setStageZoneDrawing(false)
+      setManagementZones(restoredManagementZones)
+      setManagementZoneDraft([])
+      setManagementZoneEditingId(null)
+      setManagementZoneDrawing(false)
       setCecidWeedZones(restoredCecidWeedZones)
       setLegacyCecidEmergenceZones(restoredLegacyCecidZones)
       setCecidZoneDraft([])
@@ -830,6 +1019,7 @@ export default function DashboardPage() {
       setCecidZoneDrawing(false)
       setZoneHistory([
         ...restoredZones.map(() => ({ type: 'stage' })),
+        ...restoredStatusZones.map(() => ({ type: 'status' })),
         ...restoredCecidWeedZones.map((zone) => ({ type: 'cecid', id: zone.id })),
       ])
       setMapRefreshKey((value) => value + 1)
@@ -838,6 +1028,9 @@ export default function DashboardPage() {
     if (options.defer) {
       setPhenologyZones([])
       setTreeStageOverrides({})
+      setStatusZones([])
+      setTreeOverrides({})
+      setManagementZones([])
       setCecidWeedZones([])
       setLegacyCecidEmergenceZones([])
       window.setTimeout(applyRestoredStages, 0)
@@ -925,6 +1118,25 @@ export default function DashboardPage() {
     setSelectedTree(null)
   }, [])
 
+  const handleOpenTreeVerification = useCallback(() => {
+    if (!selectedTree?.tree_id) return
+    setObservationPrefill({
+      treeIds: [String(selectedTree.tree_id)],
+      forecastRisk: selectedTree.risk == null ? null : Number(selectedTree.risk),
+      forecastLeadHours: Number.isFinite(Number(currentFrame?.hour ?? currentFrame?.timestep))
+        ? Number(currentFrame?.hour ?? currentFrame?.timestep)
+        : null,
+      lon: Number.isFinite(Number(selectedTree.lon)) ? Number(selectedTree.lon) : null,
+      lat: Number.isFinite(Number(selectedTree.lat)) ? Number(selectedTree.lat) : null,
+    })
+    setSidebarWorkflow((current) => sidebarWorkflowForEvent('tree-verification', current))
+    setSidebarCollapsed(false)
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 991.98px)').matches) {
+      setSidebarMobileOpen(true)
+    }
+    setSelectedTree(null)
+  }, [currentFrame, selectedTree])
+
   const handleStageZoneStart = useCallback(() => {
     // Cancel any active status zone drawing (mutual exclusivity)
     setStatusZoneDraft([])
@@ -932,6 +1144,9 @@ export default function DashboardPage() {
     setCecidZoneDraft([])
     setCecidZoneEditingId(null)
     setCecidZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
     setStageZoneDraft([])
     setStageZoneDrawing(true)
   }, [])
@@ -951,9 +1166,7 @@ export default function DashboardPage() {
 
   const handleStageZoneFinish = useCallback(() => {
     if (stageZoneDraft.length < 3) return
-    const targetIds = orchardTreePoints
-      .filter((point) => pointInPolygon([point.lon, point.lat], stageZoneDraft))
-      .map((point) => point.tree_id)
+    const targetIds = treeIdsInPolygon(orchardTreePoints, stageZoneDraft)
 
     setPhenologyZones((prev) => ([
       ...prev,
@@ -972,7 +1185,8 @@ export default function DashboardPage() {
     setStageZoneDraft([])
     setStageZoneDrawing(false)
     setZoneHistory((prev) => [...prev, { type: 'stage' }])
-  }, [orchardTreePoints, stageZoneDraft, stageZoneStage])
+    persistTreeSelection(targetIds, { stage: stageZoneStage })
+  }, [orchardTreePoints, persistTreeSelection, stageZoneDraft, stageZoneStage])
 
   const handleStageZoneUndoLast = useCallback(() => {
     const nextZones = phenologyZones.slice(0, -1)
@@ -990,6 +1204,9 @@ export default function DashboardPage() {
     setCecidZoneDraft([])
     setCecidZoneEditingId(null)
     setCecidZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
     setStatusZoneDraft([])
     setStatusZoneDrawing(true)
   }, [])
@@ -1009,9 +1226,7 @@ export default function DashboardPage() {
 
   const handleStatusZoneFinish = useCallback(() => {
     if (statusZoneDraft.length < 3) return
-    const targetIds = orchardTreePoints
-      .filter((point) => pointInPolygon([point.lon, point.lat], statusZoneDraft))
-      .map((point) => point.tree_id)
+    const targetIds = treeIdsInPolygon(orchardTreePoints, statusZoneDraft)
 
     setStatusZones((prev) => ([
       ...prev,
@@ -1030,7 +1245,8 @@ export default function DashboardPage() {
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
     setZoneHistory((prev) => [...prev, { type: 'status' }])
-  }, [orchardTreePoints, statusZoneDraft, statusZoneStatus])
+    persistTreeSelection(targetIds, { status: statusZoneStatus })
+  }, [orchardTreePoints, persistTreeSelection, statusZoneDraft, statusZoneStatus])
 
   const handleStatusZoneUndoLast = useCallback(() => {
     const removed = statusZones[statusZones.length - 1]
@@ -1039,18 +1255,14 @@ export default function DashboardPage() {
     // Remove the tree overrides that were set by the removed zone
     if (removed) {
       const removedIds = new Set(
-        orchardTreePoints
-          .filter((point) => pointInPolygon([point.lon, point.lat], removed.coordinates))
-          .map((point) => point.tree_id),
+        treeIdsInPolygon(orchardTreePoints, removed.coordinates),
       )
       setTreeOverrides((prev) => {
         const next = { ...prev }
         for (const id of removedIds) delete next[id]
         // Re-apply remaining status zones in order
         for (const zone of nextZones) {
-          const ids = orchardTreePoints
-            .filter((point) => pointInPolygon([point.lon, point.lat], zone.coordinates))
-            .map((point) => point.tree_id)
+          const ids = treeIdsInPolygon(orchardTreePoints, zone.coordinates)
           for (const zoneId of ids) next[zoneId] = zone.status
         }
         return next
@@ -1067,11 +1279,111 @@ export default function DashboardPage() {
     setStatusZoneDrawing(false)
   }, [])
 
+  // ── Persistent management/reporting zone handlers ─────────────────────
+  const handleManagementZoneStart = useCallback(() => {
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+    setStatusZoneDraft([])
+    setStatusZoneDrawing(false)
+    setCecidZoneDraft([])
+    setCecidZoneEditingId(null)
+    setCecidZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneLabel(`Zone ${managementZones.length + 1}`)
+    setManagementZoneDrawing(true)
+  }, [managementZones.length])
+
+  const handleManagementZoneCancel = useCallback(() => {
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
+  }, [])
+
+  const handleManagementZoneMapClick = useCallback((coordinate) => {
+    setManagementZoneDraft((current) => [...current, coordinate])
+  }, [])
+
+  const handleManagementZoneUndoPoint = useCallback(() => {
+    setManagementZoneDraft((current) => current.slice(0, -1))
+  }, [])
+
+  const handleManagementZoneFinish = useCallback(() => {
+    if (managementZoneDraft.length < 3) return
+    const treeCount = treeIdsInPolygon(orchardTreePoints, managementZoneDraft).length
+    const newZone = {
+      id: managementZoneEditingId || `management-zone-${Date.now()}`,
+      label: managementZoneLabel.trim() || `Zone ${managementZones.length + 1}`,
+      coordinates: managementZoneDraft,
+      tree_count: treeCount,
+    }
+    const otherZones = managementZones.filter((zone) => zone.id !== managementZoneEditingId)
+    const overlaps = overlappingManagementZones(newZone, otherZones, orchardTreePoints)
+    if (overlaps.length) {
+      setManagementZoneSaveState('error')
+      setManagementZoneSaveError(
+        `Selected trees already belong to ${overlaps.map((zone) => zone.label).join(', ')}. Adjust the boundary so reporting zones do not share trees.`,
+      )
+      return
+    }
+    const nextZones = managementZoneEditingId
+      ? managementZones.map((zone) => (zone.id === managementZoneEditingId ? { ...zone, ...newZone } : zone))
+      : [...managementZones, newZone]
+    persistManagementZones(nextZones)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
+  }, [
+    managementZoneDraft,
+    managementZoneEditingId,
+    managementZoneLabel,
+    managementZones,
+    orchardTreePoints,
+    persistManagementZones,
+  ])
+
+  const handleManagementZoneRedraw = useCallback((zoneId) => {
+    const zone = managementZones.find((candidate) => candidate.id === zoneId)
+    if (!zone) return
+    setStageZoneDrawing(false)
+    setStageZoneDraft([])
+    setStatusZoneDrawing(false)
+    setStatusZoneDraft([])
+    setCecidZoneDrawing(false)
+    setCecidZoneDraft([])
+    setCecidZoneEditingId(null)
+    setManagementZoneLabel(zone.label)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(zone.id)
+    setManagementZoneDrawing(true)
+  }, [managementZones])
+
+  const handleManagementZoneUpdate = useCallback((zoneId, patch) => {
+    persistManagementZones(managementZones.map((zone) => (
+      zone.id === zoneId ? { ...zone, ...patch } : zone
+    )))
+  }, [managementZones, persistManagementZones])
+
+  const handleManagementZoneDelete = useCallback((zoneId) => {
+    persistManagementZones(managementZones.filter((zone) => zone.id !== zoneId))
+    if (managementZoneEditingId === zoneId) handleManagementZoneCancel()
+  }, [handleManagementZoneCancel, managementZoneEditingId, managementZones, persistManagementZones])
+
+  const handleManagementZoneClear = useCallback(() => {
+    if (!managementZones.length) return
+    if (!window.confirm('Delete all named management zones from this orchard?')) return
+    persistManagementZones([])
+    handleManagementZoneCancel()
+  }, [handleManagementZoneCancel, managementZones.length, persistManagementZones])
+
   const handleCecidZoneStart = useCallback(() => {
     setStageZoneDraft([])
     setStageZoneDrawing(false)
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
     setCecidZoneDraft([])
     setCecidZoneEditingId(null)
     setCecidZoneDrawing(true)
@@ -1093,9 +1405,7 @@ export default function DashboardPage() {
 
   const handleCecidZoneFinish = useCallback(() => {
     if (cecidZoneDraft.length < 3) return
-    const treeCount = orchardTreePoints.filter((point) => (
-      pointInPolygon([point.lon, point.lat], cecidZoneDraft)
-    )).length
+    const treeCount = treeIdsInPolygon(orchardTreePoints, cecidZoneDraft).length
     const newZone = {
       id: cecidZoneEditingId || `weed-zone-${Date.now()}`,
       label: cecidZoneLabel.trim() || `Weed habitat ${cecidWeedZones.length + 1}`,
@@ -1191,17 +1501,13 @@ export default function DashboardPage() {
       setStatusZones(nextZones)
       if (removed) {
         const removedIds = new Set(
-          orchardTreePoints
-            .filter((point) => pointInPolygon([point.lon, point.lat], removed.coordinates))
-            .map((point) => point.tree_id),
+          treeIdsInPolygon(orchardTreePoints, removed.coordinates),
         )
         setTreeOverrides((prev) => {
           const next = { ...prev }
           for (const id of removedIds) delete next[id]
           for (const zone of nextZones) {
-            const ids = orchardTreePoints
-              .filter((point) => pointInPolygon([point.lon, point.lat], zone.coordinates))
-              .map((point) => point.tree_id)
+            const ids = treeIdsInPolygon(orchardTreePoints, zone.coordinates)
             for (const zoneId of ids) next[zoneId] = zone.status
           }
           return next
@@ -1228,7 +1534,10 @@ export default function DashboardPage() {
   ])
 
   const handleZoneClearAll = useCallback(() => {
-    if (cecidWeedZones.length && !window.confirm('Clear all zones, including saved weed habitats, from this orchard?')) return
+    if (
+      (cecidWeedZones.length || managementZones.length)
+      && !window.confirm('Clear all zones, including saved management and weed zones, from this orchard?')
+    ) return
     setPhenologyZones([])
     setTreeStageOverrides({})
     setStageZoneDraft([])
@@ -1237,12 +1546,21 @@ export default function DashboardPage() {
     setTreeOverrides({})
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
+    if (managementZones.length) persistManagementZones([])
+    setManagementZoneDraft([])
+    setManagementZoneEditingId(null)
+    setManagementZoneDrawing(false)
     if (cecidWeedZones.length) persistCecidWeedZones([])
     setCecidZoneDraft([])
     setCecidZoneEditingId(null)
     setCecidZoneDrawing(false)
     setZoneHistory([])
-  }, [cecidWeedZones.length, persistCecidWeedZones])
+  }, [
+    cecidWeedZones.length,
+    managementZones.length,
+    persistCecidWeedZones,
+    persistManagementZones,
+  ])
 
   return (
     <div className="app-shell">
@@ -1277,6 +1595,7 @@ export default function DashboardPage() {
                   stageZoneDrawing={stageZoneDrawing}
                   stageZoneStage={stageZoneStage}
                   stageZoneDraft={stageZoneDraft}
+                  stageZoneSelectedCount={stageZoneSelectedCount}
                   stageOptions={PHENOLOGY_STAGE_OPTIONS}
                   onStageZoneStageChange={setStageZoneStage}
                   onStageZoneStart={handleStageZoneStart}
@@ -1284,10 +1603,12 @@ export default function DashboardPage() {
                   onStageZoneFinish={handleStageZoneFinish}
                   onStageZoneUndoPoint={handleStageZoneUndoPoint}
                   onStageZoneMapClick={handleStageZoneMapClick}
+                  onStageZoneDraftChange={setStageZoneDraft}
                   statusZones={statusZones}
                   statusZoneDrawing={statusZoneDrawing}
                   statusZoneStatus={statusZoneStatus}
                   statusZoneDraft={statusZoneDraft}
+                  statusZoneSelectedCount={statusZoneSelectedCount}
                   statusOptions={STATUS_ZONE_OPTIONS}
                   onStatusZoneStatusChange={setStatusZoneStatus}
                   onStatusZoneStart={handleStatusZoneStart}
@@ -1295,12 +1616,37 @@ export default function DashboardPage() {
                   onStatusZoneFinish={handleStatusZoneFinish}
                   onStatusZoneUndoPoint={handleStatusZoneUndoPoint}
                   onStatusZoneMapClick={handleStatusZoneMapClick}
+                  onStatusZoneDraftChange={setStatusZoneDraft}
+                  treeEditScope={treeEditScope}
+                  treeEditSaveState={treeEditSaveState}
+                  treeEditSaveError={treeEditSaveError}
+                  onTreeEditScopeChange={setTreeEditScope}
+                  managementZones={managementZones}
+                  managementZoneDrawing={managementZoneDrawing}
+                  managementZoneLabel={managementZoneLabel}
+                  managementZoneDraft={managementZoneDraft}
+                  managementZoneSelectedCount={managementZoneSelectedCount}
+                  managementZoneSaveState={managementZoneSaveState}
+                  managementZoneSaveError={managementZoneSaveError}
+                  onManagementZoneLabelChange={setManagementZoneLabel}
+                  onManagementZoneStart={handleManagementZoneStart}
+                  onManagementZoneCancel={handleManagementZoneCancel}
+                  onManagementZoneFinish={handleManagementZoneFinish}
+                  onManagementZoneUndoPoint={handleManagementZoneUndoPoint}
+                  onManagementZoneMapClick={handleManagementZoneMapClick}
+                  onManagementZoneDraftChange={setManagementZoneDraft}
+                  onManagementZoneUpdate={handleManagementZoneUpdate}
+                  onManagementZoneRedraw={handleManagementZoneRedraw}
+                  onManagementZoneDelete={handleManagementZoneDelete}
+                  onManagementZoneClear={handleManagementZoneClear}
+                  onManagementZoneRetry={retryManagementZoneSave}
                   cecidWeedZones={cecidWeedZones}
                   legacyCecidEmergenceZones={legacyCecidEmergenceZones}
                   cecidZoneDrawing={cecidZoneDrawing}
                   cecidZoneDensity={cecidZoneDensity}
                   cecidZoneLabel={cecidZoneLabel}
                   cecidZoneDraft={cecidZoneDraft}
+                  cecidZoneSelectedCount={cecidZoneSelectedCount}
                   cecidZoneSaveState={cecidZoneSaveState}
                   cecidZoneSaveError={cecidZoneSaveError}
                   onCecidZoneDensityChange={setCecidZoneDensity}
@@ -1310,12 +1656,14 @@ export default function DashboardPage() {
                   onCecidZoneFinish={handleCecidZoneFinish}
                   onCecidZoneUndoPoint={handleCecidZoneUndoPoint}
                   onCecidZoneMapClick={handleCecidZoneMapClick}
+                  onCecidZoneDraftChange={setCecidZoneDraft}
                   onCecidZoneUpdate={handleCecidZoneUpdate}
                   onCecidZoneRedraw={handleCecidZoneRedraw}
                   onCecidZoneDelete={handleCecidZoneDelete}
                   onCecidZoneClear={handleCecidZoneClear}
                   onCecidZoneRetry={retryCecidWeedZoneSave}
                   selectedPestType={selectedPestType}
+                  resultPestType={simData?.pest_type ?? selectedPestType}
                   zoneHistory={zoneHistory}
                   onZoneUndoLast={handleZoneUndoLast}
                   onZoneClearAll={handleZoneClearAll}
@@ -1323,7 +1671,10 @@ export default function DashboardPage() {
                   orthophotoOverlay={orchardOrthophoto}
                   viewportKey={`${selectedOrchardId}:${mapRefreshKey}`}
                   fitToOrthophoto
-                  currentFrame={currentFrame}
+                  currentFrame={displayedFrame}
+                  cecidMapMode={cecidMapMode}
+                  cecidEnsembleRuns={cecidLikelihoodAvailable ? cecidEnsembleRuns : 0}
+                  onCecidMapModeChange={handleCecidMapModeChange}
                   onTreeClick={handleTreeClick}
                 />
               </div>
@@ -1381,6 +1732,7 @@ export default function DashboardPage() {
           onOrchardSelect={handleOrchardSelect}
           onOrchardRefresh={handleOrchardRefresh}
           onOrchardUpload={handleOrchardUpload}
+          onOrchardStageChange={handleOrchardStageChange}
           orchardLoading={orchardLoading}
           defaultTreeCount={fallbackGeojson?.features?.length ?? 0}
           weather={weather}
@@ -1398,17 +1750,20 @@ export default function DashboardPage() {
           orchardCoordinates={orchardWeatherCoordinates}
           orchardGeojson={orchardGeojson}
           treeOverrides={treeOverrides}
+          statusZones={statusZones}
           treeStageOverrides={treeStageOverrides}
           phenologyZones={phenologyZones}
+          managementZones={managementZones}
           cecidWeedZones={cecidWeedZones}
           legacyCecidEmergenceZones={legacyCecidEmergenceZones}
+          selectedPestType={selectedPestType}
           onPestTypeChange={setSelectedPestType}
           onClearTreeStageOverrides={handleStageZoneClear}
           onSimulationComplete={handleSimulationComplete}
           simulationTemplate={simulationTemplate}
           playbackFrames={playbackFrames}
           currentFrameIdx={currentFrameIdx}
-          onFrameSeek={setCurrentFrameIdx}
+          onFrameSeek={handleFrameSeek}
           decisionMetrics={decisionMetrics}
           suggestedSimParams={suggestedSimParams}
           onClearSuggestedSimParams={() => setSuggestedSimParams(null)}
@@ -1418,6 +1773,12 @@ export default function DashboardPage() {
           onCollapsedChange={setSidebarCollapsed}
           mobileOpen={sidebarMobileOpen}
           onMobileOpenChange={setSidebarMobileOpen}
+          observationTreeIds={observationPrefill.treeIds}
+          observationForecastRisk={observationPrefill.forecastRisk}
+          observationForecastLeadHours={observationPrefill.forecastLeadHours}
+          observationLon={observationPrefill.lon}
+          observationLat={observationPrefill.lat}
+          currentSimulationRunId={currentSimulationRunId}
         />
       </div>
 
@@ -1450,6 +1811,14 @@ export default function DashboardPage() {
                     </p>
                   )}
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-outline-success btn-sm w-100 mb-3"
+                  onClick={handleOpenTreeVerification}
+                >
+                  <i className="bi bi-clipboard2-check me-1" />
+                  Log field verification for this tree
+                </button>
                 <hr className="my-2" />
                 <div className="d-flex align-items-center mb-2">
                   <i className="bi bi-pencil-square me-2 text-primary" />

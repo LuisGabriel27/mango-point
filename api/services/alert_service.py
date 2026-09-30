@@ -97,6 +97,7 @@ class AlertService:
                     "centroid_lon": memory_alert["centroid_lon"],
                     "centroid_lat": memory_alert["centroid_lat"],
                     "recommended_actions": memory_alert["recommended_actions"],
+                    "suggested_simulation_params": memory_alert["suggested_simulation_params"],
                 })
                 logger.info(
                     "Updated existing in-memory alert %s instead of storing duplicate %s",
@@ -182,6 +183,11 @@ class AlertService:
         cells = tuple(sorted(cell_values))
 
         if alert_kind == "condition":
+            suggested = get_value("suggested_simulation_params") or {}
+            if isinstance(suggested, dict):
+                window_key = suggested.get("_forecast_window_key")
+                if window_key:
+                    return (alert_kind, orchard_id, zone_name, str(window_key))
             return (alert_kind, orchard_id, zone_name)
         return (alert_kind, orchard_id, zone_name, tree_ids, cells, message)
 
@@ -679,13 +685,27 @@ class AlertService:
         orchard_stage: Optional[str],
         monitored_pest_types: Optional[List[str]],
     ) -> List[AlertCreate]:
-        """Create alerts from the same suitability diagnostics as simulations."""
+        """Create alerts from the same suitability diagnostics as simulations.
+
+        The result only prepares simulation controls. It never starts a spatial
+        simulation. Synthetic fallback data may still be used for research runs,
+        but it is not trusted to create an operational Cecid forecast alert.
+        """
         from utils.weather_builder import compute_gate_diagnostics
 
         if not forecast:
             return []
         stage = str(orchard_stage or "mature").strip().lower()
-        pest_types = monitored_pest_types or ["cecid", "fruitfly"]
+        pest_types = [
+            str(getattr(pest, "value", pest)).strip().lower().replace("-", "_")
+            for pest in (monitored_pest_types or ["cecid", "fruitfly"])
+        ]
+        pest_types = [
+            "cecid" if pest in {"cecid_fly", "cecid fly"}
+            else "fruitfly" if pest in {"fruit_fly", "fruit fly"}
+            else pest
+            for pest in pest_types
+        ]
         stage_pest_map = {
             "fruitlet": {"cecid"},
             "mature": {"fruitfly"},
@@ -698,7 +718,9 @@ class AlertService:
         antecedent_rain = [
             float(entry.get("rainfall_mm", 0.0)) for entry in antecedent
         ]
-        provider = str(provenance.get("provider") or provenance.get("source") or "weather provider")
+        source = str(provenance.get("source") or "unknown").strip().lower()
+        provider = str(provenance.get("provider") or source or "weather provider")
+        trusted_live_weather = source == "open-meteo" and not provenance.get("fallback_reason")
         alerts: List[AlertCreate] = []
         for pest in pest_types:
             diagnostics = compute_gate_diagnostics(
@@ -714,19 +736,117 @@ class AlertService:
             if not favorable:
                 continue
 
+            # Generated fallback weather is suitable for deterministic testing,
+            # but must not be presented as an observed Cecid forecast.
+            if pest == "cecid" and not trusted_live_weather:
+                logger.warning(
+                    "Suppressed Cecid forecast alert for %s because weather source is %s",
+                    orchard_id,
+                    source or "unknown",
+                )
+                continue
+
             count = len(favorable)
             fraction = count / max(1, len(diagnostics))
             peak_score = max(float(entry.get("suitability_score", 0.0)) for entry in favorable)
             pest_label = self._pest_label(pest)
-            first_window = self._gate_window_label(favorable[0])
+            first_entry = favorable[0]
+            first_window_entries = self._first_favorable_window(diagnostics)
+            last_window_entry = first_window_entries[-1]
+            first_window = self._gate_window_label(first_entry)
             severity = self._classify_gate_condition_severity(count, fraction)
+            source_label = (
+                "Open-Meteo"
+                if source == "open-meteo"
+                else source.replace("-", " ").title()
+            )
+            first_at = first_entry.get("local_datetime") or first_entry.get("datetime")
+            last_at = (
+                last_window_entry.get("local_datetime")
+                or last_window_entry.get("datetime")
+            )
+            window_key = "|".join((
+                str(orchard_id),
+                str(pest),
+                str(first_at or first_entry.get("step"))[:10],
+                str(first_entry.get("twilight_window") or "activity"),
+                source,
+            ))
+            forecast_context: Dict[str, Any] = {
+                "first_favorable_at": first_at,
+                "first_window_last_hour_at": last_at,
+                "twilight_window": first_entry.get("twilight_window"),
+                "favorable_hours": count,
+                "first_window_hours": len(first_window_entries),
+                "limited_hours": sum(
+                    1 for entry in diagnostics if entry.get("status") == "limited"
+                ),
+                "peak_suitability": round(peak_score, 4),
+                "soil_wetness_mm": round(
+                    float(first_entry.get("soil_wetness_mm", 0.0)), 3,
+                ),
+                "rain_24h_mm": round(float(first_entry.get("rain_24h_sum", 0.0)), 3),
+                "rain_72h_mm": round(float(first_entry.get("rain_72h_sum", 0.0)), 3),
+                "current_rainfall_mm": round(
+                    float(first_entry.get("rainfall_mm", 0.0)), 3,
+                ),
+                "wind_speed_ms": round(
+                    float(first_entry.get("wind_speed_ms", 0.0)), 3,
+                ),
+                "wind_speed_kmh": round(
+                    float(first_entry.get("wind_speed_kmh", 0.0)), 3,
+                ),
+                "sunrise_local": first_entry.get("sunrise_local"),
+                "sunset_local": first_entry.get("sunset_local"),
+                "provider": provider,
+                "source": source,
+                "timezone": provenance.get("timezone") or "Asia/Manila",
+                "coordinates": provenance.get("coordinates") or {"lat": lat, "lon": lon},
+                "fetched_at": provenance.get("fetched_at"),
+                "uses_72h_antecedent_context": True,
+                "operational_live_data": trusted_live_weather,
+            }
+            summary = (
+                f"{pest_label} live forecast loaded: first favorable "
+                f"{str(first_entry.get('twilight_window') or 'activity')} window "
+                f"{first_window}, peak suitability {peak_score:.0%}. "
+                "No spatial simulation has run yet; review the controls and press "
+                "Run Simulation."
+            )
             suggested_params: Dict[str, Any] = {
                 "pest_type": pest,
+                "orchard_id": orchard_id,
                 "orchard_stage": stage,
                 "hours": min(168, len(forecast)),
                 "weather_mode": "live",
+                "auto_run": False,
                 "_weather_provenance": provenance,
+                "_forecast_summary": summary,
+                "forecast_context": forecast_context,
             }
+            if pest == "cecid":
+                suggested_params["cecid_forecast_context"] = forecast_context
+                suggested_params["_forecast_window_key"] = window_key
+
+            if pest == "cecid":
+                message = (
+                    f"Cecid fly emergence conditions are favorable for {count} of "
+                    f"{len(diagnostics)} forecast hour(s), first {first_window} "
+                    f"({str(first_entry.get('twilight_window') or 'dawn/dusk')}). "
+                    f"Peak suitability: {peak_score:.0%}; soil wetness: "
+                    f"{forecast_context['soil_wetness_mm']:.1f} mm; current rain: "
+                    f"{forecast_context['current_rainfall_mm']:.1f} mm/h; wind: "
+                    f"{forecast_context['wind_speed_ms']:.1f} m/s. Source: {source_label}. "
+                    "Open the simulation controls to assess susceptible trees; the alert "
+                    "does not run the spatial simulation automatically."
+                )
+            else:
+                message = (
+                    f"{pest_label} conditions are favorable for {count} of "
+                    f"{len(diagnostics)} forecast hour(s). Expected Time: "
+                    f"{first_window}. Weather source: {source_label}. Run the live "
+                    f"simulation for orchard '{orchard_id}' and inspect susceptible trees."
+                )
             alerts.append(AlertCreate(
                 alert_id=f"alert_wx_{str(pest)[:6]}_{uuid.uuid4().hex[:10]}",
                 simulation_run_id=None,
@@ -736,12 +856,7 @@ class AlertService:
                 affected_tree_ids=[],
                 orchard_id=orchard_id,
                 zone_name=f"{pest_label} weather forecast",
-                message=(
-                    f"{pest_label} conditions are favorable for {count} of "
-                    f"{len(diagnostics)} forecast hour(s). Expected Time: "
-                    f"{first_window}. Weather source: {provider}. Run the live "
-                    f"simulation for orchard '{orchard_id}' and inspect susceptible trees."
-                ),
+                message=message,
                 centroid_lat=lat,
                 centroid_lon=lon,
                 recommended_actions=self._recommended_actions(
@@ -750,6 +865,25 @@ class AlertService:
                 suggested_simulation_params=suggested_params,
             ))
         return alerts
+
+    @staticmethod
+    def _first_favorable_window(
+        diagnostics: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return the first consecutive run of favorable forecast hours."""
+        window: List[Dict[str, Any]] = []
+        previous_step: Optional[int] = None
+        for entry in diagnostics:
+            if entry.get("status") != "favorable":
+                if window:
+                    break
+                continue
+            step = int(entry.get("step", 0))
+            if window and previous_step is not None and step != previous_step + 1:
+                break
+            window.append(entry)
+            previous_step = step
+        return window
 
     def _classify_severity(
         self,
@@ -949,6 +1083,18 @@ class AlertService:
         """
         duplicate = await self._find_active_duplicate_alert(db, alert_data)
         if duplicate is not None:
+            duplicate.severity = AlertSeverity(
+                alert_data.severity.value
+                if hasattr(alert_data.severity, "value")
+                else str(alert_data.severity)
+            )
+            duplicate.risk_value = alert_data.risk_value
+            duplicate.message = alert_data.message
+            duplicate.centroid_lon = alert_data.centroid_lon
+            duplicate.centroid_lat = alert_data.centroid_lat
+            duplicate.recommended_actions = alert_data.recommended_actions or []
+            duplicate.suggested_simulation_params = alert_data.suggested_simulation_params
+            await db.flush()
             logger.info(
                 "Reusing existing active alert %s instead of creating duplicate %s",
                 duplicate.alert_id,
@@ -1040,9 +1186,10 @@ class AlertService:
         
         # Email notification
         try:
+            zone_name = (alert.zone_name or "").lower()
             alert_kind = (
                 "Condition Alert"
-                if "gate condition" in (alert.zone_name or "").lower()
+                if "gate condition" in zone_name or "weather forecast" in zone_name
                 else "Risk Alert"
             )
             email_sent = await notification_service.send_email_alert(

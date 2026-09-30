@@ -6,7 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from api.core.database import _ensure_default_orchard
-from api.models.schemas import CecidWeedZone, OrchardCreate, OrchardUpdate, SimulationRequest
+from api.models.schemas import (
+    CecidWeedZone,
+    ManagementZone,
+    OrchardCreate,
+    OrchardUpdate,
+    SimulationRequest,
+)
 from api.routes import orchards as orchard_routes
 from api.routes.orchards import (
     count_geojson_trees,
@@ -18,7 +24,12 @@ from api.routes.orchards import (
     _centroid_from_bounds,
     _point_within_bounds,
 )
-from api.routes.simulation import _orchard_id_from_request, _resolve_cecid_weed_zones
+from api.routes.simulation import (
+    _orchard_id_from_request,
+    _resolve_cecid_weed_zones,
+    _resolve_management_zones,
+)
+from api.services.orchard_tree_service import update_geojson_trees
 
 
 def _point_feature(lon, lat, tree_id):
@@ -129,6 +140,12 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
         area_size=Decimal("1.25"),
         tree_count=42,
         geojson={"type": "FeatureCollection", "features": []},
+        management_zones=[{
+            "id": "zone-1",
+            "label": "Zone 1",
+            "color": "#2563eb",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
         cecid_weed_zones=[{
             "id": "north-weeds",
             "label": "North weeds",
@@ -165,6 +182,7 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
     assert response.has_dsm is False
     assert response.monitoring_enabled is True
     assert response.orchard_stage == "mature"
+    assert response.management_zones[0].label == "Zone 1"
     assert response.cecid_weed_zones[0].density.value == "dense"
 
 
@@ -211,6 +229,7 @@ def test_weed_zone_schema_validates_density_and_polygon():
             density="high",
             coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
         )
+
     with pytest.raises(ValidationError):
         CecidWeedZone(
             id="bad-polygon",
@@ -218,6 +237,47 @@ def test_weed_zone_schema_validates_density_and_polygon():
             density="sparse",
             coordinates=[[122.0, 10.0], [122.1, 10.0]],
         )
+
+
+def test_management_zone_schema_keeps_stable_label_and_polygon():
+    zone = ManagementZone(
+        id="zone-north",
+        label="North Block",
+        color="#2563eb",
+        coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    )
+    assert zone.id == "zone-north"
+    assert zone.label == "North Block"
+
+    with pytest.raises(ValidationError):
+        ManagementZone(
+            id="bad",
+            label="Bad",
+            color="blue",
+            coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        )
+
+
+def test_bulk_tree_update_uses_portable_ids_without_mutating_input():
+    original = {
+        "type": "FeatureCollection",
+        "features": [
+            _point_feature(122.0, 10.0, "T1"),
+            _point_feature(122.1, 10.1, "T2"),
+        ],
+    }
+    updated, found, missing = update_geojson_trees(
+        original,
+        ["T2", "missing"],
+        status="suspect",
+        stage="fruitlet",
+    )
+
+    assert found == ["T2"]
+    assert missing == ["missing"]
+    assert original["features"][1]["properties"].get("status") is None
+    assert updated["features"][1]["properties"]["status"] == "suspect"
+    assert updated["features"][1]["properties"]["stage"] == "fruitlet"
 
 
 class _FakeOrchardSession:
@@ -254,10 +314,17 @@ async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
             "density": "sparse",
             "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
         }],
+        management_zones=[{
+            "id": "zone-a",
+            "label": "Block A",
+            "color": "#2563eb",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
     )
     created = await orchard_routes.create_orchard(payload, db=session)
     assert created.cecid_weed_zones[0].density.value == "sparse"
     assert session.added.cecid_weed_zones[0]["density"] == "sparse"
+    assert created.management_zones[0].label == "Block A"
 
     orchard = session.added
 
@@ -311,6 +378,20 @@ def test_local_and_supabase_weed_migrations_are_mirrored():
     assert expected in cloud_sql
 
 
+def test_release1_local_and_supabase_migrations_are_mirrored():
+    project_root = Path(__file__).resolve().parents[1]
+    local_sql = (project_root / "db/migrations/0008_release1_zones_and_observations.sql").read_text(encoding="utf-8")
+    cloud_sql = (project_root / "supabase/migrations/202609130000_release1_zones_and_observations.sql").read_text(encoding="utf-8")
+    for expected in (
+        "management_zones JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "external_id VARCHAR(150)",
+        "observation_status VARCHAR(30)",
+        "forecast_risk DOUBLE PRECISION",
+    ):
+        assert expected in local_sql
+        assert expected in cloud_sql
+
+
 class _ScalarResult:
     def __init__(self, value):
         self.value = value
@@ -356,4 +437,34 @@ async def test_simulation_omission_loads_orchard_weeds_but_explicit_list_is_auth
     )
     untouched = await _resolve_cecid_weed_zones(explicit, session)
     assert untouched.cecid_weed_zones == []
+    assert session.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_simulation_omission_snapshots_management_zones_but_explicit_empty_is_authoritative():
+    stored_zone = {
+        "id": "zone-1",
+        "label": "Zone 1",
+        "color": "#2563eb",
+        "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    }
+    session = _ResolveSession(SimpleNamespace(management_zones=[stored_zone]))
+    orchard_geojson = {"type": "FeatureCollection", "features": []}
+    omitted = SimulationRequest(
+        pest_type="cecid",
+        orchard_id="orchard-a",
+        orchard_geojson=orchard_geojson,
+    )
+    resolved = await _resolve_management_zones(omitted, session)
+    assert resolved.management_zones[0].id == "zone-1"
+    assert session.calls == 1
+
+    explicit = SimulationRequest(
+        pest_type="cecid",
+        orchard_id="orchard-a",
+        orchard_geojson=orchard_geojson,
+        management_zones=[],
+    )
+    untouched = await _resolve_management_zones(explicit, session)
+    assert untouched.management_zones == []
     assert session.calls == 1

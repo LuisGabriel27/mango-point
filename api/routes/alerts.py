@@ -157,6 +157,7 @@ def _alert_response_payload(alert: AlertResponse) -> dict[str, Any]:
         "message": alert.message,
         "affected_cells": alert.affected_cells,
         "affected_tree_ids": alert.affected_tree_ids,
+        "suggested_simulation_params": alert.suggested_simulation_params,
     }
 
 
@@ -511,14 +512,15 @@ async def update_alert_action(
     response_model=AlertListResponse,
     summary="Check weather forecast for pest alerts",
     description="""
-    Fetch the 48-hour weather forecast and create pre-emptive pest risk alerts when
-    rain is expected.
+    Screen the requested live forecast plus 72 antecedent hours and create a
+    pre-emptive alert when the pest suitability model becomes favorable.
 
     **Why this matters:**
-    Rain is the primary environmental trigger for both Cecid Fly (fruitlet stage) and
-    Fruit Fly (mature stage).  Each generated alert includes a `suggested_simulation_params`
-    payload so growers can immediately run an informed simulation without guessing at
-    parameters.
+    Cecid Fly screening retains fruitlet and orchard-specific dawn/dusk hard
+    requirements. Soil wetness, current drying, and wind use the same soft scores as
+    the simulator. Each alert includes `suggested_simulation_params` so the grower can
+    review and manually start a live-weather simulation; this endpoint never launches
+    the spatial simulation itself.
 
     **Deduplication:** repeated calls for the same orchard + pest combination do not
     create duplicate active alerts.
@@ -534,7 +536,7 @@ async def check_weather_forecast(
 
     try:
         weather_bundle = await weather_service.get_forecast_bundle(
-            lat=lat, lon=lon, hours=48,
+            lat=lat, lon=lon, hours=body.hours,
         )
         forecast = weather_bundle["forecast"]
         antecedent = weather_bundle.get("antecedent", [])

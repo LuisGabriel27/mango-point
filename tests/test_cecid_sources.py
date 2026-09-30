@@ -6,12 +6,113 @@ import pytest
 
 from api.models.schemas import SimulationRequest
 from api.models.schemas import PestTypeEnum
-from api.services.simulation_service import SimulationService
+from api.routes.simulation import (
+    _attach_cecid_uncertainty_summary,
+    _cecid_uncertainty_seed,
+    _summarize_cecid_uncertainty_samples,
+)
+from api.services.simulation_service import SimulationService, simulation_service
 from core.biological_rules import CecidFlyGate, CecidSourceCohortModel
+from core.cecid_habitat import CecidHabitatNetwork
 from core.config import CellState, OrchardStage
 from core.grid import OrchardGrid
 from core.tree_graph_model import TreeGraph, TreeGraphEngine, TreeNode, TreeState
 from utils.weather import WeatherTimeSeries
+
+
+def test_cecid_uncertainty_summary_is_replay_stable_and_explicitly_not_validation():
+    seeds = [_cecid_uncertainty_seed(42, index) for index in range(5)]
+    assert seeds == [_cecid_uncertainty_seed(42, index) for index in range(5)]
+    assert len(set(seeds)) == 5
+
+    samples = [
+        {
+            "seed": seed,
+            "n_infested_final": count,
+            "source_count": source_count,
+            "assumed_source_count": source_count,
+            "source_tree_ids": [],
+            "infested_tree_ids": ["T1", "T2"] if count >= 24 else ["T1"],
+        }
+        for seed, count, source_count in zip(seeds, [6, 24, 28, 31, 36], [1, 2, 2, 3, 3])
+    ]
+    summary = _summarize_cecid_uncertainty_samples(samples, map_seed=42)
+
+    assert summary["runs"] == 5
+    assert summary["minimum"] == 6
+    assert summary["median"] == 28
+    assert summary["maximum"] == 36
+    assert summary["assumed_source_count_min"] == 1
+    assert summary["assumed_source_count_max"] == 3
+    assert summary["uncertainty_type"] == "assumed_source_placement_and_stochastic_establishment"
+    assert summary["tree_infestation_counts"]["T1"] == 5
+    assert summary["tree_infestation_frequencies"]["T1"] == pytest.approx(1.0)
+    assert summary["tree_infestation_counts"]["T2"] == 4
+    assert summary["tree_infestation_frequencies"]["T2"] == pytest.approx(0.8)
+    assert "not a calibrated confidence interval" in summary["interpretation"]
+
+
+@pytest.mark.asyncio
+async def test_cecid_uncertainty_annotates_each_tree_for_likelihood_mapping():
+    orchard = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [122.5800, 10.5850]},
+                "properties": {"Tree_ID": "T1"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [122.58005, 10.5850]},
+                "properties": {"Tree_ID": "T2"},
+            },
+        ],
+    }
+    request = SimulationRequest(
+        pest_type="cecid",
+        orchard_geojson=orchard,
+        orchard_stage="fruitlet",
+        hours=1,
+        random_seed=42,
+        cecid_uncertainty_runs=3,
+    )
+    weather = [{
+        "datetime": "2026-04-01T12:00:00+08:00",
+        "hour": 12,
+        "wind_speed_ms": 1.0,
+        "wind_dir_deg": 90.0,
+        "temperature_c": 28.0,
+        "rainfall_mm": 0.0,
+    }]
+    coordinates = {"lat": 10.585, "lon": 122.58}
+    primary = await simulation_service.run_simulation(
+        request=request,
+        weather_data=weather,
+        weather_context=[],
+        orchard_coordinates=coordinates,
+    )
+
+    await _attach_cecid_uncertainty_summary(
+        result=primary,
+        request=request,
+        weather_data=weather,
+        weather_context=[],
+        weather_provenance={"provider": "test"},
+        orchard_coordinates=coordinates,
+    )
+
+    summary = primary.metadata.cecid_uncertainty_summary
+    assert summary["runs"] == 3
+    for feature in primary.risk_geojson["features"]:
+        properties = feature["properties"]
+        assert properties["ensemble_runs"] == 3
+        assert 0.0 <= properties["ensemble_infestation_frequency"] <= 1.0
+    for snapshot in primary.time_series:
+        assert all(
+            feature["properties"]["ensemble_runs"] == 3
+            for feature in snapshot.risk_geojson["features"]
+        )
 
 
 def _weather(hours=2, start="2026-04-01T18:00:00+08:00"):
@@ -129,6 +230,40 @@ def test_newly_infested_tree_does_not_become_a_second_generation_source():
     assert len(engine.cecid_cohort_events) == 1
 
 
+def test_original_adult_cohort_moves_through_tree_without_creating_second_generation():
+    nodes = [_node(0, 0), _node(1, 10), _node(2, 20)]
+    nodes[0].state = TreeState.INFESTED
+    graph = TreeGraph(nodes, max_dist=15.0)
+    network = CecidHabitatNetwork.from_lonlat(
+        source_positions={0: (nodes[0].lon, nodes[0].lat)},
+        target_positions={
+            1: (nodes[1].lon, nodes[1].lat),
+            2: (nodes[2].lon, nodes[2].lat),
+        },
+        weed_zones=[],
+    )
+    engine = TreeGraphEngine(
+        graph=graph,
+        weather=_weather(hours=2, start="2026-04-01T18:00:00+08:00"),
+        transition_mode="threshold",
+        threshold=0.001,
+        gates=[CecidFlyGate(latitude=10.585, longitude=122.58)],
+        orchard_stage=OrchardStage.FRUITLET,
+        pest_type="cecid",
+        initial_rainfall_history=[0.0] * 68 + [2.0] * 4,
+        stage_per_tree=[OrchardStage.FRUITLET] * 3,
+        cecid_source_pressures={0: 1.0},
+        cecid_habitat_network=network,
+    )
+
+    result = engine.run(n_steps=2)
+
+    assert result.graph.nodes[1].state == TreeState.INFESTED
+    assert result.graph.nodes[2].state == TreeState.INFESTED
+    assert engine.cecid_cohort_model.source_pressures == {0: 1.0}
+    assert len(engine.cecid_cohort_events) == 1
+
+
 def test_zone_and_observation_sources_are_combined_and_map_visible():
     service = SimulationService()
     service._load_modules()
@@ -157,7 +292,7 @@ def test_zone_and_observation_sources_are_combined_and_map_visible():
         ],
     }]
 
-    pressures, metadata = service._grid_cecid_sources(grid, zones, fallback_assumed=False)
+    pressures, metadata = service._grid_cecid_sources(grid, zones)
     assert set(pressures) == {(1, 1), (4, 4)}
     assert pressures[(4, 4)] == 1.5
     assert all(item["assumed"] is False for item in metadata)
@@ -171,16 +306,17 @@ def test_seeded_fallback_source_is_explicitly_marked_assumed():
     grid = OrchardGrid(4, 4)
     grid.origin_lon = 122.58
     grid.origin_lat = 10.585
-    grid.set_state(2, 2, CellState.INFESTED)
+    grid.set_state(2, 2, CellState.UNBAGGED)
     grid.tree_ids[2, 2] = "fallback-tree"
 
     pressures, metadata = service._grid_cecid_sources(
-        grid, zones=[], fallback_assumed=True,
+        grid, zones=[], assumed_source_keys=[(2, 2)],
     )
     assert pressures == {(2, 2): 1.0}
     assert metadata[0]["origin"] == "assumed_fallback"
     assert metadata[0]["assumed"] is True
     assert grid.cecid_source_assumed[2, 2]
+    assert grid.state[2, 2] == CellState.UNBAGGED
 
 
 def test_simulation_service_loads_only_the_selected_pest_gate():

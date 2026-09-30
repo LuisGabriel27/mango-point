@@ -5,7 +5,7 @@ import { useState, useEffect, useRef } from 'react'
  * Accepts the same `value`, `onChange`, and `options` shape as a <select>.
  * options: [{ value, label }]
  */
-export default function MpSelect({ value, onChange, options = [], className = '', small = false }) {
+export default function MpSelect({ value, onChange, options = [], className = '', small = false, disabled = false }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -19,6 +19,7 @@ export default function MpSelect({ value, onChange, options = [], className = ''
   }, [open])
 
   const handleSelect = (val) => {
+    if (disabled) return
     onChange(val)
     setOpen(false)
   }
@@ -28,7 +29,8 @@ export default function MpSelect({ value, onChange, options = [], className = ''
       <button
         type="button"
         className={`mp-select-trigger${open ? ' open' : ''}`}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => { if (!disabled) setOpen((v) => !v) }}
+        disabled={disabled}
       >
         <span className="mp-select-value">{selected?.label ?? '—'}</span>
         <i className={`bi bi-chevron-${open ? 'up' : 'down'} mp-select-arrow`} />

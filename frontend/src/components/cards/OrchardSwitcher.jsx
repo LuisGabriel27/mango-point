@@ -11,6 +11,7 @@ export default function OrchardSwitcher({
   onSelect,
   onRefresh,
   onUpload,
+  onStageChange,
   loading,
   defaultTreeCount = 0,
   embedded = false,
@@ -23,6 +24,7 @@ export default function OrchardSwitcher({
   const [dsm, setDsm] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [message, setMessage] = useState(null)
+  const [stageSaving, setStageSaving] = useState(false)
   const addButtonRef = useRef(null)
   const modalRef = useRef(null)
   const nameInputRef = useRef(null)
@@ -117,6 +119,26 @@ export default function OrchardSwitcher({
     }
   }
 
+  async function handleStageChange(stage) {
+    if (!selected || stage === selected.orchard_stage) return
+    setStageSaving(true)
+    setMessage(null)
+    try {
+      await onStageChange?.(stage)
+      setMessage({
+        type: 'success',
+        text: `Monitoring stage saved as ${stage}. Live forecast screening refreshed.`,
+      })
+    } catch (error) {
+      setMessage({
+        type: 'danger',
+        text: apiErrorMessage(error, 'Could not save the orchard monitoring stage.'),
+      })
+    } finally {
+      setStageSaving(false)
+    }
+  }
+
   return (
     <>
     <CollapsibleCard iconName="pin-map" title="Orchard" embedded={embedded}>
@@ -159,11 +181,31 @@ export default function OrchardSwitcher({
       )}
 
       {selected && (
-        <div className="small text-muted">
-          <i className="bi bi-tree me-1" />
-          {treeCount} tree{treeCount !== 1 ? 's' : ''}
-          {selected.location && <> &middot; {selected.location}</>}
-        </div>
+        <>
+          <div className="small text-muted mb-2">
+            <i className="bi bi-tree me-1" />
+            {treeCount} tree{treeCount !== 1 ? 's' : ''}
+            {selected.location && <> &middot; {selected.location}</>}
+          </div>
+          <label className="small fw-medium mb-1 d-block">
+            <i className="bi bi-flower1 me-1" />Current monitoring stage
+          </label>
+          <MpSelect
+            value={selected.orchard_stage ?? 'mature'}
+            onChange={handleStageChange}
+            options={[
+              { value: 'dormant', label: 'Dormant' },
+              { value: 'flowering', label: 'Flowering' },
+              { value: 'fruitlet', label: 'Fruitlet' },
+              { value: 'mature', label: 'Mature fruit' },
+            ]}
+            disabled={stageSaving}
+            small
+          />
+          <small className="d-block text-muted mt-1">
+            Cecid live alerts require Fruitlet; Fruit Fly live alerts require Mature fruit.
+          </small>
+        </>
       )}
     </CollapsibleCard>
 

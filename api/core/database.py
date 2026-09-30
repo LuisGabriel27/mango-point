@@ -243,14 +243,14 @@ async def _ensure_default_orchard(conn) -> None:
             await conn.execute(text("""
                 INSERT INTO orchard (
                     orchard_uid, name, location, tree_count, geojson,
-                    cecid_weed_zones, centroid_lon, centroid_lat,
+                    management_zones, cecid_weed_zones, centroid_lon, centroid_lat,
                     is_active, monitoring_enabled, orchard_stage,
                     days_since_flowering, monitored_pest_types,
                     created_at, updated_at
                 ) VALUES (
                     'default-orchard', 'Default Orchard (BPI)',
                     'Guimaras, Philippines', :tree_count, CAST(:geojson AS JSONB),
-                    '[]'::jsonb, :centroid_lon, :centroid_lat,
+                    '[]'::jsonb, '[]'::jsonb, :centroid_lon, :centroid_lat,
                     TRUE, TRUE, 'mature', 60, '["cecid", "fruitfly"]'::jsonb,
                     NOW(), NOW()
                 )
@@ -300,6 +300,10 @@ async def init_db():
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS geojson JSONB;"))
         await conn.execute(text(
             "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
+            "management_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
             "cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"
         ))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS centroid_lon DOUBLE PRECISION;"))
@@ -329,7 +333,26 @@ async def init_db():
         await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS tree ADD COLUMN IF NOT EXISTS external_id VARCHAR(150);"))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_tree_orchard_external_id "
+            "ON tree (orchard_id, external_id);"
+        ))
         await _ensure_default_orchard(conn)
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS tree_external_id VARCHAR(150);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS observation_status VARCHAR(30);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS affected_count INTEGER;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS inspected_count INTEGER;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS observation_method VARCHAR(100);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS observer_id VARCHAR(200);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS notes TEXT;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS image_url VARCHAR(1000);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS observation_lon DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS observation_lat DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS verification_run_id VARCHAR(100);"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS forecast_risk DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS forecast_lead_hours INTEGER;"))
+        await conn.execute(text("ALTER TABLE IF EXISTS infestation_record ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS treatment_applications JSONB;"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS simulation_mode VARCHAR(50) DEFAULT 'grid';"))
         await conn.execute(text("ALTER TABLE IF EXISTS simulation_run ADD COLUMN IF NOT EXISTS request_payload JSONB;"))

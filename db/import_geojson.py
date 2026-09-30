@@ -19,10 +19,11 @@ import json
 import os
 import sys
 import argparse
+import hashlib
+import re
 from pathlib import Path
 
 import psycopg2
-from psycopg2.extras import execute_values
 
 
 # Default paths
@@ -73,7 +74,13 @@ def load_geojson(filepath: Path) -> dict:
         return json.load(f)
 
 
-def ensure_orchard(conn, name: str, location: str) -> int:
+def _orchard_uid(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    digest = hashlib.sha1(name.strip().encode("utf-8")).hexdigest()[:8]
+    return f"{(slug or 'imported-orchard')[:83]}-{digest}"
+
+
+def ensure_orchard(conn, name: str, location: str, geojson: dict) -> int:
     """
     Ensure the orchard record exists.
     Returns the orchard_id.
@@ -87,13 +94,14 @@ def ensure_orchard(conn, name: str, location: str) -> int:
             return row[0]
         
         # Insert new orchard
+        orchard_uid = _orchard_uid(name)
         cur.execute(
             """
-            INSERT INTO orchard (name, location, area_size, tree_count)
-            VALUES (%s, %s, NULL, 0)
+            INSERT INTO orchard (orchard_uid, name, location, area_size, tree_count, geojson)
+            VALUES (%s, %s, %s, NULL, 0, %s::jsonb)
             RETURNING orchard_id;
             """,
-            (name, location),
+            (orchard_uid, name, location, json.dumps(geojson)),
         )
         orchard_id = cur.fetchone()[0]
         conn.commit()
@@ -121,7 +129,7 @@ def import_trees(conn, geojson: dict, orchard_id: int) -> int:
     }
 
     rows = []
-    for feat in features:
+    for index, feat in enumerate(features):
         geom = feat.get("geometry", {})
         props = feat.get("properties", {})
 
@@ -137,15 +145,29 @@ def import_trees(conn, geojson: dict, orchard_id: int) -> int:
         # Map status from GeoJSON properties
         raw_status = str(props.get("status", props.get("Status", "healthy"))).strip().lower()
         status = status_map.get(raw_status, "healthy")
+        raw_stage = str(props.get("stage", props.get("Stage", "dormant"))).strip().lower()
+        stage = raw_stage if raw_stage in {"dormant", "flowering", "fruitlet", "mature"} else "dormant"
+        external_id = next(
+            (
+                str(value).strip()
+                for value in (
+                    props.get("tree_id"), props.get("Tree_ID"), props.get("id"),
+                    props.get("fid"), feat.get("id"),
+                )
+                if value not in (None, "")
+            ),
+            f"tree-{index + 1}",
+        )
 
         rows.append((
             orchard_id,
+            external_id,
             lon,          # x_coordinate
             lat,          # y_coordinate
             lon, lat,     # for ST_SetSRID(ST_MakePoint(...))
             None,         # age (not in GeoJSON)
             status,
-            "dormant",    # current_stage default
+            stage,
         ))
 
     if not rows:
@@ -153,44 +175,39 @@ def import_trees(conn, geojson: dict, orchard_id: int) -> int:
         return 0
 
     with conn.cursor() as cur:
-        insert_sql = """
-            INSERT INTO tree (
-                orchard_id, x_coordinate, y_coordinate,
-                geom, age, status, current_stage
-            )
-            VALUES %s
-        """
-        template = (
-            "(%(orchard_id)s, %(x)s, %(y)s, "
-            "ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326), "
-            "%(age)s, %(status)s::tree_status_enum, %(stage)s::tree_stage_enum)"
-        )
-
         # Use parameterised inserts for safety
-        values = []
+        inserted = 0
         for r in rows:
             cur.execute(
                 """
                 INSERT INTO tree (
-                    orchard_id, x_coordinate, y_coordinate,
+                    orchard_id, external_id, x_coordinate, y_coordinate,
                     geom, age, status, current_stage
                 ) VALUES (
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
                     ST_SetSRID(ST_MakePoint(%s, %s), 4326),
                     %s, %s::tree_status_enum, %s::tree_stage_enum
-                );
+                )
+                ON CONFLICT (orchard_id, external_id) DO NOTHING;
                 """,
                 r,
             )
+            inserted += max(0, cur.rowcount)
 
         # Update orchard tree_count
         cur.execute(
-            "UPDATE orchard SET tree_count = %s WHERE orchard_id = %s;",
-            (len(rows), orchard_id),
+            """
+            UPDATE orchard
+            SET tree_count = (SELECT COUNT(*) FROM tree WHERE orchard_id = %s),
+                geojson = COALESCE(geojson, %s::jsonb),
+                updated_at = NOW()
+            WHERE orchard_id = %s;
+            """,
+            (orchard_id, json.dumps(geojson), orchard_id),
         )
         conn.commit()
 
-    return len(rows)
+    return inserted
 
 
 def main():
@@ -256,7 +273,7 @@ def main():
     try:
         # Ensure orchard exists
         print("\n[3/3] Importing trees...")
-        orchard_id = ensure_orchard(conn, args.orchard_name, args.orchard_location)
+        orchard_id = ensure_orchard(conn, args.orchard_name, args.orchard_location, geojson)
 
         # Import trees
         n_imported = import_trees(conn, geojson, orchard_id)

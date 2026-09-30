@@ -184,6 +184,7 @@ class SimulationService:
             "strategy": strategy,
             "cells": [],
             "tree_ids": [],
+            "node_indices": [],
             "count": 0,
         }
 
@@ -198,8 +199,14 @@ class SimulationService:
         from core.config import (
             CECID_ADULT_HALF_LIFE_HOURS,
             CECID_ADULT_MAX_AGE_HOURS,
+            CECID_GENTLE_WIND_MAX_KMH,
+            CECID_GENTLE_WIND_MIN_KMH,
             CECID_MAX_RANGE_M,
             CECID_SOURCE_PRESSURE_MULTIPLIERS,
+            CECID_TREE_RESTING_EFFICIENCY,
+            CECID_WIND_ACTIVITY_SCALE_KMH,
+            CECID_WIND_DIRECTION_FULL_KMH,
+            CECID_WIND_DIRECTION_MAX_ASSIST,
         )
         return {
             "calibration_status": "research assumptions pending BPI field calibration",
@@ -215,8 +222,50 @@ class SimulationService:
             "weed_relay_efficiencies": {"sparse": 0.60, "moderate": 0.80, "dense": 1.00},
             "adult_pressure_half_life_hours": CECID_ADULT_HALF_LIFE_HOURS,
             "adult_max_age_hours": CECID_ADULT_MAX_AGE_HOURS,
-            "maximum_movement_metres": CECID_MAX_RANGE_M,
+            "maximum_movement_per_eligible_hour_metres": CECID_MAX_RANGE_M,
+            "wind_activity_model": "soft inverse-square above the no-penalty speed",
+            "wind_no_penalty_max_kmh": CECID_GENTLE_WIND_MAX_KMH,
+            "wind_activity_scale_kmh": CECID_WIND_ACTIVITY_SCALE_KMH,
+            "wind_direction_start_kmh": CECID_GENTLE_WIND_MIN_KMH,
+            "wind_direction_full_kmh": CECID_WIND_DIRECTION_FULL_KMH,
+            "wind_direction_max_assist": CECID_WIND_DIRECTION_MAX_ASSIST,
+            "wind_does_not_expand_maximum_movement": True,
+            "assumed_soil_sources_are_initial_fruit_infestations": False,
+            "ordinary_fruitlet_trees_are_adult_resting_nodes": True,
+            "tree_resting_efficiency": CECID_TREE_RESTING_EFFICIENCY,
+            "tree_resting_tracks_original_adult_cohort_only": True,
+            "neighbor_pressure_model": (
+                "optional independent external-adult arrival proxy during eligible local hours"
+            ),
+            "neighbor_pressure_requires_local_soil_cohort": False,
+            "neighbor_pressure_creates_soil_source": False,
             "within_run_second_generation": False,
+        }
+
+    @staticmethod
+    def _cecid_habitat_summary(network: Any) -> Optional[Dict[str, Any]]:
+        if network is None:
+            return None
+        from core.config import CECID_TREE_RESTING_EFFICIENCY
+        return {
+            "weed_zone_count": network.zone_count,
+            "resolved_habitat_component_count": network.resolved_habitat_component_count,
+            "weed_relay_count": network.relay_count,
+            "fruitlet_tree_node_count": len(network.target_nodes),
+            "habitat_edge_count": network.edge_count,
+            "density_counts": network.zone_density_counts,
+            "max_hop_m": 15.0,
+            "relay_spacing_m": 10.0,
+            "one_hop_per_eligible_hour": True,
+            "ordinary_trees_are_adult_resting_nodes": True,
+            "tree_resting_efficiency": CECID_TREE_RESTING_EFFICIENCY,
+            "weed_is_source": False,
+            "newly_infested_trees_become_sources": False,
+            "research_assumption": (
+                "Weed density relay efficiencies and adult resting behavior are provisional "
+                "and require BPI field calibration. Weeds and newly infested trees do not "
+                "generate Cecid cohorts during the simulation."
+            ),
         }
 
     def _resolve_cecid_sources(
@@ -224,7 +273,7 @@ class SimulationService:
         candidates: List[Dict[str, Any]],
         zones: Optional[List[Any]],
         existing_source_keys: List[Any],
-        fallback_assumed: bool,
+        assumed_source_keys: Optional[List[Any]] = None,
     ) -> Tuple[Dict[Any, float], List[Dict[str, Any]]]:
         """Combine zone representatives and observed/seeded soil anchors.
 
@@ -287,17 +336,31 @@ class SimulationService:
                 "pressure_level": previous.get("pressure_level", "medium") if previous else "medium",
                 "label": (
                     previous.get("label") if previous
-                    else "Assumed Cecid soil source" if fallback_assumed
                     else "Observed or selected Cecid source"
                 ),
-                "origin": previous.get("origin", "assumed_fallback" if fallback_assumed else "observation") if previous else (
-                    "assumed_fallback" if fallback_assumed else "observation"
-                ),
-                "assumed": bool(fallback_assumed and previous is None),
+                "origin": previous.get("origin", "observation") if previous else "observation",
+                "assumed": False,
                 "zone_id": previous.get("zone_id") if previous else None,
                 "representative_inside_zone": previous.get("representative_inside_zone") if previous else None,
             }
             source_info[key] = entry
+
+        for key in assumed_source_keys or []:
+            if key in source_info:
+                continue
+            candidate = by_key.get(key)
+            if candidate is None:
+                continue
+            source_info[key] = {
+                **candidate,
+                "pressure": 1.0,
+                "pressure_level": "medium",
+                "label": "Assumed Cecid soil source",
+                "origin": "assumed_fallback",
+                "assumed": True,
+                "zone_id": None,
+                "representative_inside_zone": None,
+            }
 
         pressures = {key: float(info["pressure"]) for key, info in source_info.items()}
         metadata: List[Dict[str, Any]] = []
@@ -321,7 +384,7 @@ class SimulationService:
         self,
         grid,
         zones: Optional[List[Any]],
-        fallback_assumed: bool,
+        assumed_source_keys: Optional[List[Tuple[int, int]]] = None,
     ) -> Tuple[Dict[Tuple[int, int], float], List[Dict[str, Any]]]:
         from shapely.geometry import Point
 
@@ -348,7 +411,7 @@ class SimulationService:
                     existing.append(key)
 
         pressures, metadata = self._resolve_cecid_sources(
-            candidates, zones, existing, fallback_assumed
+            candidates, zones, existing, assumed_source_keys
         )
         metadata_by_key = {
             tuple(item["source_key"]): item
@@ -366,7 +429,7 @@ class SimulationService:
         self,
         graph,
         zones: Optional[List[Any]],
-        fallback_assumed: bool,
+        assumed_source_keys: Optional[List[int]] = None,
     ) -> Tuple[Dict[int, float], List[Dict[str, Any]]]:
         from core.tree_graph_model import TreeState
         from shapely.geometry import Point
@@ -383,7 +446,7 @@ class SimulationService:
             if node.state == TreeState.INFESTED
         ]
         pressures, metadata = self._resolve_cecid_sources(
-            candidates, zones, existing, fallback_assumed
+            candidates, zones, existing, assumed_source_keys
         )
         metadata_by_key = {item["source_key"]: item for item in metadata}
         for index, pressure in pressures.items():
@@ -526,6 +589,55 @@ class SimulationService:
 
         return sorted(nodes, key=sort_key)
 
+    @staticmethod
+    def _tree_graph_connectivity(
+        graph,
+        eligible_indices: List[int],
+        source_indices: List[int],
+    ) -> Dict[str, int]:
+        """Summarize stage-eligible graph reachability from initial sources.
+
+        A hard graph radius can split an orchard into disconnected islands.
+        Reporting that topology separately from stochastic spread makes a low
+        infestation count explainable instead of looking like a weather or
+        duration failure.
+        """
+        eligible = {int(index) for index in eligible_indices}
+        source_set = {int(index) for index in source_indices} & eligible
+        component_by_node: Dict[int, int] = {}
+        component_sizes: List[int] = []
+
+        for start in sorted(eligible):
+            if start in component_by_node:
+                continue
+            component_id = len(component_sizes)
+            stack = [start]
+            component_by_node[start] = component_id
+            size = 0
+            while stack:
+                current = stack.pop()
+                size += 1
+                for edge in graph.neighbours(current):
+                    target = int(edge.dst)
+                    if target not in eligible or target in component_by_node:
+                        continue
+                    component_by_node[target] = component_id
+                    stack.append(target)
+            component_sizes.append(size)
+
+        source_components = {
+            component_by_node[index]
+            for index in source_set
+            if index in component_by_node
+        }
+        reachable = sum(component_sizes[index] for index in source_components)
+        return {
+            "eligible_tree_count": len(eligible),
+            "eligible_component_count": len(component_sizes),
+            "largest_eligible_component": max(component_sizes, default=0),
+            "source_reachable_tree_count": reachable,
+        }
+
     def _seed_default_infestation(
         self,
         grid,
@@ -542,6 +654,7 @@ class SimulationService:
 
         Returns seed metadata for response traceability.
         """
+        is_cecid = self._enum_value(pest_type) == PestTypeEnum.CECID.value
         if stage_grid is None and not self._pest_is_active_for_stage(pest_type, orchard_stage):
             logger.info(
                 "Skipping auto-seeding: pest=%s is inactive during stage=%s",
@@ -553,6 +666,9 @@ class SimulationService:
         if self._has_manual_infestation_source(tree_overrides):
             logger.info("Skipping auto-seeding: manual infected tree overrides already provided")
             return self._empty_seed_result("manual_tree_overrides")
+        if is_cecid and bool(np.any(grid.infested_mask)):
+            logger.info("Skipping assumed Cecid sources: infected orchard tree already exists")
+            return self._empty_seed_result("existing_infestation")
 
         seed_candidate_mask = grid.susceptible_mask
         required_stage = self._required_stage_value_for_pest(pest_type)
@@ -568,6 +684,8 @@ class SimulationService:
             return self._empty_seed_result("none_no_active_stage_trees")
 
         if not tree_cells:
+            if is_cecid:
+                return self._empty_seed_result("none_no_susceptible_trees")
             center_r, center_c = grid.rows // 2, grid.cols // 2
             grid.infest(center_r, center_c)
             logger.info("Auto-seeded fallback infestation at center cell (%s, %s)", center_r, center_c)
@@ -575,14 +693,15 @@ class SimulationService:
                 "strategy": "fallback_center",
                 "cells": [{"row": int(center_r), "col": int(center_c)}],
                 "tree_ids": [],
+                "node_indices": [],
                 "count": 1,
             }
 
         use_directional_seed = (
-            neighbor_threat > 0.0
+            not is_cecid
+            and neighbor_threat > 0.0
             and self._direction_bearing(neighbor_direction) is not None
         )
-
         if use_directional_seed:
             ranked_cells = self._rank_grid_seed_candidates(
                 grid=grid,
@@ -603,10 +722,15 @@ class SimulationService:
             ]
             strategy = "random_susceptible"
 
+        if is_cecid:
+            strategy = f"assumed_soil_{strategy}"
+
         for sr, sc in selected_cells:
-            grid.infest(sr, sc)
+            if not is_cecid:
+                grid.infest(sr, sc)
             logger.info(
-                "Auto-seeded infestation at tree cell (%s, %s) using %s",
+                "Auto-selected %s at tree cell (%s, %s) using %s",
+                "an assumed Cecid soil source" if is_cecid else "an infestation",
                 sr,
                 sc,
                 strategy,
@@ -616,6 +740,7 @@ class SimulationService:
             "strategy": strategy,
             "cells": [{"row": int(r), "col": int(c)} for r, c in selected_cells],
             "tree_ids": [],
+            "node_indices": [],
             "count": len(selected_cells),
         }
     
@@ -765,6 +890,7 @@ class SimulationService:
                     "strategy": "manual_grid",
                     "cells": seeded_cells,
                     "tree_ids": [],
+                    "node_indices": [],
                     "count": len(seeded_cells),
                 }
             elif is_cecid and cecid_zones:
@@ -786,13 +912,14 @@ class SimulationService:
             cecid_source_pressures = None
             cecid_source_metadata: List[Dict[str, Any]] = []
             if is_cecid:
-                fallback_assumed = str(seed_metadata.get("strategy", "")).startswith((
-                    "random_", "neighbor_edge_", "fallback_"
-                ))
+                assumed_source_keys = [
+                    (int(cell["row"]), int(cell["col"]))
+                    for cell in seed_metadata.get("cells", [])
+                ] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_") else []
                 cecid_source_pressures, cecid_source_metadata = self._grid_cecid_sources(
                     grid=grid,
                     zones=cecid_zones,
-                    fallback_assumed=fallback_assumed,
+                    assumed_source_keys=assumed_source_keys,
                 )
             cecid_habitat_network = (
                 self._grid_cecid_habitat_network(
@@ -805,6 +932,7 @@ class SimulationService:
                 grid,
                 getattr(request, "treatment_applications", None),
             )
+            initial_infected_count = int(grid.infested_mask.sum())
             
             # Create weather time series
             weather = self._create_weather(weather_data, request.hours)
@@ -875,6 +1003,7 @@ class SimulationService:
                 result.snapshots[-1]["risk"],
                 origin,
                 stage_grid=stage_grid,
+                cecid_metrics=self._cecid_snapshot_metrics(result.snapshots[-1]),
             )
             
             # Calculate summary statistics
@@ -910,9 +1039,17 @@ class SimulationService:
                 simulation_mode="grid",
                 neighbor_direction=neighbor_direction,
                 initial_seed_strategy=seed_metadata.get("strategy"),
-                initial_seed_count=int(seed_metadata.get("count") or 0),
-                initial_seed_cells=seed_metadata.get("cells") or [],
-                initial_seed_tree_ids=seed_metadata.get("tree_ids") or [],
+                initial_seed_count=initial_infected_count,
+                initial_infected_count=initial_infected_count,
+                n_newly_infested=max(0, n_infested_final - initial_infected_count),
+                initial_seed_cells=(
+                    [] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_")
+                    else seed_metadata.get("cells") or []
+                ),
+                initial_seed_tree_ids=(
+                    [] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_")
+                    else seed_metadata.get("tree_ids") or []
+                ),
                 treatment_summary=treatment_summary,
                 stage_breakdown=stage_breakdown,
                 quadrant_stages=quadrant_stages_dict,
@@ -922,6 +1059,12 @@ class SimulationService:
                 weather_provenance=weather_provenance or {},
                 cecid_sources=cecid_source_metadata,
                 cecid_source_count=len(cecid_source_metadata),
+                cecid_assumed_source_count=sum(
+                    1 for source in cecid_source_metadata if source.get("assumed")
+                ),
+                cecid_explicit_source_count=sum(
+                    1 for source in cecid_source_metadata if not source.get("assumed")
+                ),
                 cecid_cohort_events=engine.cecid_cohort_events,
                 cecid_source_assumptions=(
                     self._cecid_source_assumptions() if is_cecid else None
@@ -930,21 +1073,11 @@ class SimulationService:
                     zone.model_dump(mode="json") if hasattr(zone, "model_dump") else dict(zone)
                     for zone in cecid_weed_zones
                 ] if is_cecid else None,
-                cecid_habitat_summary=(
-                    {
-                        "weed_zone_count": cecid_habitat_network.zone_count,
-                        "weed_relay_count": cecid_habitat_network.relay_count,
-                        "habitat_edge_count": cecid_habitat_network.edge_count,
-                        "density_counts": cecid_habitat_network.zone_density_counts,
-                        "max_hop_m": 15.0,
-                        "relay_spacing_m": 10.0,
-                        "weed_is_source": False,
-                        "research_assumption": (
-                            "Weed density relay efficiencies are provisional and require BPI field calibration. "
-                            "Weeds provide adult shelter/relay only and do not generate Cecid flies."
-                        ),
-                    } if cecid_habitat_network is not None else None
-                ),
+                management_zones=[
+                    zone.model_dump(mode="json") if hasattr(zone, "model_dump") else dict(zone)
+                    for zone in (request.management_zones or [])
+                ],
+                cecid_habitat_summary=self._cecid_habitat_summary(cecid_habitat_network),
                 cecid_habitat_diagnostics=(
                     engine.cecid_habitat_diagnostics if is_cecid else None
                 ),
@@ -1301,8 +1434,8 @@ class SimulationService:
     def _get_gates(self, pest_type: PestTypeEnum, gate_params: dict | None = None) -> list:
         """Get appropriate dispersal gates for pest type.
 
-        Always includes both gates for realistic spread modelling.
-        The selected pest_type is listed first (primary agent).
+        Returns only the selected pest's gate so Cecid and Fruit Fly cannot
+        contribute to the same single-pest run.
         gate_params keys (all optional):
           cecid_rainfall_threshold_mm, cecid_base_dispersal_prob,
           fruit_fly_temp_threshold_c, fruit_fly_base_dispersal_prob
@@ -1360,6 +1493,7 @@ class SimulationService:
                 origin,
                 state_override=snap["state"],
                 stage_grid=stage_grid,
+                cecid_metrics=self._cecid_snapshot_metrics(snap),
             )
 
             dt = snap["datetime"]
@@ -1390,6 +1524,7 @@ class SimulationService:
         origin: Tuple[float, float],
         state_override: Optional[np.ndarray] = None,
         stage_grid: Optional[np.ndarray] = None,
+        cecid_metrics: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, Any]:
         """Convert grid risk to GeoJSON FeatureCollection.
         
@@ -1457,6 +1592,21 @@ class SimulationService:
                 }
                 if stage_name:
                     properties["stage"] = stage_name
+                if cecid_metrics:
+                    cumulative = float(cecid_metrics["cumulative"][r, c])
+                    peak_hourly = float(cecid_metrics["peak_hourly"][r, c])
+                    exposure_hours = int(cecid_metrics["exposure_hours"][r, c])
+                    local_hours = int(cecid_metrics["local_hours"][r, c])
+                    external_hours = int(cecid_metrics["external_hours"][r, c])
+                    properties.update({
+                        "cecid_eligible": stage_name == "fruitlet",
+                        "cumulative_establishment_probability": round(cumulative, 6),
+                        "peak_hourly_risk": round(peak_hourly, 6),
+                        "exposure_hours": exposure_hours,
+                        "local_exposure_hours": local_hours,
+                        "external_exposure_hours": external_hours,
+                        "exposure_route": self._cecid_exposure_route(local_hours, external_hours),
+                    })
 
                 feature = {
                     "type": "Feature",
@@ -1478,6 +1628,28 @@ class SimulationService:
             "type": "FeatureCollection",
             "features": features,
         }
+
+    @staticmethod
+    def _cecid_snapshot_metrics(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if "cecid_cumulative_probability" not in snapshot:
+            return None
+        return {
+            "cumulative": snapshot["cecid_cumulative_probability"],
+            "peak_hourly": snapshot["cecid_peak_hourly_risk"],
+            "exposure_hours": snapshot["cecid_exposure_hours"],
+            "local_hours": snapshot["cecid_local_exposure_hours"],
+            "external_hours": snapshot["cecid_external_exposure_hours"],
+        }
+
+    @staticmethod
+    def _cecid_exposure_route(local_hours: int, external_hours: int) -> str:
+        if local_hours > 0 and external_hours > 0:
+            return "local_and_external"
+        if local_hours > 0:
+            return "local_soil_or_habitat"
+        if external_hours > 0:
+            return "external_neighbor"
+        return "none"
 
 
     # ════════════════════════════════════════════════════════════
@@ -1512,6 +1684,7 @@ class SimulationService:
                 build_tree_graph_from_lonlat,
             )
             from core.config import (
+                FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M,
                 TG_ALPHA,
                 TG_BETA,
                 TG_DEFAULT_CROWN_RADIUS_M,
@@ -1528,7 +1701,12 @@ class SimulationService:
         alpha   = float(request.tg_alpha   or TG_ALPHA)
         beta    = float(request.tg_beta    or TG_BETA)
         wind_bias = float(request.tg_wind_bias or TG_WIND_BIAS)
-        max_dist  = float(request.tg_max_neighbor_dist_m or TG_MAX_NEIGHBOR_DIST_M)
+        if request.tg_max_neighbor_dist_m is not None:
+            max_dist = float(request.tg_max_neighbor_dist_m)
+        elif self._enum_value(request.pest_type) == PestTypeEnum.FRUITFLY.value:
+            max_dist = float(FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M)
+        else:
+            max_dist = float(TG_MAX_NEIGHBOR_DIST_M)
         crown_fallback = float(request.crown_radius_m or TG_DEFAULT_CROWN_RADIUS_M)
 
         logger.info(
@@ -1635,10 +1813,12 @@ class SimulationService:
         if seed_ids:
             id_to_node = {n.tree_id: n for n in graph.nodes}
             seeded_tree_ids: List[str] = []
+            seeded_node_indices: List[int] = []
             for tid in seed_ids:
                 if tid in id_to_node:
                     id_to_node[tid].state = TreeState.INFESTED
                     seeded_tree_ids.append(str(tid))
+                    seeded_node_indices.append(int(id_to_node[tid].index))
                 else:
                     logger.warning(
                         "initial_infestation_tree_id %r not found in graph", tid
@@ -1647,6 +1827,7 @@ class SimulationService:
                 "strategy": "manual_tree_ids",
                 "cells": [],
                 "tree_ids": seeded_tree_ids,
+                "node_indices": seeded_node_indices,
                 "count": len(seeded_tree_ids),
             }
         elif is_cecid and cecid_zones:
@@ -1664,7 +1845,7 @@ class SimulationService:
                 stage_per_tree=stage_per_tree,
             )
             logger.info(
-                "tree_graph auto-seeded %d infested tree(s) using %s",
+                "tree_graph selected %d initial source(s) using %s",
                 int(seed_metadata.get("count") or 0),
                 seed_metadata.get("strategy"),
             )
@@ -1672,13 +1853,13 @@ class SimulationService:
         cecid_source_pressures = None
         cecid_source_metadata: List[Dict[str, Any]] = []
         if is_cecid:
-            fallback_assumed = str(seed_metadata.get("strategy", "")).startswith((
-                "random_", "neighbor_edge_", "fallback_"
-            ))
+            assumed_source_keys = [
+                int(index) for index in seed_metadata.get("node_indices", [])
+            ] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_") else []
             cecid_source_pressures, cecid_source_metadata = self._tree_cecid_sources(
                 graph=graph,
                 zones=cecid_zones,
-                fallback_assumed=fallback_assumed,
+                assumed_source_keys=assumed_source_keys,
             )
         cecid_habitat_network = (
             self._tree_cecid_habitat_network(
@@ -1692,6 +1873,7 @@ class SimulationService:
             graph,
             getattr(request, "treatment_applications", None),
         )
+        initial_infected_count = graph.n_infested()
 
         # Weather & biological gates
         weather = self._create_weather(weather_data, request.hours)
@@ -1736,6 +1918,21 @@ class SimulationService:
             tree_stage_overrides or {},
         )
         stage_counts = stage_breakdown(stage_per_tree)
+
+        tree_graph_connectivity: Optional[Dict[str, int]] = None
+        if not is_cecid:
+            required_stage = int(self._orchard_stage_enum.MATURE)
+            eligible_indices = [
+                int(node.index)
+                for node in graph.nodes
+                if node.state != TreeState.DEAD
+                and int(stage_per_tree[int(node.index)]) == required_stage
+            ]
+            tree_graph_connectivity = self._tree_graph_connectivity(
+                graph,
+                eligible_indices=eligible_indices,
+                source_indices=graph.infested_indices(),
+            )
 
         engine = TreeGraphEngine(
             graph=graph,
@@ -1782,6 +1979,10 @@ class SimulationService:
             states=result.snapshots[-1]["states"] if result.snapshots else [],
             risks=result.snapshots[-1]["risks"] if result.snapshots else [],
             stage_per_tree=stage_per_tree,
+            cecid_metrics=(
+                self._cecid_snapshot_metrics(result.snapshots[-1])
+                if result.snapshots else None
+            ),
         )
 
         timesteps = [
@@ -1809,9 +2010,17 @@ class SimulationService:
             simulation_mode="tree_graph",
             neighbor_direction=neighbor_direction,
             initial_seed_strategy=seed_metadata.get("strategy"),
-            initial_seed_count=int(seed_metadata.get("count") or 0),
-            initial_seed_cells=seed_metadata.get("cells") or [],
-            initial_seed_tree_ids=seed_metadata.get("tree_ids") or [],
+            initial_seed_count=initial_infected_count,
+            initial_infected_count=initial_infected_count,
+            n_newly_infested=max(0, n_infested_final - initial_infected_count),
+            initial_seed_cells=(
+                [] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_")
+                else seed_metadata.get("cells") or []
+            ),
+            initial_seed_tree_ids=(
+                [] if str(seed_metadata.get("strategy", "")).startswith("assumed_soil_")
+                else seed_metadata.get("tree_ids") or []
+            ),
             treatment_summary=treatment_summary,
             tg_n_trees=len(graph.nodes),
             tg_n_edges=graph.edge_count(),
@@ -1821,6 +2030,22 @@ class SimulationService:
             tg_wind_bias=wind_bias,
             tg_max_neighbor_dist_m=max_dist,
             tg_default_crown_radius_m=crown_fallback,
+            tg_eligible_tree_count=(
+                tree_graph_connectivity["eligible_tree_count"]
+                if tree_graph_connectivity else None
+            ),
+            tg_eligible_component_count=(
+                tree_graph_connectivity["eligible_component_count"]
+                if tree_graph_connectivity else None
+            ),
+            tg_largest_eligible_component=(
+                tree_graph_connectivity["largest_eligible_component"]
+                if tree_graph_connectivity else None
+            ),
+            tg_source_reachable_tree_count=(
+                tree_graph_connectivity["source_reachable_tree_count"]
+                if tree_graph_connectivity else None
+            ),
             stage_breakdown=stage_counts,
             quadrant_stages=quadrant_stages_dict,
             tree_stage_override_count=tree_stage_override_count,
@@ -1829,6 +2054,12 @@ class SimulationService:
             weather_provenance=weather_provenance or {},
             cecid_sources=cecid_source_metadata,
             cecid_source_count=len(cecid_source_metadata),
+            cecid_assumed_source_count=sum(
+                1 for source in cecid_source_metadata if source.get("assumed")
+            ),
+            cecid_explicit_source_count=sum(
+                1 for source in cecid_source_metadata if not source.get("assumed")
+            ),
             cecid_cohort_events=engine.cecid_cohort_events,
             cecid_source_assumptions=(
                 self._cecid_source_assumptions() if is_cecid else None
@@ -1837,21 +2068,11 @@ class SimulationService:
                 zone.model_dump(mode="json") if hasattr(zone, "model_dump") else dict(zone)
                 for zone in cecid_weed_zones
             ] if is_cecid else None,
-            cecid_habitat_summary=(
-                {
-                    "weed_zone_count": cecid_habitat_network.zone_count,
-                    "weed_relay_count": cecid_habitat_network.relay_count,
-                    "habitat_edge_count": cecid_habitat_network.edge_count,
-                    "density_counts": cecid_habitat_network.zone_density_counts,
-                    "max_hop_m": 15.0,
-                    "relay_spacing_m": 10.0,
-                    "weed_is_source": False,
-                    "research_assumption": (
-                        "Weed density relay efficiencies are provisional and require BPI field calibration. "
-                        "Weeds provide adult shelter/relay only and do not generate Cecid flies."
-                    ),
-                } if cecid_habitat_network is not None else None
-            ),
+            management_zones=[
+                zone.model_dump(mode="json") if hasattr(zone, "model_dump") else dict(zone)
+                for zone in (request.management_zones or [])
+            ],
+            cecid_habitat_summary=self._cecid_habitat_summary(cecid_habitat_network),
             cecid_habitat_diagnostics=(
                 engine.cecid_habitat_diagnostics if is_cecid else None
             ),
@@ -1901,6 +2122,9 @@ class SimulationService:
         if self._has_manual_infestation_source(tree_overrides):
             return self._empty_seed_result("manual_tree_overrides")
 
+        is_cecid = self._enum_value(pest_type) == PestTypeEnum.CECID.value
+        if is_cecid and any(node.state == TreeState.INFESTED for node in graph.nodes):
+            return self._empty_seed_result("existing_infestation")
         susceptible = [
             n for n in graph.nodes if n.state == TreeState.SUSCEPTIBLE
         ]
@@ -1914,21 +2138,24 @@ class SimulationService:
                 return self._empty_seed_result("none_no_active_stage_trees")
         if not susceptible:
             # Fallback: infest first node if no susceptible trees
+            if is_cecid:
+                return self._empty_seed_result("none_no_susceptible_trees")
             if graph.nodes:
                 graph.nodes[0].state = TreeState.INFESTED
                 return {
                     "strategy": "fallback_first_tree",
                     "cells": [],
                     "tree_ids": [str(graph.nodes[0].tree_id)],
+                    "node_indices": [int(graph.nodes[0].index)],
                     "count": 1,
                 }
             return self._empty_seed_result("none_no_trees")
 
         use_directional_seed = (
-            neighbor_threat > 0.0
+            not is_cecid
+            and neighbor_threat > 0.0
             and self._direction_bearing(neighbor_direction) is not None
         )
-
         if use_directional_seed:
             ranked_nodes = self._rank_tree_seed_candidates(
                 nodes=susceptible,
@@ -1945,13 +2172,17 @@ class SimulationService:
             selected_nodes = [susceptible[int(idx)] for idx in np.atleast_1d(chosen)]
             strategy = "random_susceptible"
 
-        for node in selected_nodes:
-            node.state = TreeState.INFESTED
+        if is_cecid:
+            strategy = f"assumed_soil_{strategy}"
+        else:
+            for node in selected_nodes:
+                node.state = TreeState.INFESTED
 
         return {
             "strategy": strategy,
             "cells": [],
             "tree_ids": [str(node.tree_id) for node in selected_nodes],
+            "node_indices": [int(node.index) for node in selected_nodes],
             "count": len(selected_nodes),
         }
 
@@ -1984,6 +2215,7 @@ class SimulationService:
                 states=snap["states"],
                 risks=snap["risks"],
                 stage_per_tree=stage_per_tree,
+                cecid_metrics=self._cecid_snapshot_metrics(snap),
             )
             time_series.append(TimeSeriesSnapshot(
                 timestep=snap["timestep"],
@@ -2008,6 +2240,7 @@ class SimulationService:
         states: List[int],
         risks: List[float],
         stage_per_tree: Optional[List[Any]] = None,
+        cecid_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Render a tree_graph snapshot as a GeoJSON FeatureCollection of Points.
@@ -2060,6 +2293,21 @@ class SimulationService:
             }
             if stage_name:
                 properties["stage"] = stage_name
+            if cecid_metrics:
+                cumulative = float(cecid_metrics["cumulative"][idx])
+                peak_hourly = float(cecid_metrics["peak_hourly"][idx])
+                exposure_hours = int(cecid_metrics["exposure_hours"][idx])
+                local_hours = int(cecid_metrics["local_hours"][idx])
+                external_hours = int(cecid_metrics["external_hours"][idx])
+                properties.update({
+                    "cecid_eligible": stage_name == "fruitlet",
+                    "cumulative_establishment_probability": round(cumulative, 6),
+                    "peak_hourly_risk": round(peak_hourly, 6),
+                    "exposure_hours": exposure_hours,
+                    "local_exposure_hours": local_hours,
+                    "external_exposure_hours": external_hours,
+                    "exposure_route": self._cecid_exposure_route(local_hours, external_hours),
+                })
 
             features.append({
                 "type": "Feature",

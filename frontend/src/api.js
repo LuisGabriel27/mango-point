@@ -50,6 +50,7 @@ const api = {
   getOrchards: (params = {}) => client.get('/orchards', { params }),
   getOrchard: (id) => client.get(`/orchards/${id}`),
   updateOrchard: (id, body) => client.put(`/orchards/${id}`, body),
+  updateOrchardTrees: (id, body) => client.patch(`/orchards/${id}/trees`, body),
   uploadOrchard: (formData) => client.post('/orchards/upload', formData, { timeout: 300000 }),
 
   // Simulation
@@ -84,6 +85,7 @@ const api = {
 
   // Observations
   submitObservation: (body) => client.post('/observations/submit-observation', body),
+  submitObservationsBulk: (body) => client.post('/observations/bulk', body),
   getObservations: (params = {}) => client.get('/observations/list', { params }),
   deleteObservation: (id) => client.delete(`/observations/${id}`),
 

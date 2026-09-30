@@ -12,10 +12,10 @@ test('simulation workspace defaults to Simulate', () => {
 })
 
 test('workflow keyboard navigation wraps and supports Home and End', () => {
-  assert.equal(nextSidebarWorkflowId('setup', 'ArrowLeft'), 'results')
-  assert.equal(nextSidebarWorkflowId('results', 'ArrowRight'), 'setup')
+  assert.equal(nextSidebarWorkflowId('setup', 'ArrowLeft'), 'verify')
+  assert.equal(nextSidebarWorkflowId('verify', 'ArrowRight'), 'setup')
   assert.equal(nextSidebarWorkflowId('results', 'Home'), 'setup')
-  assert.equal(nextSidebarWorkflowId('setup', 'End'), 'results')
+  assert.equal(nextSidebarWorkflowId('setup', 'End'), 'verify')
   assert.equal(nextSidebarWorkflowId('simulate', 'Enter'), 'simulate')
 })
 
@@ -24,6 +24,7 @@ test('successful results and prefills select the intended workflow', () => {
   assert.equal(sidebarWorkflowForEvent('historical-result', 'setup'), 'results')
   assert.equal(sidebarWorkflowForEvent('alert-prefill', 'results'), 'simulate')
   assert.equal(sidebarWorkflowForEvent('historical-template', 'results'), 'simulate')
+  assert.equal(sidebarWorkflowForEvent('tree-verification', 'results'), 'verify')
   assert.equal(sidebarWorkflowForEvent('unknown', 'setup'), 'setup')
 })
 

@@ -22,9 +22,12 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- -------------------------------------------------------------------------
 
 DO $$ BEGIN
-    CREATE TYPE tree_status_enum AS ENUM ('healthy', 'infected', 'bagged', 'dead');
+    CREATE TYPE tree_status_enum AS ENUM ('healthy', 'infected', 'bagged', 'dead', 'history_infected', 'suspect');
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+ALTER TYPE tree_status_enum ADD VALUE IF NOT EXISTS 'history_infected';
+ALTER TYPE tree_status_enum ADD VALUE IF NOT EXISTS 'suspect';
 
 DO $$ BEGIN
     CREATE TYPE tree_stage_enum AS ENUM ('dormant', 'flowering', 'fruitlet', 'mature');
@@ -102,6 +105,7 @@ CREATE TABLE IF NOT EXISTS orchard (
     area_size NUMERIC(10, 2),
     tree_count INTEGER DEFAULT 0,
     geojson JSONB,
+    management_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     centroid_lon DOUBLE PRECISION,
     centroid_lat DOUBLE PRECISION,
@@ -124,6 +128,8 @@ CREATE TABLE IF NOT EXISTS orchard (
 
 ALTER TABLE IF EXISTS orchard
 ADD COLUMN IF NOT EXISTS cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE IF EXISTS orchard
+ADD COLUMN IF NOT EXISTS management_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);
 CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);
@@ -135,6 +141,7 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
 
 CREATE TABLE IF NOT EXISTS tree (
     tree_id SERIAL PRIMARY KEY,
+    external_id VARCHAR(150),
     orchard_id INTEGER NOT NULL REFERENCES orchard (orchard_id) ON DELETE CASCADE,
     x_coordinate DOUBLE PRECISION,
     y_coordinate DOUBLE PRECISION,
@@ -145,6 +152,9 @@ CREATE TABLE IF NOT EXISTS tree (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tree_orchard_id ON tree (orchard_id);
+ALTER TABLE IF EXISTS tree ADD COLUMN IF NOT EXISTS external_id VARCHAR(150);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tree_orchard_external_id
+    ON tree (orchard_id, external_id);
 CREATE INDEX IF NOT EXISTS idx_tree_geom ON tree USING GIST (geom);
 
 CREATE TABLE IF NOT EXISTS pest (
@@ -199,12 +209,82 @@ CREATE TABLE IF NOT EXISTS infestation_record (
     simulation_id INTEGER REFERENCES simulation_run (simulation_id) ON DELETE CASCADE,
     record_date TIMESTAMP,
     infected_status BOOLEAN DEFAULT FALSE,
-    infestation_level NUMERIC(5, 2)
+    infestation_level NUMERIC(5, 2),
+    tree_external_id VARCHAR(150),
+    observation_status VARCHAR(30),
+    affected_count INTEGER,
+    inspected_count INTEGER,
+    observation_method VARCHAR(100),
+    observer_id VARCHAR(200),
+    notes TEXT,
+    image_url VARCHAR(1000),
+    observation_lon DOUBLE PRECISION,
+    observation_lat DOUBLE PRECISION,
+    verification_run_id VARCHAR(100),
+    forecast_risk DOUBLE PRECISION,
+    forecast_lead_hours INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE IF EXISTS infestation_record
+ADD COLUMN IF NOT EXISTS tree_external_id VARCHAR(150),
+ADD COLUMN IF NOT EXISTS observation_status VARCHAR(30),
+ADD COLUMN IF NOT EXISTS affected_count INTEGER,
+ADD COLUMN IF NOT EXISTS inspected_count INTEGER,
+ADD COLUMN IF NOT EXISTS observation_method VARCHAR(100),
+ADD COLUMN IF NOT EXISTS observer_id VARCHAR(200),
+ADD COLUMN IF NOT EXISTS notes TEXT,
+ADD COLUMN IF NOT EXISTS image_url VARCHAR(1000),
+ADD COLUMN IF NOT EXISTS observation_lon DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS observation_lat DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS verification_run_id VARCHAR(100),
+ADD COLUMN IF NOT EXISTS forecast_risk DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS forecast_lead_hours INTEGER,
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW();
+
+UPDATE infestation_record
+SET observation_status = CASE WHEN infected_status THEN 'present' ELSE 'absent' END
+WHERE simulation_id IS NULL AND observation_status IS NULL;
+
+UPDATE infestation_record record
+SET tree_external_id = COALESCE(tree.external_id, tree.tree_id::text)
+FROM tree
+WHERE record.tree_id = tree.tree_id
+  AND record.tree_external_id IS NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_infestation_observation_status'
+          AND conrelid = 'infestation_record'::regclass
+    ) THEN
+        ALTER TABLE infestation_record ADD CONSTRAINT ck_infestation_observation_status
+        CHECK (observation_status IS NULL OR observation_status IN ('present', 'absent', 'not_inspected'));
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_infestation_counts'
+          AND conrelid = 'infestation_record'::regclass
+    ) THEN
+        ALTER TABLE infestation_record ADD CONSTRAINT ck_infestation_counts
+        CHECK (affected_count IS NULL OR inspected_count IS NULL OR affected_count <= inspected_count);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_infestation_forecast_risk'
+          AND conrelid = 'infestation_record'::regclass
+    ) THEN
+        ALTER TABLE infestation_record ADD CONSTRAINT ck_infestation_forecast_risk
+        CHECK (forecast_risk IS NULL OR (forecast_risk >= 0 AND forecast_risk <= 1));
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_infestation_tree_id ON infestation_record (tree_id);
 CREATE INDEX IF NOT EXISTS idx_infestation_pest_id ON infestation_record (pest_id);
 CREATE INDEX IF NOT EXISTS idx_infestation_simulation_id ON infestation_record (simulation_id);
+CREATE INDEX IF NOT EXISTS idx_infestation_tree_external_id ON infestation_record (tree_external_id);
+CREATE INDEX IF NOT EXISTS idx_infestation_verification_run_id ON infestation_record (verification_run_id);
 
 CREATE TABLE IF NOT EXISTS environmental_condition (
     condition_id SERIAL PRIMARY KEY,

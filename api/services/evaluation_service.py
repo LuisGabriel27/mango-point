@@ -194,13 +194,29 @@ class EvaluationService:
         # prefer tree IDs; grid row/col is only used when no tree ID exists.
         predicted_risk = self._extract_predicted_risk(risk_data)
 
-        # Map field observations to tree IDs. Unmatched observations are still
-        # included in the universe so they correctly count as false negatives.
-        observed_units = set()
+        # Use the latest inspected result per portable GeoJSON tree ID. Older
+        # code treated every field row as positive forever, so a later verified
+        # absence could never correct an earlier presence record.
+        observed_results: Dict[tuple[str, str], tuple[Any, bool]] = {}
         for obs in observations:
-            tree_id = self._normalize_tree_id(getattr(obs, "tree_id", None))
-            if tree_id is not None:
-                observed_units.add(("tree", tree_id))
+            status = getattr(obs, "observation_status", None)
+            if status == "not_inspected":
+                continue
+            tree_id = self._normalize_tree_id(
+                getattr(obs, "tree_external_id", None)
+                or getattr(obs, "tree_id", None)
+            )
+            if tree_id is None:
+                continue
+            key = ("tree", tree_id)
+            timestamp = getattr(obs, "record_date", None) or getattr(obs, "created_at", None)
+            actual_positive = bool(getattr(obs, "infected_status", True))
+            previous = observed_results.get(key)
+            if previous is None or (timestamp is not None and (previous[0] is None or timestamp >= previous[0])):
+                observed_results[key] = (timestamp, actual_positive)
+
+        observed_units = {key for key, (_, positive) in observed_results.items() if positive}
+        inspected_units = set(observed_results)
         
         # Compute confusion matrix over all comparable units.
         tp = 0
@@ -208,12 +224,12 @@ class EvaluationService:
         fn = 0
         tn = 0
         
-        all_units = set(predicted_risk.keys()) | observed_units
+        all_units = set(predicted_risk.keys()) | inspected_units
         
         for unit_key in all_units:
             risk = predicted_risk.get(unit_key, 0.0)
             predicted_positive = risk >= risk_threshold
-            actual_positive = unit_key in observed_units
+            actual_positive = observed_results.get(unit_key, (None, False))[1]
             
             if predicted_positive and actual_positive:
                 tp += 1
@@ -252,7 +268,7 @@ class EvaluationService:
                 false_negatives=fn,
             ),
             "total_predictions": len(predicted_risk),
-            "total_observations": len(observations),
+            "total_observations": len(inspected_units),
             "matched_cells": tp,
         }
     

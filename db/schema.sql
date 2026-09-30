@@ -37,10 +37,13 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 
 DO $$ BEGIN
     CREATE TYPE tree_status_enum AS ENUM (
-        'healthy', 'infected', 'bagged', 'dead'
+        'healthy', 'infected', 'bagged', 'dead', 'history_infected', 'suspect'
     );
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+ALTER TYPE tree_status_enum ADD VALUE IF NOT EXISTS 'history_infected';
+ALTER TYPE tree_status_enum ADD VALUE IF NOT EXISTS 'suspect';
 
 DO $$ BEGIN
     CREATE TYPE tree_stage_enum AS ENUM (
@@ -135,6 +138,7 @@ CREATE TABLE IF NOT EXISTS orchard (
     area_size    NUMERIC(10, 2),
     tree_count   INTEGER      DEFAULT 0,
     geojson      JSONB,
+    management_zones JSONB    NOT NULL DEFAULT '[]'::jsonb,
     cecid_weed_zones JSONB    NOT NULL DEFAULT '[]'::jsonb,
     centroid_lon DOUBLE PRECISION,
     centroid_lat DOUBLE PRECISION,
@@ -171,6 +175,7 @@ EXECUTE FUNCTION set_updated_at_timestamp();
 -- ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tree (
     tree_id        SERIAL             PRIMARY KEY,
+    external_id    VARCHAR(150),
     orchard_id     INTEGER            NOT NULL
                        REFERENCES orchard (orchard_id)
                        ON DELETE CASCADE,
@@ -183,6 +188,8 @@ CREATE TABLE IF NOT EXISTS tree (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tree_orchard_id ON tree (orchard_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tree_orchard_external_id
+    ON tree (orchard_id, external_id);
 CREATE INDEX IF NOT EXISTS idx_tree_geom       ON tree USING GIST (geom);
 
 
@@ -271,12 +278,34 @@ CREATE TABLE IF NOT EXISTS infestation_record (
                           ON DELETE CASCADE,
     record_date       TIMESTAMP,
     infected_status   BOOLEAN   DEFAULT FALSE,
-    infestation_level NUMERIC(5, 2)
+    infestation_level NUMERIC(5, 2),
+    tree_external_id  VARCHAR(150),
+    observation_status VARCHAR(30),
+    affected_count    INTEGER,
+    inspected_count   INTEGER,
+    observation_method VARCHAR(100),
+    observer_id       VARCHAR(200),
+    notes             TEXT,
+    image_url         VARCHAR(1000),
+    observation_lon   DOUBLE PRECISION,
+    observation_lat   DOUBLE PRECISION,
+    verification_run_id VARCHAR(100),
+    forecast_risk     DOUBLE PRECISION,
+    forecast_lead_hours INTEGER,
+    created_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_infestation_observation_status
+        CHECK (observation_status IS NULL OR observation_status IN ('present', 'absent', 'not_inspected')),
+    CONSTRAINT ck_infestation_counts
+        CHECK (affected_count IS NULL OR inspected_count IS NULL OR affected_count <= inspected_count),
+    CONSTRAINT ck_infestation_forecast_risk
+        CHECK (forecast_risk IS NULL OR (forecast_risk >= 0 AND forecast_risk <= 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_infestation_tree_id       ON infestation_record (tree_id);
 CREATE INDEX IF NOT EXISTS idx_infestation_pest_id       ON infestation_record (pest_id);
 CREATE INDEX IF NOT EXISTS idx_infestation_simulation_id ON infestation_record (simulation_id);
+CREATE INDEX IF NOT EXISTS idx_infestation_tree_external_id ON infestation_record (tree_external_id);
+CREATE INDEX IF NOT EXISTS idx_infestation_verification_run_id ON infestation_record (verification_run_id);
 
 
 -- ────────────────────────────────────────────

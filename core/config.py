@@ -13,6 +13,11 @@ Historical data shows:
 from enum import IntEnum
 import numpy as np
 
+# Increment this whenever a change can alter fixed-seed simulation output.
+# Saved runs expose the value so a historical result is not mistaken for a
+# replay of a newer biological/spatial model.
+SIMULATION_MODEL_VERSION = "2026.10-cecid-map-interpretation-v7"
+
 # ─────────────────────────────────────────────
 # Cell States
 # ─────────────────────────────────────────────
@@ -86,7 +91,6 @@ CECID_SOIL_WETNESS_HALF_LIFE_HOURS = 48.0
 CECID_FAVORABLE_THRESHOLD = 0.25
 CECID_DRY_RAIN_MAX_MM = 0.1
 CECID_DRYING_ZERO_MM = 1.0
-CECID_WIND_SCORE_SCALE_MS = 4.0
 CECID_SOURCE_WETTING_RAIN_MM = 0.1
 CECID_ADULT_HALF_LIFE_HOURS = 24.0
 CECID_ADULT_MAX_AGE_HOURS = 72
@@ -96,10 +100,22 @@ CECID_WEED_RELAY_EFFICIENCY = {
     "moderate": 0.80,
     "dense": 1.00,
 }
-CECID_GENTLE_WIND_MIN_KMH = 1.0
+# Adult pressure may pause on a mango tree and continue at a later eligible
+# dawn/dusk hour. This tracks the same adult cohort; it does not make the tree
+# a new soil source or create a second generation. The cohort's 24-hour
+# half-life already accounts for survival, so resting adds no second mortality
+# penalty of its own.
+CECID_TREE_RESTING_EFFICIENCY = 1.0
+# Wind coefficients are transparent research assumptions, not measured
+# thresholds for P. mangivora. The soft activity curve deliberately avoids
+# interpreting an ordinary breeze as adult mortality. The directional ramp
+# starts near the 0.9 m/s controlled-flight reference reported for Hessian fly
+# and is capped without increasing Cecid's 15 m movement-per-hour limit.
+CECID_GENTLE_WIND_MIN_KMH = 3.2
 CECID_GENTLE_WIND_MAX_KMH = 5.0
+CECID_WIND_DIRECTION_FULL_KMH = 15.0
 CECID_WIND_DIRECTION_MAX_ASSIST = 0.35
-CECID_HIGH_WIND_DECAY_KMH = 3.0
+CECID_WIND_ACTIVITY_SCALE_KMH = 6.0
 CECID_SOURCE_PRESSURE_MULTIPLIERS = {
     "low": 0.5,
     "medium": 1.0,
@@ -207,6 +223,14 @@ TG_BETA                   = float(_os.getenv("TG_BETA",                   "1.0")
 TG_WIND_BIAS              = float(_os.getenv("TG_WIND_BIAS",              "0.3"))
 # Maximum centre-to-centre distance for graph edges (m).
 TG_MAX_NEIGHBOR_DIST_M    = float(_os.getenv("TG_MAX_NEIGHBOR_DIST_M",   "20.0"))
+# Fruit Fly needs a slightly wider local candidate graph than Cecid. The old
+# shared 20 m cut-off fragmented the bundled orchard and could trap every
+# automatically selected source in a three-tree component. This is a local
+# tree-link radius, not a claim that Bactrocera cannot travel farther. The
+# exponential crown-gap kernel still reduces probability on longer links.
+FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M = float(
+    _os.getenv("FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M", "25.0")
+)
 # Timestep duration used in the probability formula (keep equal to TIMESTEP_HOURS).
 TG_DT                     = float(_os.getenv("TG_DT",                    "1.0"))
 

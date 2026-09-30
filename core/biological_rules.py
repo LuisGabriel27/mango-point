@@ -49,6 +49,9 @@ from core.config import (
     CECID_SOURCE_WETTING_RAIN_MM,
     CECID_ADULT_HALF_LIFE_HOURS,
     CECID_ADULT_MAX_AGE_HOURS,
+    CECID_GENTLE_WIND_MAX_KMH,
+    CECID_WIND_ACTIVITY_SCALE_KMH,
+    CECID_WIND_DIRECTION_FULL_KMH,
     DAWN_START, DAWN_END,
     DUSK_START, DUSK_END,
     # Fruit Fly
@@ -67,8 +70,9 @@ from core.config import (
     CellState,
 )
 from core.cecid_habitat import (
+    cecid_wind_activity,
+    cecid_wind_assist_strength,
     cecid_wind_direction_factor,
-    cecid_wind_survival,
 )
 from core.grid import OrchardGrid
 from utils.datetime_utils import parse_rfc3339, format_rfc3339
@@ -503,16 +507,19 @@ class CecidFlyGate(DispersalGate):
             drying_score = (
                 CECID_DRYING_ZERO_MM - current_rain
             ) / (CECID_DRYING_ZERO_MM - CECID_DRY_RAIN_MAX_MM)
-        wind_score = cecid_wind_survival(wind_speed_ms)
-        suitability = max(0.0, min(1.0, moisture_score * drying_score * wind_score))
+        wind_activity = cecid_wind_activity(wind_speed_ms)
+        wind_assist = cecid_wind_assist_strength(wind_speed_ms)
+        suitability = max(0.0, min(1.0, moisture_score * drying_score * wind_activity))
 
         limiting: List[str] = []
         if moisture_score < 1.0:
             limiting.append("soil moisture below selected sensitivity scale")
         if drying_score < 1.0:
             limiting.append("current rain is suppressing emergence")
-        if wind_score < 0.75:
-            limiting.append("wind above 5 km/h is suppressing weak-flyer survival")
+        if wind_activity < 0.75:
+            limiting.append(
+                "wind is limiting controlled flight; downwind movement may still be assisted"
+            )
 
         sunrise = twilight.get("sunrise")
         sunset = twilight.get("sunset")
@@ -523,9 +530,16 @@ class CecidFlyGate(DispersalGate):
             "soil_wetness_mm": wetness,
             "moisture_score": moisture_score,
             "drying_score": drying_score,
-            "wind_score": wind_score,
-            "wind_survival_score": wind_score,
+            "wind_score": wind_activity,
+            "wind_activity_score": wind_activity,
+            # Compatibility field retained for saved runs and older clients.
+            "wind_survival_score": wind_activity,
+            "wind_direction_assist": wind_assist,
             "wind_speed_kmh": max(0.0, float(wind_speed_ms)) * 3.6,
+            "wind_no_penalty_max_kmh": CECID_GENTLE_WIND_MAX_KMH,
+            "wind_activity_scale_kmh": CECID_WIND_ACTIVITY_SCALE_KMH,
+            "wind_direction_full_kmh": CECID_WIND_DIRECTION_FULL_KMH,
+            "wind_model": "soft inverse-square activity plus per-edge downwind bias",
             "downwind_bearing_deg": None,
             "suitability_score": suitability,
             "twilight_window": twilight.get("window"),

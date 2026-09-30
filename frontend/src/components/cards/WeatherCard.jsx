@@ -430,10 +430,10 @@ function AdvancedTimelineEditor({ timeline, onChange }) {
         <div className="d-flex justify-content-between align-items-start gap-2">
           <div>
             <div className="small fw-semibold text-primary">
-              <i className="bi bi-lightning-charge me-1" />Cecid dawn + dusk test
+              <i className="bi bi-lightning-charge me-1" />Cecid dawn + dusk spread test
             </div>
             <small className="d-block text-muted">
-              Midnight start, dry soil, 4 hours of rain, then 20 dry calm hours. Repeats daily so both solar windows can become favorable.
+              Weather starts at midnight with 4 rainy hours followed by 20 dry, calm hours, then repeats daily. It does not change pest, stage, source, treatment, model, or sensitivity controls.
             </small>
           </div>
           <button
@@ -445,7 +445,7 @@ function AdvancedTimelineEditor({ timeline, onChange }) {
           </button>
         </div>
         <small className="d-block mt-2">
-          Before running: select <strong>Cecid Fly</strong>, <strong>Fruitlet</strong>, and at least <strong>48 hours</strong>. Expected favorable times are around 5–7 AM and 5–7 PM Guimaras time.
+          Before running, select <strong>Cecid Fly</strong>, <strong>Fruitlet</strong>, and at least <strong>48 hours</strong>. Expected favorable times are around <strong>5–7 AM</strong> and <strong>5–7 PM</strong> Guimaras time.
         </small>
       </div>
 
@@ -627,7 +627,7 @@ function AdvancedTimelineEditor({ timeline, onChange }) {
       </div>
 
       <div className="alert alert-light border py-1 px-2 mb-2" style={{ fontSize: '.72rem' }}>
-        <i className="bi bi-wind me-1" />For Cecid Fly, 1–5 km/h equals 0.28–1.39 m/s and can gently assist movement downwind. Faster wind progressively lowers survival but never extends the 15 m hourly limit.
+        <i className="bi bi-wind me-1" />For Cecid Fly, wind up to 5 km/h has no activity penalty. Faster wind gradually limits controlled flight while increasingly favoring downwind edges; it never extends the 15 m hourly limit. These coefficients are provisional pending BPI calibration.
       </div>
 
       <div className="d-flex gap-1">

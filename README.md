@@ -164,6 +164,8 @@ SMTP_FROM_NAME=MangoPoint Alerts
 # Required for forecast alerts while nobody has the dashboard open.
 ALERT_MONITORING_ENABLED=true
 ALERT_MONITORING_INTERVAL_SECONDS=3600
+ALERT_MONITORING_FORECAST_HOURS=48
+ALERT_MONITORING_DEDUPE_HOURS=6
 ```
 
 This path sends `POST https://api.brevo.com/v3/smtp/email` over standard HTTPS
@@ -196,10 +198,15 @@ backup outbox. In Supabase, row-level security is enabled and access is revoked
 from the `anon` and `authenticated` API roles; the server-side PostgreSQL backup
 connection remains the only synchronization path.
 
-The API process must remain running for unattended monitoring. The scheduler
-checks enabled orchards using the existing forecast/gate rules; it does not
-require a browser session. Existing deduplication prevents the same active alert
-from being emailed repeatedly during each scheduled scan.
+The API process must remain running for unattended monitoring. Each scan uses
+the orchard centroid, 72 antecedent weather hours, and the configured future
+forecast window. Cecid alerts require the orchard's saved stage to be `fruitlet`
+and a favorable orchard-specific dawn/dusk hour. Synthetic fallback weather is
+shown in the weather UI for testing but cannot create an operational Cecid
+forecast alert. The alert's **Open Simulation Controls** action selects live
+weather and fills the relevant controls; the user must still press **Run
+Simulation**. Same-window deduplication prevents repeated alert emails while
+allowing a later, distinct favorable window to be reported.
 
 ## Supabase cloud backup
 
@@ -255,10 +262,17 @@ hosts, or create another generation. The relay efficiencies (0.60/0.80/1.00)
 require BPI field calibration. Legacy `cecid_emergence_zones` remain available
 only for exact historical replay and are not converted into orchard weeds.
 
-For Cecid wind controls, values remain in m/s. Gentle wind from 1–5 km/h
-(0.28–1.39 m/s) can assist a movement edge downwind by up to 35%. Wind above
-5 km/h progressively lowers adult survival, but never allows movement farther
-than 15 m in one eligible dawn/dusk hour.
+For Cecid wind controls, values remain in m/s. Wind up to 5 km/h has no
+controlled-movement activity penalty. Above 5 km/h, a provisional soft
+inverse-square curve gradually lowers activity: at 3 m/s (10.8 km/h), the
+activity score is about 0.52 rather than a near-zero hard suppression. Wind
+direction is separate: downwind assistance begins near the 0.9 m/s
+controlled-flight reference reported for another gall midge and reaches a
+capped 35% at 15 km/h. The model never allows movement farther than 15 m in
+one eligible dawn/dusk hour. These coefficients are research assumptions that
+require target-species BPI/field calibration; the compatibility field
+`wind_survival_score` contains the same value but does not represent measured
+adult mortality.
 
 ## Validation
 

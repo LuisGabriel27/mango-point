@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
@@ -219,6 +220,139 @@ def test_gate_condition_alerts_skip_when_gate_stays_closed():
     )
 
     assert alerts == []
+
+
+def _cecid_live_weather_window(hours=8):
+    start = datetime.fromisoformat("2026-04-28T05:00:00+08:00")
+    forecast = [
+        {
+            "datetime": (start + timedelta(hours=step)).isoformat(),
+            "hour": (start + timedelta(hours=step)).hour,
+            "wind_speed_ms": 1.0,
+            "wind_dir_deg": 90.0,
+            "temperature_c": 27.0,
+            "humidity": 85.0,
+            "rainfall_mm": 0.0,
+        }
+        for step in range(hours)
+    ]
+    antecedent = [
+        {"rainfall_mm": 2.0 if 56 <= step < 60 else 0.0}
+        for step in range(72)
+    ]
+    provenance = {
+        "provider": "open-meteo",
+        "source": "open-meteo",
+        "timezone": "Asia/Manila",
+        "coordinates": {"lat": 10.585, "lon": 122.58},
+    }
+    return forecast, antecedent, provenance
+
+
+def test_cecid_live_forecast_alert_is_explainable_and_manual_to_run():
+    service = AlertService()
+    forecast, antecedent, provenance = _cecid_live_weather_window()
+
+    alerts = service.check_weather_forecast_alerts(
+        forecast=forecast,
+        antecedent=antecedent,
+        provenance=provenance,
+        orchard_id="orchard-a",
+        lat=10.585,
+        lon=122.58,
+        orchard_stage="fruitlet",
+        monitored_pest_types=["cecid"],
+    )
+
+    assert len(alerts) == 1
+    alert = alerts[0]
+    params = alert.suggested_simulation_params
+    context = params["cecid_forecast_context"]
+    assert alert.zone_name == "Cecid fly weather forecast"
+    assert alert.risk_value >= 0.25
+    assert params["weather_mode"] == "live"
+    assert params["auto_run"] is False
+    assert params["orchard_id"] == "orchard-a"
+    assert "manual_weather" not in params
+    assert context["twilight_window"] == "dawn"
+    assert context["uses_72h_antecedent_context"] is True
+    assert context["operational_live_data"] is True
+    assert context["soil_wetness_mm"] > 5.0
+    assert context["current_rainfall_mm"] == 0.0
+    assert context["source"] == "open-meteo"
+    assert "+08:00" in context["first_favorable_at"]
+    assert "does not run the spatial simulation automatically" in alert.message
+
+
+def test_cecid_forecast_alert_requires_fruitlets_and_a_twilight_window():
+    service = AlertService()
+    forecast, antecedent, provenance = _cecid_live_weather_window()
+
+    assert service.check_weather_forecast_alerts(
+        forecast=forecast,
+        antecedent=antecedent,
+        provenance=provenance,
+        orchard_id="orchard-a",
+        lat=10.585,
+        lon=122.58,
+        orchard_stage="mature",
+        monitored_pest_types=["cecid"],
+    ) == []
+
+    midday = [dict(forecast[0], datetime="2026-04-28T12:00:00+08:00", hour=12)]
+    assert service.check_weather_forecast_alerts(
+        forecast=midday,
+        antecedent=antecedent,
+        provenance=provenance,
+        orchard_id="orchard-a",
+        lat=10.585,
+        lon=122.58,
+        orchard_stage="fruitlet",
+        monitored_pest_types=["cecid"],
+    ) == []
+
+
+def test_synthetic_weather_cannot_create_an_operational_cecid_alert():
+    service = AlertService()
+    forecast, antecedent, provenance = _cecid_live_weather_window()
+    synthetic = {
+        **provenance,
+        "source": "synthetic",
+        "fallback_reason": "provider timeout",
+        "synthetic_seed": 123,
+    }
+
+    assert service.check_weather_forecast_alerts(
+        forecast=forecast,
+        antecedent=antecedent,
+        provenance=synthetic,
+        orchard_id="orchard-a",
+        lat=10.585,
+        lon=122.58,
+        orchard_stage="fruitlet",
+        monitored_pest_types=["cecid"],
+    ) == []
+
+
+def test_weather_alert_fingerprint_dedupes_only_the_same_forecast_window():
+    service = AlertService()
+    forecast, antecedent, provenance = _cecid_live_weather_window()
+    first = service.check_weather_forecast_alerts(
+        forecast, "orchard-a", 10.585, 122.58, "fruitlet", ["cecid"],
+        antecedent, provenance,
+    )[0]
+    same = first.model_copy(update={"alert_id": "different-alert-id"})
+    next_params = {
+        **first.suggested_simulation_params,
+        "_forecast_window_key": "orchard-a|cecid|next-window",
+    }
+    later = first.model_copy(update={
+        "alert_id": "later-alert-id",
+        "suggested_simulation_params": next_params,
+    })
+
+    assert service.alert_fingerprint(first) == service.alert_fingerprint(same)
+    assert service.alert_fingerprint(first) != service.alert_fingerprint(later)
 
 
 def test_memory_alert_store_dedupes_active_duplicates():

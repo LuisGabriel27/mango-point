@@ -172,8 +172,13 @@ class AlertMonitoringService:
             "alerts_created": 0,
             "duplicates_skipped": 0,
             "gate_open": {},
+            "forecast_assessment": {},
             "alert_ids": [],
             "weather_provenance": provenance,
+            "operational_weather": (
+                str(provenance.get("source") or "").lower() == "open-meteo"
+                and not provenance.get("fallback_reason")
+            ),
         }
 
         for pest_type in pest_types:
@@ -194,20 +199,59 @@ class AlertMonitoringService:
                 if entry.get("status") == "favorable"
             )
             orchard_summary["gate_open"][pest_type] = open_count
+            favorable = [
+                entry for entry in diagnostics
+                if entry.get("status") == "favorable"
+            ]
+            orchard_summary["forecast_assessment"][pest_type] = {
+                "favorable_hours": len(favorable),
+                "limited_hours": sum(
+                    1 for entry in diagnostics if entry.get("status") == "limited"
+                ),
+                "first_favorable_at": (
+                    favorable[0].get("local_datetime")
+                    or favorable[0].get("datetime")
+                    if favorable else None
+                ),
+                "peak_suitability": max(
+                    (float(entry.get("suitability_score", 0.0)) for entry in favorable),
+                    default=0.0,
+                ),
+            }
 
-            alerts = alert_service.check_gate_condition_alerts(
-                diagnostics=diagnostics,
-                orchard_id=orchard_uid,
-                simulation_run_id=None,
-                pest_type=pest_type,
-                orchard_stage=stage,
-            )
+            if pest_type == "cecid":
+                alerts = alert_service.check_weather_forecast_alerts(
+                    forecast=weather_data,
+                    antecedent=antecedent,
+                    provenance=provenance,
+                    orchard_id=orchard_uid,
+                    lat=float(lat),
+                    lon=float(lon),
+                    orchard_stage=stage,
+                    monitored_pest_types=[pest_type],
+                )
+                if favorable and not alerts:
+                    orchard_summary["forecast_assessment"][pest_type][
+                        "alert_suppressed_reason"
+                    ] = (
+                        "synthetic_or_unverified_weather"
+                        if not orchard_summary["operational_weather"]
+                        else "stage_or_monitoring_filter"
+                    )
+            else:
+                # Preserve Fruit Fly's existing condition-alert behavior.
+                alerts = alert_service.check_gate_condition_alerts(
+                    diagnostics=diagnostics,
+                    orchard_id=orchard_uid,
+                    simulation_run_id=None,
+                    pest_type=pest_type,
+                    orchard_stage=stage,
+                )
 
             for alert_data in alerts:
                 if dedupe_hours > 0 and await self._recent_active_alert_exists(
                     db=db,
-                    orchard_id=orchard_uid,
-                    zone_name=alert_data.zone_name,
+                    alert_data=alert_data,
                     dedupe_hours=dedupe_hours,
                 ):
                     orchard_summary["duplicates_skipped"] += 1
@@ -228,23 +272,25 @@ class AlertMonitoringService:
     async def _recent_active_alert_exists(
         self,
         db: AsyncSession,
-        orchard_id: str,
-        zone_name: Optional[str],
+        alert_data: Any,
         dedupe_hours: int,
     ) -> bool:
-        """Return True if a recent active condition alert already exists."""
+        """Return True for the same recent operational alert/window."""
         since = utcnow_naive() - timedelta(hours=dedupe_hours)
         result = await db.execute(
-            select(Alert.alert_id)
+            select(Alert)
             .where(
-                Alert.orchard_id == orchard_id,
-                Alert.zone_name == zone_name,
+                Alert.orchard_id == alert_data.orchard_id,
+                Alert.zone_name == alert_data.zone_name,
                 Alert.status == AlertStatus.ACTIVE,
                 Alert.triggered_at >= since,
             )
-            .limit(1)
         )
-        return result.scalar_one_or_none() is not None
+        fingerprint = alert_service.alert_fingerprint(alert_data)
+        return any(
+            alert_service.alert_fingerprint(existing) == fingerprint
+            for existing in result.scalars().all()
+        )
 
     @staticmethod
     def _monitored_pest_types(value: Any) -> List[str]:

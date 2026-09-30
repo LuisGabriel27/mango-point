@@ -68,10 +68,10 @@ Assumptions and Limitations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - Crown shapes are approximated as circles of radius r (top-down projection).
   Non-circular crowns (e.g., elongated mango canopies) are not modelled.
-- Only trees within TG_MAX_NEIGHBOR_DIST_M of each other are connected.
-  Long-range dispersal (e.g., by adult fruit fly) is not captured by this
-  mechanism alone; it is implicitly included via the biological gate using the
-  same open/close logic as the grid model.
+- Only trees within the graph radius supplied by the service are connected.
+  The default is pest-specific (25 m for Fruit Fly; 20 m for the generic graph),
+  while Cecid movement remains independently capped at 15 m per eligible hour.
+  These are local simulation links, not measured maximum flight distances.
 - All coordinates are in a local planar projection (metres from SW origin).
   The service layer converts lon/lat using the same m_lat/m_lon constants as
   the grid model, so both modes share the same coordinate system.
@@ -134,7 +134,6 @@ from core.config import (
     BAG_RESISTANCE,
     CECID_RAIN_HISTORY_HOURS,
     CECID_RAINFALL_THRESHOLD_MM,
-    CECID_WIND_THRESHOLD_MS,
     CECID_MAX_RANGE_M,
     DIRECTION_BEARING_MAP,
     FRUIT_FLY_DEFAULT_DAYS_FLOWERING,
@@ -157,8 +156,8 @@ from core.config import (
 from core.cecid_habitat import (
     CecidHabitatNetwork,
     CecidHabitatTracker,
+    cecid_wind_activity,
     cecid_wind_direction_factor,
-    cecid_wind_survival,
 )
 
 logger = logging.getLogger(__name__)
@@ -398,8 +397,13 @@ class TreeGraphResult:
         weather: dict,
         n_infested: int,
         n_new: int,
+        cecid_cumulative_probability: Optional[List[float]] = None,
+        cecid_peak_hourly_risk: Optional[List[float]] = None,
+        cecid_exposure_hours: Optional[List[int]] = None,
+        cecid_local_exposure_hours: Optional[List[int]] = None,
+        cecid_external_exposure_hours: Optional[List[int]] = None,
     ) -> None:
-        self.snapshots.append({
+        snapshot = {
             "timestep":   timestep,
             "datetime":   dt,
             "hour":       hour,
@@ -408,7 +412,16 @@ class TreeGraphResult:
             "weather":    weather.copy(),
             "n_infested": n_infested,
             "n_new":      n_new,
-        })
+        }
+        if cecid_cumulative_probability is not None:
+            snapshot.update({
+                "cecid_cumulative_probability": list(cecid_cumulative_probability),
+                "cecid_peak_hourly_risk": list(cecid_peak_hourly_risk),
+                "cecid_exposure_hours": list(cecid_exposure_hours),
+                "cecid_local_exposure_hours": list(cecid_local_exposure_hours),
+                "cecid_external_exposure_hours": list(cecid_external_exposure_hours),
+            })
+        self.snapshots.append(snapshot)
 
     def __len__(self) -> int:
         return len(self.snapshots)
@@ -473,19 +486,11 @@ def cecid_spread_modifier(
     rainfall_mm: float = 0.0,
 ) -> float:
     """
-    Combined Cecid Fly dispersal modifier (multiplicative factor on P_geom).
+    Compatibility helper for callers that do not provide a Cecid gate.
 
-    Mirrors CecidFlyGate._spread_from() in biological_rules.py.
-
-    Wind damping  — Cecid Fly are weak fliers; high wind suppresses spread.
-        wind_factor = max(0, 1 − wind_speed / (CECID_WIND_THRESHOLD × 2))
-        wind_mod    = 0.5 + 0.5 × wind_factor   ∈ [0.5, 1.0]
-
-    Rainfall boost — more soil moisture = more larval emergence.
-        accumulated = Σ rainfall_history
-        rain_factor = min(1.5, 1 + (accumulated − THRESHOLD) / 20)
-
-    Returns  wind_mod × rain_factor  (≥ 0).
+    It uses the same decayed soil moisture, current-rain drying, and soft wind
+    activity calculation as ``CecidFlyGate``. Directional wind assistance is
+    applied separately for each movement edge.
     """
     from core.config import (
         CECID_DRYING_ZERO_MM,
@@ -511,7 +516,7 @@ def cecid_spread_modifier(
         drying = (CECID_DRYING_ZERO_MM - current_rain) / (
             CECID_DRYING_ZERO_MM - CECID_DRY_RAIN_MAX_MM
         )
-    wind = cecid_wind_survival(wind_speed_ms)
+    wind = cecid_wind_activity(wind_speed_ms)
     return max(0.0, min(1.0, moisture * drying * wind))
 
 
@@ -741,6 +746,17 @@ class TreeGraphEngine:
             if cecid_habitat_network is not None else None
         )
         self.cecid_habitat_diagnostics: List[Dict[str, Any]] = []
+        node_count = len(self.graph.nodes)
+        self.cecid_cumulative_probability: List[float] = [
+            1.0 if node.state == TreeState.INFESTED else 0.0
+            for node in self.graph.nodes
+        ]
+        self.cecid_peak_hourly_risk: List[float] = [0.0] * node_count
+        self.cecid_exposure_hours: List[int] = [0] * node_count
+        self.cecid_local_exposure_hours: List[int] = [0] * node_count
+        self.cecid_external_exposure_hours: List[int] = [0] * node_count
+        self._cecid_local_exposure_indices: set[int] = set()
+        self._cecid_external_exposure_indices: set[int] = set()
         if self.cecid_cohort_model is not None and cecid_antecedent_weather:
             cecid_gate = next(
                 (gate for gate in self.gates if isinstance(gate, CecidFlyGate)),
@@ -848,6 +864,8 @@ class TreeGraphEngine:
         max_risks: List[float] = [0.0] * len(self.graph.nodes)
 
         for step in range(n_steps):
+            self._cecid_local_exposure_indices.clear()
+            self._cecid_external_exposure_indices.clear()
             w = self.weather.at(step)
             current_rain: float = w.get("rainfall_mm", 0.0)
             self.rainfall_history.append(current_rain)
@@ -919,6 +937,10 @@ class TreeGraphEngine:
                     # Fallback for custom gates: geometry-only spread
                     self._accumulate_risks(wind_dir_rad)
 
+            # Explanation-only metrics are captured before the stochastic
+            # transition and never feed back into establishment.
+            self._record_cecid_exposure()
+
             # State transitions
             n_new = self._transition()
             n_inf = self.graph.n_infested()
@@ -939,6 +961,14 @@ class TreeGraphEngine:
                 weather=w,
                 n_infested=n_inf,
                 n_new=n_new,
+                cecid_cumulative_probability=(
+                    self.cecid_cumulative_probability
+                    if self.cecid_source_pressures is not None else None
+                ),
+                cecid_peak_hourly_risk=self.cecid_peak_hourly_risk,
+                cecid_exposure_hours=self.cecid_exposure_hours,
+                cecid_local_exposure_hours=self.cecid_local_exposure_hours,
+                cecid_external_exposure_hours=self.cecid_external_exposure_hours,
             )
 
             # Reset per-step risk accumulator
@@ -983,6 +1013,7 @@ class TreeGraphEngine:
             if self.neighbor_bearing is not None else 1.0
         )
         neighbor_total = 0.0
+        external_neighbor_targets = 0
         for target_key, arrivals in contributions.items():
             target_index = int(target_key)
             if not 0 <= target_index < len(self.graph.nodes):
@@ -1006,22 +1037,61 @@ class TreeGraphEngine:
                     * path_efficiency
                     * source.treatment_source_factor
                 )
-                neighbor_boost = (
-                    self.per_tree_threats[target_index]
-                    * NEIGHBOR_THREAT_WEIGHT
-                    * wind_neighbor
-                    * float(components["suitability_score"])
-                    * min(1.0, active_pressure)
-                    * min(1.35, path_efficiency)
-                    * source.treatment_source_factor
-                )
-                probability += neighbor_boost
-                neighbor_total += neighbor_boost
                 if destination.state == TreeState.BAGGED:
                     probability *= 1.0 - BAG_RESISTANCE
                 probability *= destination.treatment_susceptibility_factor
                 probability = max(0.0, min(1.0, probability))
+                if probability > 0.0:
+                    self._cecid_local_exposure_indices.add(target_index)
                 destination.risk = 1.0 - (1.0 - destination.risk) * (1.0 - probability)
+
+        # Model optional neighbour pressure as adults arriving from outside
+        # the orchard, not as a multiplier that only exists after a local
+        # soil cohort reaches a tree. This remains a bounded proxy: it obeys
+        # fruitlet, solar twilight, local suitability, bagging, and treatment.
+        if eligible:
+            for target_index, destination in enumerate(self.graph.nodes):
+                if destination.state not in (TreeState.SUSCEPTIBLE, TreeState.BAGGED):
+                    continue
+                if (
+                    self.stage_per_tree is not None
+                    and self.stage_per_tree[target_index] != required_stage
+                ):
+                    continue
+                threat = (
+                    self.per_tree_threats[target_index]
+                    if target_index < len(self.per_tree_threats)
+                    else 0.0
+                )
+                if threat <= 0.0:
+                    continue
+                probability = (
+                    gate.base_dispersal_prob
+                    * NEIGHBOR_THREAT_WEIGHT
+                    * threat
+                    * wind_neighbor
+                    * float(components["suitability_score"])
+                )
+                if destination.state == TreeState.BAGGED:
+                    probability *= 1.0 - BAG_RESISTANCE
+                probability *= destination.treatment_susceptibility_factor
+                probability = max(0.0, min(1.0, probability))
+                if probability <= 0.0:
+                    continue
+                self._cecid_external_exposure_indices.add(target_index)
+                destination.risk = 1.0 - (
+                    (1.0 - destination.risk) * (1.0 - probability)
+                )
+                neighbor_total += probability
+                external_neighbor_targets += 1
+
+        habitat_diagnostics = dict(self.cecid_habitat_tracker.last_diagnostics)
+        if external_neighbor_targets:
+            habitat_diagnostics["habitat_limiting_reasons"] = [
+                reason
+                for reason in habitat_diagnostics.get("habitat_limiting_reasons", [])
+                if "no active adult cohort" not in str(reason)
+            ]
 
         self.cecid_habitat_diagnostics.append({
             "timestep": int(step),
@@ -1031,12 +1101,38 @@ class TreeGraphEngine:
             "wind_speed_kmh": float(weather["wind_speed_ms"]) * 3.6,
             "wind_from_deg": float(weather["wind_dir_deg"]),
             "downwind_bearing_deg": (float(weather["wind_dir_deg"]) + 180.0) % 360.0,
+            "wind_activity_score": float(components["wind_activity_score"]),
             "wind_survival_score": float(components["wind_survival_score"]),
             "neighbor_contribution": neighbor_total,
-            **self.cecid_habitat_tracker.last_diagnostics,
+            "external_neighbor_contribution": neighbor_total,
+            "external_neighbor_exposed_tree_count": external_neighbor_targets,
+            **habitat_diagnostics,
         })
 
     # ── internal helpers ─────────────────────────────────────────
+    def _record_cecid_exposure(self) -> None:
+        """Accumulate explanation-only hazards before the stochastic draw."""
+        if self.cecid_source_pressures is None:
+            return
+        for index, node in enumerate(self.graph.nodes):
+            if node.state not in (TreeState.SUSCEPTIBLE, TreeState.BAGGED):
+                continue
+            hourly_risk = max(0.0, min(1.0, float(node.risk)))
+            if hourly_risk <= 0.0:
+                continue
+            previous = self.cecid_cumulative_probability[index]
+            self.cecid_cumulative_probability[index] = 1.0 - (
+                (1.0 - previous) * (1.0 - hourly_risk)
+            )
+            self.cecid_peak_hourly_risk[index] = max(
+                self.cecid_peak_hourly_risk[index], hourly_risk,
+            )
+            self.cecid_exposure_hours[index] += 1
+            if index in self._cecid_local_exposure_indices:
+                self.cecid_local_exposure_hours[index] += 1
+            if index in self._cecid_external_exposure_indices:
+                self.cecid_external_exposure_hours[index] += 1
+
     def _accumulate_risks(
         self,
         wind_dir_rad: float,

@@ -7,17 +7,19 @@ sources, emit cohorts, become hosts, or create a second generation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, exp, floor, hypot, pi
+from math import atan2, cos, floor, hypot, pi
 from typing import Any, Dict, Hashable, Iterable, Mapping, Optional, Tuple
 
 from core.config import (
     CECID_DISTANCE_DECAY,
     CECID_GENTLE_WIND_MAX_KMH,
     CECID_GENTLE_WIND_MIN_KMH,
-    CECID_HIGH_WIND_DECAY_KMH,
     CECID_MAX_RANGE_M,
+    CECID_TREE_RESTING_EFFICIENCY,
     CECID_WEED_RELAY_EFFICIENCY,
     CECID_WEED_RELAY_SPACING_M,
+    CECID_WIND_ACTIVITY_SCALE_KMH,
+    CECID_WIND_DIRECTION_FULL_KMH,
     CECID_WIND_DIRECTION_MAX_ASSIST,
 )
 
@@ -26,19 +28,41 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, float(value)))
 
 
-def cecid_wind_survival(wind_speed_ms: float) -> float:
-    """Return the soft survival score for the selected wind-speed curve."""
+def cecid_wind_activity(wind_speed_ms: float) -> float:
+    """Return Cecid's provisional controlled-movement activity score.
+
+    Wind up to 5 km/h receives no activity penalty. Above that point a
+    long-tailed inverse-square curve reduces controlled movement without
+    treating a common orchard breeze as near-total adult mortality::
+
+        activity = 1 / (1 + ((speed_kmh - 5) / 6) ** 2)
+
+    This is a transparent research assumption pending target-species field
+    calibration. Directional downwind assistance is applied separately per
+    habitat edge, and the 15 m hourly movement cap is never expanded.
+    """
     speed_kmh = max(0.0, float(wind_speed_ms)) * 3.6
     if speed_kmh <= CECID_GENTLE_WIND_MAX_KMH:
         return 1.0
     excess = speed_kmh - CECID_GENTLE_WIND_MAX_KMH
-    return exp(-((excess / CECID_HIGH_WIND_DECAY_KMH) ** 2))
+    scaled_excess = excess / CECID_WIND_ACTIVITY_SCALE_KMH
+    return 1.0 / (1.0 + scaled_excess ** 2)
+
+
+def cecid_wind_survival(wind_speed_ms: float) -> float:
+    """Backward-compatible alias for the activity score.
+
+    Existing API/history fields retain ``wind_survival_score`` so older
+    clients continue to work, but new code and diagnostics call this an
+    activity score because the model does not estimate adult mortality.
+    """
+    return cecid_wind_activity(wind_speed_ms)
 
 
 def cecid_wind_assist_strength(wind_speed_ms: float) -> float:
-    """Ramp directional assistance from zero at 1 km/h to 35% at 5 km/h."""
+    """Ramp downwind assistance from the flight-control reference to 35%."""
     speed_kmh = max(0.0, float(wind_speed_ms)) * 3.6
-    span = CECID_GENTLE_WIND_MAX_KMH - CECID_GENTLE_WIND_MIN_KMH
+    span = CECID_WIND_DIRECTION_FULL_KMH - CECID_GENTLE_WIND_MIN_KMH
     progress = _clamp((speed_kmh - CECID_GENTLE_WIND_MIN_KMH) / span, 0.0, 1.0)
     return CECID_WIND_DIRECTION_MAX_ASSIST * progress
 
@@ -82,7 +106,12 @@ class CecidHabitatEdge:
 
 
 class CecidHabitatNetwork:
-    """Static source/weed/target graph shared by grid and tree modes."""
+    """Static source/weed/tree graph shared by grid and tree modes.
+
+    ``target`` nodes are fruitlet trees that can receive risk and temporarily
+    retain an existing adult cohort. They are movement locations, never new
+    reproductive or soil-emergence sources.
+    """
 
     def __init__(self) -> None:
         self.nodes: Dict[str, CecidHabitatNode] = {}
@@ -90,6 +119,7 @@ class CecidHabitatNetwork:
         self.source_nodes: Dict[Hashable, str] = {}
         self.target_nodes: Dict[Hashable, str] = {}
         self.zone_count = 0
+        self.resolved_habitat_component_count = 0
         self.zone_density_counts = {"sparse": 0, "moderate": 0, "dense": 0}
 
     @staticmethod
@@ -143,6 +173,7 @@ class CecidHabitatNetwork:
             node_id = f"target:{index}"
             network.nodes[node_id] = CecidHabitatNode(node_id, "target", key, x, y)
             network.target_nodes[key] = node_id
+            network.adjacency[node_id] = []
 
         network._add_relay_nodes(zones, local)
         network._connect_nodes()
@@ -152,6 +183,7 @@ class CecidHabitatNetwork:
         if not zones:
             return
         from shapely.geometry import Point, Polygon
+        from shapely.ops import unary_union
 
         zone_geometries = []
         for zone in zones:
@@ -173,13 +205,30 @@ class CecidHabitatNetwork:
         if not zone_geometries:
             return
 
+        # Treat weed habitat as one physical landscape, not as independent
+        # stacked layers.  Sampling each submitted polygon separately leaves
+        # internal overlap boundaries behind and can create extra relay paths
+        # when a user accidentally draws the same habitat twice.  Dissolving
+        # the geometry first makes duplicate/overlapping polygons spatially
+        # idempotent; density at each sample is still the highest covering
+        # zone, matching the documented overlap rule.
+        dissolved = unary_union([polygon for polygon, _density in zone_geometries])
+        if dissolved.is_empty:
+            return
+        dissolved_polygons = (
+            list(dissolved.geoms)
+            if dissolved.geom_type == "MultiPolygon"
+            else [dissolved]
+        )
+        self.resolved_habitat_component_count = len(dissolved_polygons)
+
         spacing = float(CECID_WEED_RELAY_SPACING_M)
         samples: Dict[Tuple[int, int], Tuple[float, float]] = {}
 
         def add_sample(x: float, y: float) -> None:
             samples.setdefault((round(x * 10), round(y * 10)), (float(x), float(y)))
 
-        for polygon, _density in zone_geometries:
+        for polygon in dissolved_polygons:
             min_x, min_y, max_x, max_y = polygon.bounds
             start_x = floor(min_x / spacing) * spacing
             start_y = floor(min_y / spacing) * spacing
@@ -192,12 +241,17 @@ class CecidHabitatNetwork:
                     y += spacing
                 x += spacing
 
-            boundary = polygon.boundary
-            distance = 0.0
-            while distance <= boundary.length + 1e-9:
-                point = boundary.interpolate(distance)
-                add_sample(point.x, point.y)
-                distance += spacing
+            boundary_parts = (
+                list(polygon.boundary.geoms)
+                if hasattr(polygon.boundary, "geoms")
+                else [polygon.boundary]
+            )
+            for boundary in boundary_parts:
+                distance = 0.0
+                while distance <= boundary.length + 1e-9:
+                    point = boundary.interpolate(distance)
+                    add_sample(point.x, point.y)
+                    distance += spacing
             representative = polygon.representative_point()
             add_sample(representative.x, representative.y)
 
@@ -248,7 +302,10 @@ class CecidHabitatNetwork:
             )
             buckets.setdefault(bucket, []).append(destination)
 
-        for origin in [*sources, *relays]:
+        # Tree targets are valid resting/movement locations for the same adult
+        # cohort. Keeping sources out of ``destinations`` prevents a path from
+        # turning another source into a relay or generating a new cohort.
+        for origin in [*sources, *relays, *targets]:
             bucket_x = floor(origin.x / bucket_size)
             bucket_y = floor(origin.y / bucket_size)
             for offset_x in (-1, 0, 1):
@@ -291,6 +348,8 @@ class CecidHabitatTracker:
             "active_source_count": 0,
             "active_cohort_count": 0,
             "active_relay_count": 0,
+            "active_tree_rest_count": 0,
+            "active_mobility_node_count": 0,
             "active_relay_density_counts": {
                 "sparse": 0, "moderate": 0, "dense": 0,
             },
@@ -298,6 +357,7 @@ class CecidHabitatTracker:
             "max_path_efficiency": 0.0,
             "directional_factor_min": 1.0,
             "directional_factor_max": 1.0,
+            "tree_resting_efficiency": CECID_TREE_RESTING_EFFICIENCY,
             "habitat_limiting_reasons": [],
             "weed_effect_assumption": (
                 "Provisional adult shelter, humidity retention, and short-hop relay coefficients; "
@@ -321,62 +381,117 @@ class CecidHabitatTracker:
         target_contributions: Dict[Hashable, list[Dict[str, Any]]] = {}
         directional_factors: list[float] = []
 
+        # Seed each cohort's mobility state exactly once. Source pressure may
+        # remain available while that cohort is alive, but it is never copied
+        # into another reproductive source.
+        for cohort_id, cohort in active_cohorts.items():
+            source_node_id = self.network.source_nodes.get(cohort.get("source"))
+            if source_node_id is None:
+                continue
+            locations = self.relay_state.setdefault(cohort_id, {})
+            locations[source_node_id] = max(locations.get(source_node_id, 0.0), 1.0)
+
         if eligible:
             for cohort_id, cohort in active_cohorts.items():
                 source_key = cohort.get("source")
                 source_node_id = self.network.source_nodes.get(source_key)
                 if source_node_id is None:
                     continue
-                current_relays = self.relay_state.setdefault(cohort_id, {})
-                snapshot = {source_node_id: 1.0, **current_relays}
-                next_relays = dict(current_relays)
+                current_locations = self.relay_state.setdefault(
+                    cohort_id, {source_node_id: 1.0},
+                )
+                snapshot = dict(current_locations)
+                next_locations = dict(current_locations)
                 cohort_targets: Dict[Hashable, Dict[str, Any]] = {}
 
+                def retain_best_target(target_key: Hashable, candidate: Dict[str, Any]) -> None:
+                    previous = cohort_targets.get(target_key)
+                    if (
+                        previous is None
+                        or candidate["path_efficiency"] > previous["path_efficiency"]
+                    ):
+                        cohort_targets[target_key] = candidate
+
                 for node_id, path_efficiency in snapshot.items():
+                    origin = self.network.nodes.get(node_id)
+                    if origin is None:
+                        continue
+
+                    # Adults already resting on a fruitlet tree can continue to
+                    # expose that tree during a later eligible window.
+                    if origin.kind == "target" and origin.key is not None:
+                        retain_best_target(origin.key, {
+                            "cohort_id": cohort_id,
+                            "source": source_key,
+                            "cohort_pressure": float(cohort.get("pressure", 0.0)),
+                            "path_efficiency": float(path_efficiency),
+                            "edge_distance_m": 0.0,
+                            "edge_bearing_deg": 0.0,
+                            "wind_direction_factor": 1.0,
+                            "resident_tree_pressure": True,
+                        })
+
                     for edge in self.network.adjacency.get(node_id, []):
                         destination = self.network.nodes[edge.destination]
-                        directional_factor = cecid_wind_direction_factor(
-                            wind_speed_ms, wind_from_deg, edge.bearing_deg,
+                        directional_factor = (
+                            1.0
+                            if edge.distance_m <= 1e-9
+                            else cecid_wind_direction_factor(
+                                wind_speed_ms, wind_from_deg, edge.bearing_deg,
+                            )
                         )
                         directional_factors.append(directional_factor)
                         transfer = cecid_distance_factor(edge.distance_m)
                         transfer *= directional_factor
                         if destination.kind == "relay":
                             transfer *= destination.relay_efficiency
-                        next_efficiency = path_efficiency * transfer
-                        if next_efficiency <= 0.0:
+                        arrival_efficiency = float(path_efficiency) * transfer
+                        if arrival_efficiency <= 0.0:
                             continue
-                        if destination.kind == "relay":
-                            next_relays[destination.node_id] = max(
-                                next_relays.get(destination.node_id, 0.0),
-                                next_efficiency,
-                            )
-                        elif destination.kind == "target" and destination.key is not None:
+
+                        # Keep the path state bounded so cycles and duplicate
+                        # branches cannot manufacture pressure. Directional
+                        # assistance still affects this hour's target exposure.
+                        retained_efficiency = min(
+                            float(path_efficiency), arrival_efficiency, 1.0,
+                        )
+                        if destination.kind == "target":
+                            retained_efficiency *= CECID_TREE_RESTING_EFFICIENCY
+                        next_locations[destination.node_id] = max(
+                            next_locations.get(destination.node_id, 0.0),
+                            retained_efficiency,
+                        )
+
+                        if destination.kind == "target" and destination.key is not None:
                             candidate = {
                                 "cohort_id": cohort_id,
                                 "source": source_key,
                                 "cohort_pressure": float(cohort.get("pressure", 0.0)),
-                                "path_efficiency": next_efficiency,
+                                "path_efficiency": arrival_efficiency,
                                 "edge_distance_m": edge.distance_m,
                                 "edge_bearing_deg": edge.bearing_deg,
                                 "wind_direction_factor": directional_factor,
+                                "resident_tree_pressure": False,
                             }
-                            existing = cohort_targets.get(destination.key)
-                            if (
-                                existing is None
-                                or candidate["path_efficiency"] > existing["path_efficiency"]
-                            ):
-                                cohort_targets[destination.key] = candidate
-                self.relay_state[cohort_id] = next_relays
+                            retain_best_target(destination.key, candidate)
+                self.relay_state[cohort_id] = next_locations
                 for target_key, contribution in cohort_targets.items():
                     target_contributions.setdefault(target_key, []).append(contribution)
 
         diagnostics = self._empty_diagnostics()
-        active_relay_ids = {
-            relay_id
+        active_location_ids = {
+            node_id
             for state in self.relay_state.values()
-            for relay_id, pressure in state.items()
+            for node_id, pressure in state.items()
             if pressure > 0.0
+        }
+        active_relay_ids = {
+            node_id for node_id in active_location_ids
+            if self.network.nodes[node_id].kind == "relay"
+        }
+        active_tree_ids = {
+            node_id for node_id in active_location_ids
+            if self.network.nodes[node_id].kind == "target"
         }
         active_density_counts = {"sparse": 0, "moderate": 0, "dense": 0}
         for relay_id in active_relay_ids:
@@ -387,8 +502,8 @@ class CecidHabitatTracker:
             limiting_reasons.append("no active adult cohort from a wetted soil source")
         elif eligible and not target_contributions:
             limiting_reasons.append(
-                "adult pressure is retained at weed relays until another eligible hour"
-                if active_relay_ids
+                "adult pressure is retained at reachable tree or weed resting nodes until another eligible hour"
+                if active_relay_ids or active_tree_ids
                 else "no fruitlet tree or weed relay is reachable within the current 15 m habitat hop"
             )
         diagnostics.update({
@@ -397,6 +512,8 @@ class CecidHabitatTracker:
             }),
             "active_cohort_count": len(active_cohorts),
             "active_relay_count": len(active_relay_ids),
+            "active_tree_rest_count": len(active_tree_ids),
+            "active_mobility_node_count": len(active_location_ids),
             "active_relay_density_counts": active_density_counts,
             "reachable_tree_count": len(target_contributions),
             "max_path_efficiency": max(

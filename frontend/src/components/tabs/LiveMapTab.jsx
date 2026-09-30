@@ -111,10 +111,37 @@ const TREE_STATE_LEGEND_ENTRIES = [
   { label: 'Suspect', color: '#9c27b0' },
 ]
 
+const CECID_LIKELIHOOD_LEGEND_ENTRIES = [
+  { label: '75–100% of runs', color: '#b91c1c' },
+  { label: '50–74% of runs', color: '#ef4444' },
+  { label: '25–49% of runs', color: '#f59e0b' },
+  { label: '10–24% of runs', color: '#facc15' },
+  { label: '0–9% of runs', color: '#22c55e' },
+]
+
+const CECID_TREE_STATE_LEGEND_ENTRIES = [
+  { label: 'Fruitlet eligible', color: '#22c55e' },
+  { label: 'Fruit infestation established', color: '#ef4444' },
+  { label: 'Not eligible stage', color: '#6b7280' },
+  { label: 'Soil source (S)', color: '#78350f' },
+  { label: 'Bagged', color: '#3b82f6' },
+]
+
 const ZONE_TYPE_OPTIONS = [
   { value: 'stage', label: 'Stage' },
   { value: 'status', label: 'Status' },
+  { value: 'management', label: 'Management' },
   { value: 'cecid', label: 'Weed Habitat' },
+]
+
+const DRAW_MODE_OPTIONS = [
+  { value: 'polygon', label: 'Point polygon' },
+  { value: 'lasso', label: 'Freehand lasso' },
+]
+
+const EDIT_SCOPE_OPTIONS = [
+  { value: 'scenario', label: 'Scenario only' },
+  { value: 'orchard', label: 'Apply to orchard' },
 ]
 
 const CECID_DENSITY_OPTIONS = [
@@ -133,6 +160,7 @@ export default function LiveMapTab({
   stageZoneDrawing = false,
   stageZoneStage = 'mature',
   stageZoneDraft = [],
+  stageZoneSelectedCount = 0,
   stageOptions = [],
   onStageZoneStageChange,
   onStageZoneStart,
@@ -140,10 +168,12 @@ export default function LiveMapTab({
   onStageZoneFinish,
   onStageZoneUndoPoint,
   onStageZoneMapClick,
+  onStageZoneDraftChange,
   statusZones = [],
   statusZoneDrawing = false,
   statusZoneStatus = 'infected',
   statusZoneDraft = [],
+  statusZoneSelectedCount = 0,
   statusOptions = [],
   onStatusZoneStatusChange,
   onStatusZoneStart,
@@ -151,12 +181,37 @@ export default function LiveMapTab({
   onStatusZoneFinish,
   onStatusZoneUndoPoint,
   onStatusZoneMapClick,
+  onStatusZoneDraftChange,
+  treeEditScope = 'scenario',
+  treeEditSaveState = 'idle',
+  treeEditSaveError = '',
+  onTreeEditScopeChange,
+  managementZones = [],
+  managementZoneDrawing = false,
+  managementZoneLabel = 'Zone 1',
+  managementZoneDraft = [],
+  managementZoneSelectedCount = 0,
+  managementZoneSaveState = 'idle',
+  managementZoneSaveError = '',
+  onManagementZoneLabelChange,
+  onManagementZoneStart,
+  onManagementZoneCancel,
+  onManagementZoneFinish,
+  onManagementZoneUndoPoint,
+  onManagementZoneMapClick,
+  onManagementZoneDraftChange,
+  onManagementZoneUpdate,
+  onManagementZoneRedraw,
+  onManagementZoneDelete,
+  onManagementZoneClear,
+  onManagementZoneRetry,
   cecidWeedZones = [],
   legacyCecidEmergenceZones = [],
   cecidZoneDrawing = false,
   cecidZoneDensity = 'moderate',
   cecidZoneLabel = 'Weed habitat',
   cecidZoneDraft = [],
+  cecidZoneSelectedCount = 0,
   cecidZoneSaveState = 'idle',
   cecidZoneSaveError = '',
   onCecidZoneDensityChange,
@@ -166,12 +221,14 @@ export default function LiveMapTab({
   onCecidZoneFinish,
   onCecidZoneUndoPoint,
   onCecidZoneMapClick,
+  onCecidZoneDraftChange,
   onCecidZoneUpdate,
   onCecidZoneRedraw,
   onCecidZoneDelete,
   onCecidZoneClear,
   onCecidZoneRetry,
   selectedPestType = 'fruitfly',
+  resultPestType = selectedPestType,
   zoneHistory = [],
   onZoneUndoLast,
   onZoneClearAll,
@@ -180,14 +237,20 @@ export default function LiveMapTab({
   viewportKey = 'default',
   fitToOrthophoto = true,
   currentFrame,
+  cecidMapMode = 'representative',
+  cecidEnsembleRuns = 0,
+  onCecidMapModeChange,
   onTreeClick,
 }) {
   const [showGrid, setShowGrid] = useState(false)
   const [showWeedManager, setShowWeedManager] = useState(false)
+  const [showManagementManager, setShowManagementManager] = useState(false)
   const [zoneEditorType, setZoneEditorType] = useState('stage')
+  const [drawMode, setDrawMode] = useState('polygon')
   const [zoneVisibility, setZoneVisibility] = useState({
     stage: true,
     status: true,
+    management: true,
     cecid: selectedPestType === 'cecid',
   })
 
@@ -201,18 +264,27 @@ export default function LiveMapTab({
   const drawingByType = {
     stage: stageZoneDrawing,
     status: statusZoneDrawing,
+    management: managementZoneDrawing,
     cecid: cecidZoneDrawing,
   }
   const draftByType = {
     stage: stageZoneDraft,
     status: statusZoneDraft,
+    management: managementZoneDraft,
     cecid: cecidZoneDraft,
+  }
+  const selectedCountByType = {
+    stage: stageZoneSelectedCount,
+    status: statusZoneSelectedCount,
+    management: managementZoneSelectedCount,
+    cecid: cecidZoneSelectedCount,
   }
   const activeDrawing = Boolean(drawingByType[zoneEditorType])
   const activeDraft = draftByType[zoneEditorType] || []
   const cancelAllDrawings = () => {
     onStageZoneCancel?.()
     onStatusZoneCancel?.()
+    onManagementZoneCancel?.()
     onCecidZoneCancel?.()
   }
   const handleZoneTypeChange = (value) => {
@@ -226,24 +298,37 @@ export default function LiveMapTab({
     }
     if (zoneEditorType === 'stage') onStageZoneStart?.()
     else if (zoneEditorType === 'status') onStatusZoneStart?.()
+    else if (zoneEditorType === 'management') onManagementZoneStart?.()
     else onCecidZoneStart?.()
   }
   const handleZoneUndoPoint = () => {
     if (zoneEditorType === 'stage') onStageZoneUndoPoint?.()
     else if (zoneEditorType === 'status') onStatusZoneUndoPoint?.()
+    else if (zoneEditorType === 'management') onManagementZoneUndoPoint?.()
     else onCecidZoneUndoPoint?.()
   }
   const handleZoneFinish = () => {
     if (zoneEditorType === 'stage') onStageZoneFinish?.()
     else if (zoneEditorType === 'status') onStatusZoneFinish?.()
+    else if (zoneEditorType === 'management') onManagementZoneFinish?.()
     else onCecidZoneFinish?.()
   }
 
-  const titleText = currentFrame != null
-    ? `Hour ${currentFrame.hour} — Spread Animation`
-    : (orchardName ?? null)
+  const titleText = resultPestType === 'cecid'
+    && cecidMapMode === 'likelihood'
+    && cecidEnsembleRuns > 1
+    ? `Cecid infestation likelihood — ${cecidEnsembleRuns} runs`
+    : currentFrame != null
+      ? `Hour ${currentFrame.hour} — Representative realization`
+      : (orchardName ?? null)
 
   const showLegend = geojson != null
+  const riskLegendEntries = resultPestType === 'cecid' && cecidMapMode === 'likelihood'
+    ? CECID_LIKELIHOOD_LEGEND_ENTRIES
+    : RISK_LEGEND_ENTRIES
+  const treeStateLegendEntries = resultPestType === 'cecid'
+    ? CECID_TREE_STATE_LEGEND_ENTRIES
+    : TREE_STATE_LEGEND_ENTRIES
 
   return (
     <div className="operations-map-panel">
@@ -257,6 +342,27 @@ export default function LiveMapTab({
           <i className="bi bi-grid-3x3-gap me-1" />
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
+
+        {resultPestType === 'cecid' && cecidEnsembleRuns > 1 && (
+          <div className="map-result-mode" role="group" aria-label="Cecid result map mode">
+            <button
+              type="button"
+              className={`btn btn-sm ${cecidMapMode === 'likelihood' ? 'btn-success' : 'btn-light'}`}
+              onClick={() => onCecidMapModeChange?.('likelihood')}
+              title="How often each tree established infestation across repeated runs"
+            >
+              Likelihood
+            </button>
+            <button
+              type="button"
+              className={`btn btn-sm ${cecidMapMode === 'representative' ? 'btn-success' : 'btn-light'}`}
+              onClick={() => onCecidMapModeChange?.('representative')}
+              title="The exact seeded run used by playback"
+            >
+              One run
+            </button>
+          </div>
+        )}
 
         <div className="map-zone-tools map-zone-editor" role="group" aria-label="Zone editor">
           <span className="map-zone-editor-label">
@@ -283,6 +389,9 @@ export default function LiveMapTab({
 
           {activeDrawing && (
             <>
+              <div style={{ flexShrink: 0, width: 126 }}>
+                <MpSelect small value={drawMode} onChange={setDrawMode} options={DRAW_MODE_OPTIONS} />
+              </div>
               {zoneEditorType === 'stage' && (
                 <div style={{ flexShrink: 0, width: 118 }}>
                   <MpSelect small value={stageZoneStage} onChange={onStageZoneStageChange} options={stageOptions} />
@@ -292,6 +401,25 @@ export default function LiveMapTab({
                 <div style={{ flexShrink: 0, width: 148 }}>
                   <MpSelect small value={statusZoneStatus} onChange={onStatusZoneStatusChange} options={statusOptions} />
                 </div>
+              )}
+              {(zoneEditorType === 'stage' || zoneEditorType === 'status') && (
+                <div style={{ flexShrink: 0, width: 132 }}>
+                  <MpSelect
+                    small
+                    value={treeEditScope}
+                    onChange={onTreeEditScopeChange}
+                    options={EDIT_SCOPE_OPTIONS}
+                  />
+                </div>
+              )}
+              {zoneEditorType === 'management' && (
+                <input
+                  className="form-control form-control-sm map-cecid-zone-label"
+                  value={managementZoneLabel}
+                  aria-label="Management zone label"
+                  onChange={(event) => onManagementZoneLabelChange?.(event.target.value)}
+                  placeholder="Zone label"
+                />
               )}
               {zoneEditorType === 'cecid' && (
                 <>
@@ -315,6 +443,9 @@ export default function LiveMapTab({
                   </span>
                 </>
               )}
+              <span className="badge text-bg-light map-zone-selection-count">
+                {selectedCountByType[zoneEditorType] || 0} tree{selectedCountByType[zoneEditorType] === 1 ? '' : 's'} selected
+              </span>
               <button
                 type="button"
                 className="btn btn-sm btn-light"
@@ -327,11 +458,14 @@ export default function LiveMapTab({
               <button
                 type="button"
                 className="btn btn-sm btn-success"
-                disabled={activeDraft.length < 3}
+                disabled={activeDraft.length < 3 || (zoneEditorType !== 'cecid' && !selectedCountByType[zoneEditorType])}
                 onClick={handleZoneFinish}
               >
-                Save
+                {zoneEditorType === 'stage' || zoneEditorType === 'status' ? 'Apply' : 'Save'}
               </button>
+              <span className="map-zone-draw-hint">
+                {drawMode === 'lasso' ? 'Hold and drag around trees' : 'Click 3+ boundary points'}
+              </span>
             </>
           )}
 
@@ -350,7 +484,7 @@ export default function LiveMapTab({
                   title={`Toggle ${option.label} zones`}
                 >
                   <i className={`bi ${zoneVisibility[option.value] ? 'bi-eye' : 'bi-eye-slash'} me-1`} />
-                  {option.value === 'cecid' ? 'Weeds' : option.label}
+                  {option.value === 'cecid' ? 'Weeds' : option.value === 'management' ? 'Areas' : option.label}
                 </button>
               ))}
               {zoneEditorType === 'cecid' && (
@@ -363,10 +497,43 @@ export default function LiveMapTab({
                   {cecidWeedZones.length} habitat{cecidWeedZones.length === 1 ? '' : 's'}
                 </button>
               )}
+              {zoneEditorType === 'management' && (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${showManagementManager ? 'btn-success' : 'btn-light'}`}
+                  onClick={() => setShowManagementManager((current) => !current)}
+                >
+                  <i className="bi bi-list-ul me-1" />
+                  {managementZones.length} zone{managementZones.length === 1 ? '' : 's'}
+                </button>
+              )}
             </>
           )}
 
-          {!activeDrawing && cecidZoneSaveState !== 'idle' && (
+          {!activeDrawing && (zoneEditorType === 'stage' || zoneEditorType === 'status') && treeEditSaveState !== 'idle' && (
+            <span
+              className={`badge ${treeEditSaveState === 'error' ? 'text-bg-danger' : treeEditSaveState === 'saved' ? 'text-bg-success' : 'text-bg-light text-dark'}`}
+              title={treeEditSaveError || 'Selected-tree persistence status'}
+            >
+              {treeEditSaveState === 'saving' && <span className="spinner-border spinner-border-sm me-1" />}
+              {treeEditSaveState === 'saving' ? 'Saving trees' : treeEditSaveState === 'saved' ? 'Trees saved' : 'Tree save error'}
+            </span>
+          )}
+
+          {!activeDrawing && zoneEditorType === 'management' && managementZoneSaveState !== 'idle' && (
+            <span
+              className={`badge ${managementZoneSaveState === 'error' ? 'text-bg-danger' : managementZoneSaveState === 'saved' ? 'text-bg-success' : 'text-bg-light text-dark'}`}
+              title={managementZoneSaveError || 'Management-zone persistence status'}
+            >
+              {managementZoneSaveState === 'saving' && <span className="spinner-border spinner-border-sm me-1" />}
+              {managementZoneSaveState === 'saving' ? 'Saving' : managementZoneSaveState === 'saved' ? 'Saved' : 'Save error'}
+            </span>
+          )}
+          {!activeDrawing && zoneEditorType === 'management' && managementZoneSaveState === 'error' && (
+            <button type="button" className="btn btn-sm btn-warning" onClick={onManagementZoneRetry}>Retry</button>
+          )}
+
+          {!activeDrawing && zoneEditorType === 'cecid' && cecidZoneSaveState !== 'idle' && (
             <span
               className={`badge ${cecidZoneSaveState === 'error' ? 'text-bg-danger' : cecidZoneSaveState === 'saved' ? 'text-bg-success' : 'text-bg-light text-dark'}`}
               title={cecidZoneSaveError || 'Weed habitat persistence status'}
@@ -375,7 +542,7 @@ export default function LiveMapTab({
               {cecidZoneSaveState === 'saving' ? 'Saving' : cecidZoneSaveState === 'saved' ? 'Saved' : 'Save error'}
             </span>
           )}
-          {!activeDrawing && cecidZoneSaveState === 'error' && (
+          {!activeDrawing && zoneEditorType === 'cecid' && cecidZoneSaveState === 'error' && (
             <button type="button" className="btn btn-sm btn-warning" onClick={onCecidZoneRetry}>
               Retry
             </button>
@@ -395,6 +562,71 @@ export default function LiveMapTab({
           )}
         </div>
         </div>
+
+        {showManagementManager && zoneEditorType === 'management' && !activeDrawing && (
+          <div className="map-weed-zone-manager map-management-zone-manager">
+            <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+              <div>
+                <div className="fw-bold small"><i className="bi bi-map me-1" />Management zones</div>
+                <div className="text-muted" style={{ fontSize: '.68rem' }}>
+                  Named orchard areas persist until you delete them and are copied into simulation history.
+                </div>
+              </div>
+              {managementZones.length > 0 && (
+                <button type="button" className="btn btn-sm btn-outline-danger" onClick={onManagementZoneClear}>
+                  Clear all
+                </button>
+              )}
+            </div>
+            {managementZones.length === 0 ? (
+              <div className="text-muted small">No named zones saved. Draw Zone 1 to begin.</div>
+            ) : (
+              <div className="d-flex flex-column gap-2">
+                {managementZones.map((zone) => (
+                  <div className="border rounded p-2" key={`${zone.id}-${zone.label}`}>
+                    <div className="d-flex gap-2 align-items-center">
+                      <span
+                        className="management-zone-color"
+                        style={{ backgroundColor: zone.color }}
+                        aria-hidden="true"
+                      />
+                      <input
+                        className="form-control form-control-sm"
+                        defaultValue={zone.label}
+                        aria-label={`Label for ${zone.label}`}
+                        onBlur={(event) => {
+                          const label = event.target.value.trim() || zone.label
+                          if (label !== zone.label) onManagementZoneUpdate?.(zone.id, { label })
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary"
+                        onClick={() => onManagementZoneRedraw?.(zone.id)}
+                      >
+                        Redraw
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-danger"
+                        aria-label={`Delete ${zone.label}`}
+                        onClick={() => onManagementZoneDelete?.(zone.id)}
+                      >
+                        <i className="bi bi-trash" />
+                      </button>
+                    </div>
+                    <div className="text-muted mt-1" style={{ fontSize: '.67rem' }}>
+                      {zone.tree_count ?? 0} tree{zone.tree_count === 1 ? '' : 's'} in this area
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {managementZoneSaveState === 'error' && (
+              <div className="text-danger mt-2" style={{ fontSize: '.69rem' }}>{managementZoneSaveError}</div>
+            )}
+          </div>
+        )}
 
         {showWeedManager && zoneEditorType === 'cecid' && !activeDrawing && (
           <div className="map-weed-zone-manager">
@@ -594,20 +826,31 @@ export default function LiveMapTab({
             stageZoneDrawing={stageZoneDrawing}
             stageZoneDraft={stageZoneDraft}
             onStageZoneMapClick={onStageZoneMapClick}
+            onStageZoneDraftChange={onStageZoneDraftChange}
             statusZones={statusZones}
             statusZoneDrawing={statusZoneDrawing}
             statusZoneDraft={statusZoneDraft}
             onStatusZoneMapClick={onStatusZoneMapClick}
+            onStatusZoneDraftChange={onStatusZoneDraftChange}
+            managementZones={managementZones}
+            managementZoneDrawing={managementZoneDrawing}
+            managementZoneDraft={managementZoneDraft}
+            onManagementZoneMapClick={onManagementZoneMapClick}
+            onManagementZoneDraftChange={onManagementZoneDraftChange}
             cecidWeedZones={cecidWeedZones}
             legacyCecidEmergenceZones={legacyCecidEmergenceZones}
             cecidZoneDrawing={cecidZoneDrawing}
             cecidZoneDraft={cecidZoneDraft}
             onCecidZoneMapClick={onCecidZoneMapClick}
+            onCecidZoneDraftChange={onCecidZoneDraftChange}
+            zoneDrawMode={drawMode}
             zoneVisibility={zoneVisibility}
             orthophotoOverlay={orthophotoOverlay}
             viewportKey={viewportKey}
             fitToOrthophoto={fitToOrthophoto}
             showGridOverlay={showGrid}
+            pestType={resultPestType}
+            cecidMapMode={cecidMapMode}
             onTreeClick={onTreeClick}
           />
         </div>
@@ -617,8 +860,12 @@ export default function LiveMapTab({
             <div className="map-risk-legend-title">Map legend</div>
             <div className="map-risk-legend-columns">
               <div>
-                <div className="map-risk-legend-group-title">Risk level</div>
-                {RISK_LEGEND_ENTRIES.map((entry) => (
+                <div className="map-risk-legend-group-title">
+                  {resultPestType === 'cecid' && cecidMapMode === 'likelihood'
+                    ? 'Across runs'
+                    : 'Risk level'}
+                </div>
+                {riskLegendEntries.map((entry) => (
                   <div key={entry.label} className="map-risk-legend-item">
                     <div className="map-risk-legend-swatch" style={{ background: entry.color }} />
                     {entry.label}
@@ -627,7 +874,7 @@ export default function LiveMapTab({
               </div>
               <div>
                 <div className="map-risk-legend-group-title">Tree state</div>
-                {TREE_STATE_LEGEND_ENTRIES.map((entry) => (
+                {treeStateLegendEntries.map((entry) => (
                   <div key={entry.label} className="map-risk-legend-item">
                     <div className="map-risk-legend-swatch is-tree-state" style={{ background: entry.color }} />
                     {entry.label}

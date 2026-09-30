@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/utils/weatherSchedule.test.js src/utils/cecidWeedZones.test.js src/utils/sidebarWorkspace.test.js src/utils/bundledOrchards.test.js",
+    "test": "node --test src/utils/weatherSchedule.test.js src/utils/cecidWeedZones.test.js src/utils/managementZones.test.js src/utils/sidebarWorkspace.test.js src/utils/bundledOrchards.test.js src/utils/simulationHistoryStore.test.js src/utils/alertSimulation.test.js src/utils/cecidResultSummary.test.js src/utils/cecidMapInterpretation.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -79,8 +79,13 @@ class SimulationResult:
         weather: dict,
         n_infested: int,
         n_new: int,
+        cecid_cumulative_probability: Optional[np.ndarray] = None,
+        cecid_peak_hourly_risk: Optional[np.ndarray] = None,
+        cecid_exposure_hours: Optional[np.ndarray] = None,
+        cecid_local_exposure_hours: Optional[np.ndarray] = None,
+        cecid_external_exposure_hours: Optional[np.ndarray] = None,
     ):
-        self.snapshots.append({
+        snapshot = {
             "timestep":   timestep,
             "datetime":   dt,
             "hour":       hour,
@@ -89,7 +94,16 @@ class SimulationResult:
             "weather":    weather.copy(),
             "n_infested": n_infested,
             "n_new":      n_new,
-        })
+        }
+        if cecid_cumulative_probability is not None:
+            snapshot.update({
+                "cecid_cumulative_probability": cecid_cumulative_probability.copy(),
+                "cecid_peak_hourly_risk": cecid_peak_hourly_risk.copy(),
+                "cecid_exposure_hours": cecid_exposure_hours.copy(),
+                "cecid_local_exposure_hours": cecid_local_exposure_hours.copy(),
+                "cecid_external_exposure_hours": cecid_external_exposure_hours.copy(),
+            })
+        self.snapshots.append(snapshot)
 
     # ── convenience ─────────────────────────────────────────────
     @property
@@ -212,6 +226,16 @@ class SimulationEngine:
             if cecid_habitat_network is not None else None
         )
         self.cecid_habitat_diagnostics: List[Dict] = []
+        shape = self.grid.state.shape
+        self.cecid_cumulative_probability = np.where(
+            self.grid.infested_mask, 1.0, 0.0,
+        ).astype(float)
+        self.cecid_peak_hourly_risk = np.zeros(shape, dtype=float)
+        self.cecid_exposure_hours = np.zeros(shape, dtype=np.int32)
+        self.cecid_local_exposure_hours = np.zeros(shape, dtype=np.int32)
+        self.cecid_external_exposure_hours = np.zeros(shape, dtype=np.int32)
+        self._cecid_local_exposure_mask = np.zeros(shape, dtype=bool)
+        self._cecid_external_exposure_mask = np.zeros(shape, dtype=bool)
         if self.cecid_source_pressures is not None:
             self.cecid_cohort_model = CecidSourceCohortModel(
                 self.cecid_source_pressures,
@@ -321,6 +345,7 @@ class SimulationEngine:
         )
 
         neighbor_total = 0.0
+        external_neighbor_targets = 0
         required_stage = int(gate.REQUIRED_STAGE)
         for target, arrivals in contributions.items():
             target_row, target_col = int(target[0]), int(target[1])
@@ -341,18 +366,54 @@ class SimulationEngine:
                     * path_efficiency
                     * source_factor
                 )
-                neighbor_boost = (
-                    self.grid.get_neighbor_threat(target_row, target_col)
-                    * NEIGHBOR_THREAT_WEIGHT
-                    * self.grid.get_wind_neighbor_factor(weather["wind_dir_deg"])
-                    * float(components["suitability_score"])
-                    * min(1.0, active_pressure)
-                    * min(1.35, path_efficiency)
-                    * source_factor
-                )
-                probability += neighbor_boost
-                neighbor_total += neighbor_boost
+                previous_risk = float(self.grid.risk[target_row, target_col])
                 self.grid.apply_dispersal_probability(target_row, target_col, probability)
+                if float(self.grid.risk[target_row, target_col]) > previous_risk:
+                    self._cecid_local_exposure_mask[target_row, target_col] = True
+
+        # Neighbor pressure represents adults arriving from outside the
+        # orchard. It is therefore independent of whether one of this
+        # orchard's soil-source cohorts has already reached the target. The
+        # local fruitlet/twilight/weather requirements still apply, and this
+        # pressure never creates another soil source.
+        if eligible:
+            wind_neighbor = self.grid.get_wind_neighbor_factor(weather["wind_dir_deg"])
+            for target_row, target_col in np.argwhere(self.grid.susceptible_mask):
+                target_row, target_col = int(target_row), int(target_col)
+                if (
+                    self.stage_grid is not None
+                    and int(self.stage_grid[target_row, target_col]) != required_stage
+                ):
+                    continue
+                threat = self.grid.get_neighbor_threat(target_row, target_col)
+                if threat <= 0.0:
+                    continue
+                probability = (
+                    gate.base_dispersal_prob
+                    * NEIGHBOR_THREAT_WEIGHT
+                    * threat
+                    * wind_neighbor
+                    * float(components["suitability_score"])
+                )
+                probability = max(0.0, min(1.0, probability))
+                if probability <= 0.0:
+                    continue
+                previous_risk = float(self.grid.risk[target_row, target_col])
+                self.grid.apply_dispersal_probability(
+                    target_row, target_col, probability,
+                )
+                if float(self.grid.risk[target_row, target_col]) > previous_risk:
+                    self._cecid_external_exposure_mask[target_row, target_col] = True
+                neighbor_total += probability
+                external_neighbor_targets += 1
+
+        habitat_diagnostics = dict(self.cecid_habitat_tracker.last_diagnostics)
+        if external_neighbor_targets:
+            habitat_diagnostics["habitat_limiting_reasons"] = [
+                reason
+                for reason in habitat_diagnostics.get("habitat_limiting_reasons", [])
+                if "no active adult cohort" not in str(reason)
+            ]
 
         self.cecid_habitat_diagnostics.append({
             "timestep": int(step),
@@ -362,11 +423,38 @@ class SimulationEngine:
             "wind_speed_kmh": float(weather["wind_speed_ms"]) * 3.6,
             "wind_from_deg": float(weather["wind_dir_deg"]),
             "downwind_bearing_deg": (float(weather["wind_dir_deg"]) + 180.0) % 360.0,
+            "wind_activity_score": float(components["wind_activity_score"]),
             "wind_survival_score": float(components["wind_survival_score"]),
             "neighbor_contribution": neighbor_total,
-            **self.cecid_habitat_tracker.last_diagnostics,
+            "external_neighbor_contribution": neighbor_total,
+            "external_neighbor_exposed_tree_count": external_neighbor_targets,
+            **habitat_diagnostics,
         })
         return True
+
+    def _record_cecid_exposure(self) -> None:
+        """Accumulate explanation-only exposure metrics before each random draw."""
+        if self.cecid_source_pressures is None:
+            return
+        susceptible = self.grid.susceptible_mask
+        exposed = susceptible & (self.grid.risk > 0.0)
+        if not np.any(exposed):
+            return
+        hourly = np.clip(self.grid.risk, 0.0, 1.0)
+        self.cecid_cumulative_probability[exposed] = 1.0 - (
+            (1.0 - self.cecid_cumulative_probability[exposed])
+            * (1.0 - hourly[exposed])
+        )
+        np.maximum(
+            self.cecid_peak_hourly_risk,
+            np.where(exposed, hourly, 0.0),
+            out=self.cecid_peak_hourly_risk,
+        )
+        self.cecid_exposure_hours[exposed] += 1
+        self.cecid_local_exposure_hours[exposed & self._cecid_local_exposure_mask] += 1
+        self.cecid_external_exposure_hours[
+            exposed & self._cecid_external_exposure_mask
+        ] += 1
 
     @property
     def cecid_cohort_events(self) -> List[Dict]:
@@ -394,6 +482,8 @@ class SimulationEngine:
         max_risk = np.zeros_like(self.grid.risk)
 
         for step in iterator:
+            self._cecid_local_exposure_mask.fill(False)
+            self._cecid_external_exposure_mask.fill(False)
             w = self.weather.at(step)
             
             # Get current rainfall and update rolling history
@@ -465,6 +555,14 @@ class SimulationEngine:
                 weather=w,
                 n_infested=n_infested,
                 n_new=n_new,
+                cecid_cumulative_probability=(
+                    self.cecid_cumulative_probability
+                    if self.cecid_source_pressures is not None else None
+                ),
+                cecid_peak_hourly_risk=self.cecid_peak_hourly_risk,
+                cecid_exposure_hours=self.cecid_exposure_hours,
+                cecid_local_exposure_hours=self.cecid_local_exposure_hours,
+                cecid_external_exposure_hours=self.cecid_external_exposure_hours,
             )
 
             # — reset risk accumulator for next timestep —
@@ -528,6 +626,9 @@ class SimulationEngine:
                         orchard_stage=self.orchard_stage,
                         sugar_index=self.sugar_index,
                     )
+
+            # Output-only explanation metrics; this does not alter the draw.
+            self._record_cecid_exposure()
 
             if self.transition_mode == "stochastic":
                 self.grid.stochastic_transition()

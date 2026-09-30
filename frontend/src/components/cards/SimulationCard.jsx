@@ -6,6 +6,11 @@ import {
   normalizeAdvancedBlocks,
   summarizeWeatherBlocks,
 } from '../../utils/weatherSchedule'
+import {
+  buildReplayableSimulationRequest,
+  CURRENT_SIMULATION_MODEL_VERSION,
+} from '../../utils/simulationHistoryStore'
+import { summarizeCecidResult } from '../../utils/cecidResultSummary'
 
 const STAGE_OPTIONS = [
   { label: 'Dormant', value: 'dormant' },
@@ -74,6 +79,23 @@ function manualWeatherPayload(weather) {
     wind_dir_deg: Number(weather.wind_dir_deg ?? weather.wind_direction_deg ?? 90),
     rainfall_mm: Number(weather.rainfall_mm ?? 0),
   }
+}
+
+function persistedTreeProperties(geojson) {
+  const status = {}
+  const stage = {}
+  for (const feature of geojson?.features || []) {
+    if (feature?.geometry?.type !== 'Point') continue
+    const properties = feature.properties || {}
+    const treeId = properties.tree_id ?? properties.Tree_ID ?? properties.fid ?? feature.id
+    if (treeId == null) continue
+    const key = String(treeId)
+    const savedStatus = properties.status ?? properties.Status
+    const savedStage = properties.stage ?? properties.Stage ?? properties.phenological_stage
+    if (savedStatus) status[key] = String(savedStatus).toLowerCase().replace(/\s+/g, '_')
+    if (savedStage) stage[key] = String(savedStage).toLowerCase().replace(/\s+/g, '_')
+  }
+  return { status, stage }
 }
 
 function treatmentApplicationPayload(type, efficacy) {
@@ -183,15 +205,32 @@ function Slider({ id, label, iconName, min, max, step, value, marks, onChange })
   )
 }
 
-function CecidTimelineResult({ diagnostics }) {
+function CecidTimelineResult({ diagnostics, resultSummary }) {
   if (!Array.isArray(diagnostics) || !diagnostics.length) return null
 
   const favorableHours = diagnostics.filter((entry) => entry.status === 'favorable' || entry.favorable)
   const limitedHours = diagnostics.filter((entry) => entry.status === 'limited')
   const reachableHours = diagnostics.filter((entry) => Number(entry.reachable_tree_count ?? 0) > 0)
   const maxRelays = Math.max(0, ...diagnostics.map((entry) => Number(entry.active_relay_count ?? 0)))
+  const maxTreeRests = Math.max(0, ...diagnostics.map((entry) => Number(entry.active_tree_rest_count ?? 0)))
   return (
     <div className="border rounded p-2 mt-2" style={{ fontSize: '.78rem' }}>
+      {resultSummary && (
+        <div className="alert alert-primary py-2 px-2 mb-2">
+          <strong>{resultSummary.establishedTreeCount}</strong> established infestation{resultSummary.establishedTreeCount === 1 ? '' : 's'}
+          {resultSummary.eligibleTreeCount > 0 && (
+            <> among <strong>{resultSummary.eligibleTreeCount}</strong> fruitlet trees ({(resultSummary.establishedEligibleRate * 100).toFixed(1)}%)</>
+          )}.
+          {resultSummary.reachableTreeCount > 0 && (
+            <> Adult pressure reached up to <strong>{resultSummary.reachableTreeCount}</strong> fruitlet trees; reach is not the same as established infestation.</>
+          )}
+          {Number(resultSummary.uncertainty?.runs ?? 0) > 1 && (
+            <small className="d-block mt-1">
+              {resultSummary.uncertainty.runs}-run scenario range: <strong>{resultSummary.uncertainty.minimum}–{resultSummary.uncertainty.maximum}</strong>, median <strong>{Math.round(resultSummary.uncertainty.median)}</strong>. The displayed map is the fixed-seed realization, not a calibrated confidence interval.
+            </small>
+          )}
+        </div>
+      )}
       <div className="d-flex align-items-center justify-content-between mb-1">
         <strong><i className="bi bi-activity me-1" />Cecid gate timeline</strong>
         <span className={`badge ${favorableHours.length ? 'text-bg-success' : 'text-bg-secondary'}`}>
@@ -202,16 +241,17 @@ function CecidTimelineResult({ diagnostics }) {
         {favorableHours.length
           ? <>Favorable hours: {favorableHours.map((entry) => `${entry.step} (${String(entry.hour_of_day).padStart(2, '0')}:00)`).join(', ')}</>
           : 'No hour reached favorable Cecid suitability in this run.'}
-        {limitedHours.length > 0 && <> Â· {limitedHours.length} twilight hour{limitedHours.length === 1 ? '' : 's'} limited by weather</>}
-        {reachableHours.length > 0 && <> Â· trees reachable in {reachableHours.length} hour{reachableHours.length === 1 ? '' : 's'}</>}
-        {maxRelays > 0 && <> Â· up to {maxRelays} active weed relay{maxRelays === 1 ? '' : 's'}</>}
+        {limitedHours.length > 0 && <> · {limitedHours.length} twilight hour{limitedHours.length === 1 ? '' : 's'} limited by weather</>}
+        {reachableHours.length > 0 && <> · trees reachable in {reachableHours.length} hour{reachableHours.length === 1 ? '' : 's'}</>}
+        {maxRelays > 0 && <> · up to {maxRelays} active weed relay{maxRelays === 1 ? '' : 's'}</>}
+        {maxTreeRests > 0 && <> · adult pressure resting at up to {maxTreeRests} tree{maxTreeRests === 1 ? '' : 's'}</>}
       </div>
       <details>
         <summary className="text-primary" style={{ cursor: 'pointer' }}>Show hourly gate details</summary>
         <div className="table-responsive mt-1" style={{ maxHeight: 220 }}>
           <table className="table table-sm mb-0" style={{ fontSize: '.7rem' }}>
             <thead>
-              <tr><th>Hour</th><th>Local</th><th>Rain</th><th>Soil</th><th>Wind</th><th>Sources / cohorts / relays</th><th>Trees</th><th>Neighbor</th><th>Score</th><th>Status</th></tr>
+              <tr><th>Hour</th><th>Local</th><th>Rain</th><th>Soil</th><th>Wind</th><th>Sources / cohorts / weeds / trees</th><th>Reachable</th><th>Neighbor</th><th>Score</th><th>Status</th></tr>
             </thead>
             <tbody>
               {diagnostics.map((entry) => (
@@ -223,9 +263,10 @@ function CecidTimelineResult({ diagnostics }) {
                   <td title={`Downwind ${Math.round(Number(entry.downwind_bearing_deg ?? 0))}°; edge direction factor ${Number(entry.directional_factor_min ?? 1).toFixed(2)}–${Number(entry.directional_factor_max ?? 1).toFixed(2)}`}>
                     {Number(entry.wind_speed_ms ?? 0).toFixed(1)} m/s
                     <br />{Number(entry.wind_speed_kmh ?? 0).toFixed(1)} km/h
+                    <br />Activity {Math.round(Number(entry.wind_activity_score ?? entry.wind_survival_score ?? entry.wind_score ?? 1) * 100)}%
                   </td>
                   <td title={JSON.stringify(entry.active_relay_density_counts ?? {})}>
-                    {Number(entry.active_source_count ?? 0)} / {Number(entry.active_cohort_count ?? 0)} / {Number(entry.active_relay_count ?? 0)}
+                    {Number(entry.active_source_count ?? 0)} / {Number(entry.active_cohort_count ?? 0)} / {Number(entry.active_relay_count ?? 0)} / {Number(entry.active_tree_rest_count ?? 0)}
                   </td>
                   <td>{Number(entry.reachable_tree_count ?? 0)}</td>
                   <td>{Number(entry.neighbor_contribution ?? 0).toFixed(3)}</td>
@@ -247,8 +288,10 @@ export default function SimulationCard({
   orchardGeojson,
   orchardId,
   treeOverrides,
+  statusZones,
   treeStageOverrides,
   phenologyZones,
+  managementZones,
   cecidWeedZones,
   legacyCecidEmergenceZones,
   onPestTypeChange,
@@ -281,6 +324,20 @@ export default function SimulationCard({
   const [status, setStatus] = useState(null)
   const [prefixRain, setPrefixRain] = useState(null)
   const [gateDiagnostics, setGateDiagnostics] = useState([])
+  const [cecidResultSummary, setCecidResultSummary] = useState(null)
+  const [fixedRandomSeed, setFixedRandomSeed] = useState(null)
+  const persistedTreeState = useMemo(
+    () => persistedTreeProperties(orchardGeojson),
+    [orchardGeojson],
+  )
+  const resolvedTreeOverrides = useMemo(
+    () => ({ ...persistedTreeState.status, ...(treeOverrides || {}) }),
+    [persistedTreeState.status, treeOverrides],
+  )
+  const resolvedTreeStageOverrides = useMemo(
+    () => ({ ...persistedTreeState.stage, ...(treeStageOverrides || {}) }),
+    [persistedTreeState.stage, treeStageOverrides],
+  )
 
   useEffect(() => {
     onPestTypeChange?.(pestType)
@@ -291,6 +348,7 @@ export default function SimulationCard({
   const [useObsSeeds, setUseObsSeeds] = useState(false)
   const [obsLookbackDays, setObsLookbackDays] = useState(30)
   const [sensitivity, setSensitivity] = useState('standard')
+  const [cecidUncertaintyRuns, setCecidUncertaintyRuns] = useState('5')
 
   const timelineActive = Boolean(weatherOverrideActive && weatherTimeline?.enabled)
   const timelineHours = Number.parseInt(simHours, 10)
@@ -347,6 +405,12 @@ export default function SimulationCard({
     if (suggestedParams.days_since_flowering != null) setDaysFlowering(suggestedParams.days_since_flowering)
     if (suggestedParams.neighbor_threat != null) setNeighborThreat(suggestedParams.neighbor_threat)
     setPrefixRain(suggestedParams.manual_weather_prefix_rain ?? null)
+    if (suggestedParams.weather_mode === 'live') {
+      setStatus({
+        type: 'info',
+        msg: 'Live forecast controls are ready. No simulation has run yet.',
+      })
+    }
   }, [suggestedParams])
 
   useEffect(() => {
@@ -371,7 +435,12 @@ export default function SimulationCard({
     if (loadedParams.neighbor_direction) setNeighborDir(loadedParams.neighbor_direction)
     if (loadedParams.hours != null) setSimHours(String(loadedParams.hours))
     if (loadedParams.manual_weather_prefix_rain != null) setPrefixRain(loadedParams.manual_weather_prefix_rain)
-
+    const restoredSeed = Number(loadedParams.random_seed)
+    setFixedRandomSeed(
+      loadedParams.random_seed != null && Number.isInteger(restoredSeed)
+        ? restoredSeed
+        : null,
+    )
     setTreatmentEnabled(Boolean(firstTreatment))
     if (firstTreatment?.treatment_type) setTreatmentType(firstTreatment.treatment_type)
     if (firstTreatment) {
@@ -389,9 +458,27 @@ export default function SimulationCard({
     if (loadedParams.observations_lookback_days != null) {
       setObsLookbackDays(Number(loadedParams.observations_lookback_days))
     }
+    if (loadedParams.cecid_uncertainty_runs != null) {
+      setCecidUncertaintyRuns(String(loadedParams.cecid_uncertainty_runs))
+    } else if (dashboardState.cecid_uncertainty_runs != null) {
+      setCecidUncertaintyRuns(String(dashboardState.cecid_uncertainty_runs))
+    }
     if (dashboardState.sensitivity) setSensitivity(dashboardState.sensitivity)
 
-    setStatus({ type: 'info', msg: 'Loaded saved simulation parameters into the controls.' })
+    const savedModelVersion = dashboardState.simulation_model_version
+    if (!savedModelVersion) {
+      setStatus({
+        type: 'warning',
+        msg: 'Legacy template loaded with its original seed. It predates model-version tracking, so the current Cecid engine may not reproduce the historical total.',
+      })
+    } else if (savedModelVersion !== CURRENT_SIMULATION_MODEL_VERSION) {
+      setStatus({
+        type: 'warning',
+        msg: `Template model ${savedModelVersion} differs from current model ${CURRENT_SIMULATION_MODEL_VERSION}; its original result may differ when rerun.`,
+      })
+    } else {
+      setStatus({ type: 'info', msg: 'Loaded saved parameters, fixed seed, and matching model version into the controls.' })
+    }
   }, [loadedParams])
 
   const setImpactField = (k, v) => setImpact((p) => ({ ...p, [k]: v }))
@@ -399,6 +486,7 @@ export default function SimulationCard({
   const handleRun = async () => {
     setRunning(true)
     setGateDiagnostics([])
+    setCecidResultSummary(null)
     setStatus({ type: 'info', msg: 'Simulation in progress…' })
     try {
       const parsedHours = Number.parseInt(simHours, 10)
@@ -413,7 +501,7 @@ export default function SimulationCard({
         treatment_applications: treatmentEnabled
           ? treatmentApplicationPayload(treatmentType, treatmentEfficacy)
           : [],
-        random_seed: null,
+        random_seed: fixedRandomSeed,
         risk_threshold: 0.7,
         orchard_stage: orchardStage,
         days_since_flowering: daysFlowering,
@@ -432,11 +520,21 @@ export default function SimulationCard({
           weather_timeline: timelineActive ? weatherTimeline : null,
           impact_assumptions: impact,
           phenology_zones: phenologyZones ?? [],
+          status_zones: statusZones ?? [],
+          management_zones: managementZones ?? [],
           cecid_weed_zones: cecidWeedZones ?? [],
           cecid_emergence_zones: legacyCecidEmergenceZones ?? [],
+          cecid_uncertainty_runs: Number(cecidUncertaintyRuns),
         },
       }
+      body.management_zones = (managementZones ?? []).map((zone) => ({
+        id: zone.id,
+        label: zone.label,
+        color: zone.color,
+        coordinates: zone.coordinates,
+      }))
       if (pestType === 'cecid') {
+        body.cecid_uncertainty_runs = Number(cecidUncertaintyRuns)
         body.cecid_weed_zones = (cecidWeedZones ?? []).map((zone) => ({
           id: zone.id,
           label: zone.label,
@@ -458,8 +556,8 @@ export default function SimulationCard({
         body.neighbor_direction = neighborDir
       }
 
-      if (treeStageOverrides && Object.keys(treeStageOverrides).length > 0) {
-        body.tree_stage_overrides = treeStageOverrides
+      if (Object.keys(resolvedTreeStageOverrides).length > 0) {
+        body.tree_stage_overrides = resolvedTreeStageOverrides
       }
 
       if (weatherOverrideActive) {
@@ -490,8 +588,8 @@ export default function SimulationCard({
         }
       }
 
-      if (treeOverrides && Object.keys(treeOverrides).length > 0) {
-        body.tree_overrides = treeOverrides
+      if (Object.keys(resolvedTreeOverrides).length > 0) {
+        body.tree_overrides = resolvedTreeOverrides
       }
 
       // Calibration overrides
@@ -509,22 +607,55 @@ export default function SimulationCard({
 
       const res = await api.runSimulation(body)
       setGateDiagnostics(res.data.gate_diagnostics ?? [])
+      const cecidSummary = pestType === 'cecid'
+        ? summarizeCecidResult(res.data)
+        : null
+      setCecidResultSummary(cecidSummary)
       const peakPct = res.data.peak_risk != null ? `${(res.data.peak_risk * 100).toFixed(0)}%` : '—'
       const nInfested = res.data.n_infested_final ?? 0
       const weatherSrc = timelineActive
         ? 'weather timeline'
         : weatherOverrideActive ? 'manual weather' : 'live forecast'
-      const seedNote = useObsSeeds ? 'field observations' : 'auto seed'
+      const seedNote = useObsSeeds
+        ? 'field observations'
+        : pestType === 'cecid' ? 'automatic 1–3 source fallback if needed' : 'auto seed'
       const sensitivityLabel = SENSITIVITY_PRESETS[sensitivity]?.label ?? 'Standard'
+      const initialInfestedCount = Number(res.data.metadata?.initial_infected_count ?? 0)
+      const actualSourceCount = Number(res.data.metadata?.cecid_source_count ?? 0)
+      const newlyAffectedCount = Number(
+        res.data.metadata?.n_newly_infested
+        ?? Math.max(0, Number(nInfested) - initialInfestedCount),
+      )
+      const eligibleTreeCount = Number(res.data.metadata?.tg_eligible_tree_count)
+      const reachableTreeCount = Number(res.data.metadata?.tg_source_reachable_tree_count)
+      const reachabilityNote = (
+        pestType === 'fruitfly'
+        && Number.isFinite(eligibleTreeCount)
+        && Number.isFinite(reachableTreeCount)
+        && eligibleTreeCount > 0
+        && reachableTreeCount < eligibleTreeCount
+      )
+        ? ` · spatial reach ${reachableTreeCount}/${eligibleTreeCount} mature trees`
+        : ''
+      const cecidInterpretation = cecidSummary?.eligibleTreeCount > 0
+        ? ` · ${cecidSummary.establishedTreeCount}/${cecidSummary.eligibleTreeCount} fruitlet trees established (${(cecidSummary.establishedEligibleRate * 100).toFixed(1)}%)${cecidSummary.reachableTreeCount > 0 ? ` · adult pressure reached ${cecidSummary.reachableTreeCount}` : ''}`
+        : ''
+      const uncertainty = cecidSummary?.uncertainty
+      const uncertaintyNote = Number(uncertainty?.runs ?? 0) > 1
+        ? ` · ${uncertainty.runs}-run range ${uncertainty.minimum}–${uncertainty.maximum} (median ${Math.round(uncertainty.median)})`
+        : ''
       setStatus({
         type: 'success',
-        msg: `Done — peak risk: ${peakPct}, ${nInfested} infested · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
+        msg: pestType === 'cecid'
+          ? `Done — peak risk: ${peakPct}, ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${cecidInterpretation}${uncertaintyNote} · ${actualSourceCount} soil source anchor${actualSourceCount === 1 ? '' : 's'} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`
+          : `Done — peak risk: ${peakPct}, ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${reachabilityNote} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
       })
+      const replayableRequest = buildReplayableSimulationRequest(body, res.data)
       onSimulationComplete?.({
         ...res.data,
         impact_assumptions: impact,
-        request_payload: body,
-        input_parameters: body,
+        request_payload: replayableRequest,
+        input_parameters: replayableRequest,
       })
     } catch (err) {
       const msg = apiErrorMessage(err, 'Simulation failed.')
@@ -539,15 +670,24 @@ export default function SimulationCard({
     onClearSuggested?.()
   }
 
+  const suggestedSummary = suggestedParams?._forecast_summary ?? suggestedParams?._rain_summary
+
   return (
     <CollapsibleCard iconName="cpu" title="Simulation" embedded={embedded}>
-      {suggestedParams?._rain_summary && (
+      {suggestedSummary && (
         <div
           className="alert alert-primary py-2 px-2 mb-2 d-flex align-items-start gap-2"
           style={{ fontSize: '.78rem' }}
         >
-          <i className="bi bi-cloud-rain-fill flex-shrink-0 mt-1" />
-          <span className="flex-grow-1">{suggestedParams._rain_summary}</span>
+          <i className="bi bi-cloud-sun-fill flex-shrink-0 mt-1" />
+          <span className="flex-grow-1">
+            {suggestedSummary}
+            {suggestedParams?.weather_mode === 'live' && (
+              <small className="d-block mt-1 fw-semibold">
+                Live weather is selected. The simulation starts only when you press Run Simulation.
+              </small>
+            )}
+          </span>
           <button
             type="button"
             className="btn-close flex-shrink-0"
@@ -630,6 +770,31 @@ export default function SimulationCard({
         </div>
       )}
 
+      {pestType === 'cecid' && (
+        <>
+          <div className="alert alert-info py-1 px-2 mt-2 mb-2" style={{ fontSize: '.76rem' }}>
+            <i className="bi bi-geo-alt me-1" />
+            If no observed or selected Cecid source exists, each realization assumes 1–3 seeded soil anchors. They are shown on the map but do not start as infected fruit.
+          </div>
+          <label className="small fw-medium mb-1 d-block">
+            <i className="bi bi-dice-5 me-1" />Unknown-source uncertainty
+          </label>
+          <BtnGroup
+            value={cecidUncertaintyRuns}
+            onChange={setCecidUncertaintyRuns}
+            small
+            options={[
+              { value: '1', label: 'Single run' },
+              { value: '5', label: '5 runs' },
+              { value: '9', label: '9 runs' },
+            ]}
+          />
+          <small className="text-muted d-block mt-1 mb-2">
+            Five runs is recommended when source locations are unknown. The displayed map remains one reproducible realization; the result also reports the scenario range.
+          </small>
+        </>
+      )}
+
       <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" />
       <Slider id="neighbor-threat" label="Threat Level" iconName="bar-chart-steps"
         min={0} max={1} step={0.1} value={neighborThreat}
@@ -638,7 +803,10 @@ export default function SimulationCard({
       />
       {neighborThreat > 0 && (
         <div className="mb-1">
-          <label className="small fw-medium mb-1 d-block"><i className="bi bi-compass me-1" />Neighbor Direction</label>
+          <label className="small fw-medium mb-1 d-block">
+            <i className="bi bi-compass me-1" />
+            {pestType === 'cecid' ? 'Outside Source Direction' : 'Neighbor Direction'}
+          </label>
           <div className="sim-btn-group sim-btn-group-sm">
             {DIR_OPTIONS.map((o) => (
               <button key={o.value} type="button"
@@ -652,7 +820,7 @@ export default function SimulationCard({
       )}
       <small className="text-muted d-block mb-0">
         {pestType === 'cecid'
-          ? 'Adds risk only when a live soil-source cohort can reach a fruitlet tree during an eligible dawn/dusk hour.'
+          ? 'Optional, uncalibrated proxy for adults arriving from a nearby unmanaged orchard. Direction means where that source lies relative to this orchard. Use only with field evidence; it obeys fruitlet and dawn/dusk conditions and never creates a soil source.'
           : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
       </small>
 
@@ -842,7 +1010,17 @@ export default function SimulationCard({
       )}
 
       {pestType === 'cecid' && (
-        <CecidTimelineResult diagnostics={gateDiagnostics} />
+        <CecidTimelineResult diagnostics={gateDiagnostics} resultSummary={cecidResultSummary} />
+      )}
+      {fixedRandomSeed != null && (
+        <div className="alert alert-info py-2 px-2 mt-2 mb-0 d-flex align-items-center gap-2" data-testid="fixed-simulation-seed" style={{ fontSize: '.76rem' }}>
+          <span className="flex-grow-1">
+            <i className="bi bi-lock-fill me-1" />Fixed seed <strong>{fixedRandomSeed}</strong> keeps this saved run reproducible.
+          </span>
+          <button type="button" className="btn btn-sm btn-outline-primary py-0" onClick={() => setFixedRandomSeed(null)}>
+            New random seed
+          </button>
+        </div>
       )}
       <div className="simulation-action-footer">
       <hr className="mt-3 mb-2" />

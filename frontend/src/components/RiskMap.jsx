@@ -6,6 +6,8 @@ import {
   GUIMARAS_WONDERS_FARM_ID,
   GUIMARAS_WONDERS_FARM_OVERLAY_COORDINATES,
 } from '../utils/bundledOrchards'
+import { simplifyLassoCoordinates } from '../utils/zoneSelection'
+import { interpretCecidTree } from '../utils/cecidMapInterpretation'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
@@ -214,6 +216,48 @@ const STATUS_DRAFT_VERTEX_LAYER = {
   },
 }
 
+const MANAGEMENT_ZONE_FILL_LAYER = {
+  id: 'management-zones-fill',
+  type: 'fill',
+  source: 'management-zones-src',
+  paint: {
+    'fill-color': ['coalesce', ['get', 'color'], '#2563eb'],
+    'fill-opacity': 0.13,
+  },
+}
+
+const MANAGEMENT_ZONE_LINE_LAYER = {
+  id: 'management-zones-line',
+  type: 'line',
+  source: 'management-zones-src',
+  paint: {
+    'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
+    'line-width': 3,
+    'line-opacity': 0.95,
+  },
+}
+
+const MANAGEMENT_DRAFT_LINE_LAYER = {
+  id: 'management-zone-draft-line',
+  type: 'line',
+  source: 'management-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'LineString'],
+  paint: { 'line-color': '#2563eb', 'line-width': 2, 'line-dasharray': [2, 1] },
+}
+
+const MANAGEMENT_DRAFT_VERTEX_LAYER = {
+  id: 'management-zone-draft-vertices',
+  type: 'circle',
+  source: 'management-zone-draft-src',
+  filter: ['==', ['geometry-type'], 'Point'],
+  paint: {
+    'circle-radius': 5,
+    'circle-color': '#ffffff',
+    'circle-stroke-color': '#2563eb',
+    'circle-stroke-width': 2,
+  },
+}
+
 const CECID_ZONE_FILL_LAYER = {
   id: 'cecid-zones-fill',
   type: 'fill',
@@ -380,7 +424,13 @@ function geometryCenter(geometry) {
   return null
 }
 
-function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
+function normalizePoints(
+  geojson,
+  treeOverrides = {},
+  stageOverrides = {},
+  pestType = 'fruitfly',
+  cecidMapMode = 'representative',
+) {
   const features = Array.isArray(geojson?.features) ? geojson.features : []
 
   return features
@@ -403,11 +453,18 @@ function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
       const crown = Number.parseFloat(props.crown_size ?? props.Crown_Width ?? 5)
       const riskValue = Number(props.risk)
       const risk = Number.isFinite(riskValue) ? riskValue : null
+      const isCecid = pestType === 'cecid'
+      const cecid = isCecid
+        ? interpretCecidTree({ ...props, stage, state: status }, cecidMapMode)
+        : null
+      const displayRisk = cecid?.displayRisk ?? risk
       // Dead/bagged trees always show their status color — never a risk heat color
       const isStatusColored = overrideStatus != null || status === 'dead' || status === 'bagged'
-      const color = isStatusColored
-        ? (GIS_STATUS_COLORS[status] ?? GIS_STATUS_COLORS.healthy)
-        : (riskColor(risk) ?? GIS_STATUS_COLORS[status] ?? GIS_STATUS_COLORS.healthy)
+      const color = isCecid && cecid?.eligible === false && !isStatusColored
+        ? '#6b7280'
+        : isStatusColored
+          ? (GIS_STATUS_COLORS[status] ?? GIS_STATUS_COLORS.healthy)
+          : (riskColor(displayRisk) ?? GIS_STATUS_COLORS[status] ?? GIS_STATUS_COLORS.healthy)
 
       return {
         tree_id: treeId,
@@ -415,6 +472,7 @@ function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
         lon,
         lat,
         risk,
+        display_risk: displayRisk,
         crown: Number.isFinite(crown) ? crown : 5,
         color,
         stage,
@@ -423,6 +481,8 @@ function normalizePoints(geojson, treeOverrides = {}, stageOverrides = {}) {
         cecid_source_pressure: Number(props.cecid_source_pressure || 0),
         cecid_source_assumed: Boolean(props.cecid_source_assumed),
         cecid_source_label: props.cecid_source_label || null,
+        is_cecid: isCecid,
+        cecid,
       }
     })
     .filter(Boolean)
@@ -462,6 +522,35 @@ function markerPopupHtml(point) {
       + (point.cecid_source_assumed ? '<br /><em>Assumed fallback source</em>' : '')
     : ''
 
+  if (point.is_cecid && point.cecid) {
+    const cecid = point.cecid
+    const eligibility = cecid.eligible === true
+      ? 'Eligible fruitlet'
+      : cecid.eligible === false ? 'Not eligible' : 'Eligibility unknown'
+    const frequencyLine = cecid.hasEnsemble
+      ? `<br /><strong>Repeated-run frequency:</strong> ${(cecid.ensembleFrequency * 100).toFixed(0)}% (${cecid.ensembleCount}/${cecid.ensembleRuns})`
+      : ''
+    const cumulativeLine = cecid.cumulativeProbability == null
+      ? ''
+      : `<br /><strong>Representative cumulative chance:</strong> ${(cecid.cumulativeProbability * 100).toFixed(1)}%`
+    const peakLine = cecid.peakHourlyRisk == null
+      ? ''
+      : `<br />Highest eligible-hour chance: ${(cecid.peakHourlyRisk * 100).toFixed(1)}%`
+
+    return `
+      <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
+      <strong>${escapeHtml(cecid.outcomeLabel)}</strong><br />
+      Stage: ${escapeHtml(String(point.stage ?? 'unknown'))} · ${escapeHtml(eligibility)}
+      ${frequencyLine}
+      ${cumulativeLine}
+      ${peakLine}<br />
+      Exposure hours: ${cecid.exposureHours} (${cecid.localExposureHours} local, ${cecid.externalExposureHours} outside)<br />
+      Route: ${escapeHtml(cecid.exposureRouteLabel)}<br />
+      <strong>Why this tree?</strong> ${escapeHtml(cecid.explanation)}
+      ${sourceLine}
+    `
+  }
+
   return `
     <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
     Status: ${escapeHtml(label)}<br />
@@ -485,8 +574,12 @@ function makeTreeMarker(point) {
     el.style.setProperty('--stage-color', point.stage_color)
   }
 
-  if (point.risk != null && point.risk >= 0.5) {
+  if (point.display_risk != null && point.display_risk >= 0.5) {
     el.classList.add('map-tree-marker-risk')
+  }
+
+  if (point.is_cecid && point.cecid?.eligible === false) {
+    el.classList.add('map-tree-marker-ineligible')
   }
 
   if (point.cecid_source) {
@@ -594,6 +687,28 @@ function statusZoneGeojson(zones) {
   }
 }
 
+function managementZoneGeojson(zones) {
+  return {
+    type: 'FeatureCollection',
+    features: (zones || [])
+      .map((zone) => {
+        const ring = closedRing(zone.coordinates)
+        if (ring.length < 4) return null
+        return {
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [ring] },
+          properties: {
+            id: zone.id,
+            label: zone.label,
+            color: zone.color || '#2563eb',
+            tree_count: zone.tree_count ?? 0,
+          },
+        }
+      })
+      .filter(Boolean),
+  }
+}
+
 function cecidZoneGeojson(weedZones, legacyZones) {
   const weedFeatures = (weedZones || [])
     .map((zone) => {
@@ -680,6 +795,20 @@ function ensureStatusZoneLayers(map) {
   }
   if (!map.getLayer('status-zone-draft-line')) map.addLayer(STATUS_DRAFT_LINE_LAYER)
   if (!map.getLayer('status-zone-draft-vertices')) map.addLayer(STATUS_DRAFT_VERTEX_LAYER)
+}
+
+function ensureManagementZoneLayers(map) {
+  if (!map.getSource('management-zones-src')) {
+    map.addSource('management-zones-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('management-zones-fill')) map.addLayer(MANAGEMENT_ZONE_FILL_LAYER)
+  if (!map.getLayer('management-zones-line')) map.addLayer(MANAGEMENT_ZONE_LINE_LAYER)
+
+  if (!map.getSource('management-zone-draft-src')) {
+    map.addSource('management-zone-draft-src', { type: 'geojson', data: EMPTY_FC })
+  }
+  if (!map.getLayer('management-zone-draft-line')) map.addLayer(MANAGEMENT_DRAFT_LINE_LAYER)
+  if (!map.getLayer('management-zone-draft-vertices')) map.addLayer(MANAGEMENT_DRAFT_VERTEX_LAYER)
 }
 
 function ensureCecidZoneLayers(map) {
@@ -823,20 +952,31 @@ export default function RiskMap({
   stageZoneDrawing = false,
   stageZoneDraft = [],
   onStageZoneMapClick,
+  onStageZoneDraftChange,
   statusZones = [],
   statusZoneDrawing = false,
   statusZoneDraft = [],
   onStatusZoneMapClick,
+  onStatusZoneDraftChange,
+  managementZones = [],
+  managementZoneDrawing = false,
+  managementZoneDraft = [],
+  onManagementZoneMapClick,
+  onManagementZoneDraftChange,
   cecidWeedZones = [],
   legacyCecidEmergenceZones = [],
   cecidZoneDrawing = false,
   cecidZoneDraft = [],
   onCecidZoneMapClick,
-  zoneVisibility = { stage: true, status: true, cecid: true },
+  onCecidZoneDraftChange,
+  zoneDrawMode = 'polygon',
+  zoneVisibility = { stage: true, status: true, management: true, cecid: true },
   orthophotoOverlay = null,
   viewportKey = 'default',
   fitToOrthophoto = true,
   showGridOverlay = false,
+  pestType = 'fruitfly',
+  cecidMapMode = 'representative',
   onTreeClick,
 }) {
   const containerRef = useRef(null)
@@ -854,9 +994,32 @@ export default function RiskMap({
     [orthophotoOverlay, viewportKey],
   )
   const points = useMemo(
-    () => normalizePoints(activeGeojson, treeOverrides, stageOverrides),
-    [activeGeojson, treeOverrides, stageOverrides],
+    () => normalizePoints(
+      activeGeojson,
+      treeOverrides,
+      stageOverrides,
+      pestType,
+      cecidMapMode,
+    ),
+    [activeGeojson, treeOverrides, stageOverrides, pestType, cecidMapMode],
   )
+  const heatmapGeojson = useMemo(() => {
+    if (pestType !== 'cecid' || !geojson?.features?.length) return geojson ?? EMPTY_FC
+    return {
+      ...geojson,
+      features: geojson.features.map((feature) => {
+        const properties = feature.properties || {}
+        const interpreted = interpretCecidTree(properties, cecidMapMode)
+        return {
+          ...feature,
+          properties: {
+            ...properties,
+            risk: interpreted.eligible === false ? 0 : (interpreted.displayRisk ?? 0),
+          },
+        }
+      }),
+    }
+  }, [cecidMapMode, geojson, pestType])
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return undefined
@@ -882,6 +1045,7 @@ export default function RiskMap({
       map.addLayer(HEATMAP_LAYER)
       ensureStageZoneLayers(map)
       ensureStatusZoneLayers(map)
+      ensureManagementZoneLayers(map)
       ensureCecidZoneLayers(map)
     })
 
@@ -1004,6 +1168,26 @@ export default function RiskMap({
     const map = mapRef.current
     if (!map) return undefined
 
+    const updateManagementZones = () => {
+      ensureManagementZoneLayers(map)
+      map.getSource('management-zones-src')?.setData(managementZoneGeojson(managementZones))
+      map.getSource('management-zone-draft-src')?.setData(stageDraftGeojson(managementZoneDraft))
+      if (map.getLayer('management-zones-fill')) map.moveLayer('management-zones-fill')
+      if (map.getLayer('management-zones-line')) map.moveLayer('management-zones-line')
+      if (map.getLayer('management-zone-draft-line')) map.moveLayer('management-zone-draft-line')
+      if (map.getLayer('management-zone-draft-vertices')) map.moveLayer('management-zone-draft-vertices')
+    }
+
+    if (map.loaded()) updateManagementZones()
+    else map.once('load', updateManagementZones)
+
+    return () => map.off('load', updateManagementZones)
+  }, [managementZones, managementZoneDraft])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return undefined
+
     const updateCecidZones = () => {
       ensureCecidZoneLayers(map)
       map.getSource('cecid-zones-src')?.setData(cecidZoneGeojson(
@@ -1029,6 +1213,7 @@ export default function RiskMap({
       const groups = {
         stage: ['stage-zones-fill', 'stage-zones-line'],
         status: ['status-zones-fill', 'status-zones-line'],
+        management: ['management-zones-fill', 'management-zones-line'],
         cecid: ['cecid-zones-fill', 'cecid-zones-line'],
       }
       Object.entries(groups).forEach(([type, layers]) => {
@@ -1047,63 +1232,95 @@ export default function RiskMap({
   // ── Status zone drawing interaction ──────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !statusZoneDrawing) return undefined
+    if (!map) return undefined
 
-    const handleMapClick = (event) => {
-      onStatusZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
-    }
-
-    const canvas = map.getCanvas()
-    const previousCursor = canvas.style.cursor
-    canvas.style.cursor = 'crosshair'
-    map.doubleClickZoom.disable()
-    map.on('click', handleMapClick)
-
-    return () => {
-      map.off('click', handleMapClick)
-      map.doubleClickZoom.enable()
-      canvas.style.cursor = previousCursor
-    }
-  }, [statusZoneDrawing, onStatusZoneMapClick])
-
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !cecidZoneDrawing) return undefined
-    const handleMapClick = (event) => {
-      onCecidZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
-    }
-    const canvas = map.getCanvas()
-    const previousCursor = canvas.style.cursor
-    canvas.style.cursor = 'crosshair'
-    map.doubleClickZoom.disable()
-    map.on('click', handleMapClick)
-    return () => {
-      map.off('click', handleMapClick)
-      map.doubleClickZoom.enable()
-      canvas.style.cursor = previousCursor
-    }
-  }, [cecidZoneDrawing, onCecidZoneMapClick])
-
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !stageZoneDrawing) return undefined
-
-    const handleMapClick = (event) => {
-      onStageZoneMapClick?.([event.lngLat.lng, event.lngLat.lat])
-    }
+    const active = [
+      { drawing: stageZoneDrawing, onClick: onStageZoneMapClick, onDraftChange: onStageZoneDraftChange },
+      { drawing: statusZoneDrawing, onClick: onStatusZoneMapClick, onDraftChange: onStatusZoneDraftChange },
+      { drawing: managementZoneDrawing, onClick: onManagementZoneMapClick, onDraftChange: onManagementZoneDraftChange },
+      { drawing: cecidZoneDrawing, onClick: onCecidZoneMapClick, onDraftChange: onCecidZoneDraftChange },
+    ].find((candidate) => candidate.drawing)
+    if (!active) return undefined
 
     const canvas = map.getCanvas()
     const previousCursor = canvas.style.cursor
     canvas.style.cursor = 'crosshair'
     map.doubleClickZoom.disable()
-    map.on('click', handleMapClick)
+
+    if (zoneDrawMode !== 'lasso') {
+      const handleMapClick = (event) => {
+        active.onClick?.([event.lngLat.lng, event.lngLat.lat])
+      }
+      map.on('click', handleMapClick)
+      return () => {
+        map.off('click', handleMapClick)
+        map.doubleClickZoom.enable()
+        canvas.style.cursor = previousCursor
+      }
+    }
+
+    let dragging = false
+    let lassoCoordinates = []
+    let lastScreenPoint = null
+
+    const publishDraft = () => {
+      active.onDraftChange?.(simplifyLassoCoordinates(lassoCoordinates))
+    }
+    const handleMouseDown = (event) => {
+      if (event.originalEvent?.button != null && event.originalEvent.button !== 0) return
+      dragging = true
+      lassoCoordinates = [[event.lngLat.lng, event.lngLat.lat]]
+      lastScreenPoint = event.point
+      map.dragPan.disable()
+      event.preventDefault?.()
+      publishDraft()
+    }
+    const handleMouseMove = (event) => {
+      if (!dragging) return
+      const dx = event.point.x - lastScreenPoint.x
+      const dy = event.point.y - lastScreenPoint.y
+      if (Math.hypot(dx, dy) < 3) return
+      lastScreenPoint = event.point
+      lassoCoordinates.push([event.lngLat.lng, event.lngLat.lat])
+      publishDraft()
+    }
+    const finishLasso = (event) => {
+      if (!dragging) return
+      if (event?.lngLat) lassoCoordinates.push([event.lngLat.lng, event.lngLat.lat])
+      dragging = false
+      active.onDraftChange?.(simplifyLassoCoordinates(lassoCoordinates))
+      map.dragPan.enable()
+    }
+
+    map.on('mousedown', handleMouseDown)
+    map.on('mousemove', handleMouseMove)
+    map.on('mouseup', finishLasso)
+    window.addEventListener('mouseup', finishLasso)
 
     return () => {
-      map.off('click', handleMapClick)
+      map.off('mousedown', handleMouseDown)
+      map.off('mousemove', handleMouseMove)
+      map.off('mouseup', finishLasso)
+      window.removeEventListener('mouseup', finishLasso)
+      map.dragPan.enable()
       map.doubleClickZoom.enable()
       canvas.style.cursor = previousCursor
     }
-  }, [stageZoneDrawing, onStageZoneMapClick])
+  }, [
+    cecidZoneDrawing,
+    managementZoneDrawing,
+    onCecidZoneDraftChange,
+    onCecidZoneMapClick,
+    onManagementZoneDraftChange,
+    onManagementZoneMapClick,
+    onStageZoneDraftChange,
+    onStageZoneMapClick,
+    onStatusZoneDraftChange,
+    onStatusZoneMapClick,
+    stageZoneDrawing,
+    statusZoneDrawing,
+    zoneDrawMode,
+  ])
 
   useEffect(() => {
     const map = mapRef.current
@@ -1188,7 +1405,7 @@ export default function RiskMap({
     const map = mapRef.current
     if (!map) return undefined
 
-    const data = geojson ?? EMPTY_FC
+    const data = heatmapGeojson
 
     const setHeatmapData = () => {
       const src = map.getSource('risk-heatmap-src')
@@ -1203,7 +1420,7 @@ export default function RiskMap({
     }
 
     return undefined
-  }, [geojson])
+  }, [heatmapGeojson])
 
   useEffect(() => {
     const map = mapRef.current

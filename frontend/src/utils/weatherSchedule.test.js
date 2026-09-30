@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {
   buildGuidedBlocks,
   buildSoilRainContext,
+  cecidWindActivity,
+  cecidWindDirectionAssist,
+  cecidWindSurvival,
   createCecidGateTestPreset,
   solarTimesForGuimaras,
   summarizeWeatherBlocks,
@@ -82,7 +85,20 @@ test('solar preview and suitability match Guimaras backend assumptions', () => {
     longitude: 122.58,
   })
   assert.equal(summary.preview[0].status, 'favorable')
-  assert.ok(Math.abs(summary.preview[0].suitability_score - Math.exp(-((1 / 4) ** 2))) < 1e-9)
+  assert.equal(summary.preview[0].suitability_score, 1)
+})
+
+test('Cecid wind activity mirrors the backend soft inverse-square curve', () => {
+  assert.equal(cecidWindActivity(0), 1)
+  assert.equal(cecidWindActivity(1), 1)
+  assert.equal(cecidWindActivity(5 / 3.6), 1)
+  const expectedAtThreeMs = 1 / (1 + ((((3 * 3.6) - 5) / 6) ** 2))
+  assert.ok(Math.abs(cecidWindActivity(3) - expectedAtThreeMs) < 1e-12)
+  assert.ok(cecidWindActivity(3) > 0.5)
+  assert.equal(cecidWindSurvival(3), cecidWindActivity(3))
+  assert.equal(cecidWindDirectionAssist(3.2 / 3.6), 0)
+  assert.ok(cecidWindDirectionAssist(3) > 0.2)
+  assert.equal(cecidWindDirectionAssist(15 / 3.6), 0.35)
 })
 
 test('Cecid gate test preset creates favorable dawn and dusk windows', () => {
@@ -102,6 +118,9 @@ test('Cecid gate test preset creates favorable dawn and dusk windows', () => {
 
   assert.equal(preset.start_datetime, '2026-04-01T00:00')
   assert.equal(preset.manual_soil_context.preset, 'dry')
+  assert.equal('simulation_random_seed' in preset, false)
+  assert.equal('cecid_assumed_source_count' in preset, false)
+  assert.equal(Object.keys(preset).some((key) => key.startsWith('simulation_')), false)
   assert.deepEqual(
     preset.advanced_blocks.slice(0, 4).map((block) => [block.start_hour, block.end_hour, block.rainfall_mm]),
     [[0, 4, 2], [4, 24, 0], [24, 28, 2], [28, 48, 0]],

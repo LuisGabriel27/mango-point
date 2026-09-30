@@ -260,8 +260,15 @@ export default function SimulationHistoryTab({
   const handleTemplate = async (runId) => {
     const data = await fetchRunDetails(runId)
     if (!data) return
-    onUseTemplate?.(data.request_payload ?? data.input_parameters ?? {})
-    setStatus({ type: 'success', msg: 'Saved parameters copied into the simulation controls.' })
+    const template = data.request_payload ?? data.input_parameters ?? {}
+    onUseTemplate?.(template)
+    const modelVersion = template?.dashboard_state?.simulation_model_version
+    setStatus(modelVersion
+      ? { type: 'success', msg: 'Saved parameters, original random seed, and model version copied into the controls.' }
+      : {
+          type: 'warning',
+          msg: 'Legacy parameters and original random seed copied. This run predates model-version tracking, so a rerun may not match its historical result.',
+        })
   }
 
   const handleExportHistory = async () => {

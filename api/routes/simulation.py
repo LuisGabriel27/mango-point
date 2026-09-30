@@ -19,7 +19,7 @@ from sqlalchemy import extract, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
-from ..models.schemas import CecidWeedZone, SimulationRequest, SimulationResponse
+from ..models.schemas import CecidWeedZone, ManagementZone, SimulationRequest, SimulationResponse
 from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Orchard, Pest, Tree
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
@@ -30,6 +30,152 @@ from utils.datetime_utils import format_rfc3339, parse_rfc3339, utcnow_naive
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
+
+
+def _cecid_uncertainty_seed(master_seed: int, realization_index: int) -> int:
+    """Derive replay-stable seeds without relying on Python's salted hash."""
+    value = int(master_seed) & 0x7FFFFFFF
+    for _ in range(max(0, int(realization_index))):
+        value = (1103515245 * value + 12345) & 0x7FFFFFFF
+    return value
+
+
+def _linear_percentile(values: List[int], fraction: float) -> float:
+    ordered = sorted(int(value) for value in values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * max(0.0, min(1.0, float(fraction)))
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return float(ordered[lower] * (1.0 - weight) + ordered[upper] * weight)
+
+
+def _summarize_cecid_uncertainty_samples(
+    samples: List[Dict[str, Any]],
+    map_seed: int,
+) -> Dict[str, Any]:
+    """Summarize scenario realizations without presenting them as validation."""
+    counts = [int(sample.get("n_infested_final") or 0) for sample in samples]
+    assumed_sources = [
+        int(sample.get("assumed_source_count") or 0) for sample in samples
+    ]
+    tree_counts: Dict[str, int] = {}
+    for sample in samples:
+        for tree_id in set(sample.get("infested_tree_ids") or []):
+            key = str(tree_id)
+            tree_counts[key] = tree_counts.get(key, 0) + 1
+    run_count = len(samples)
+    has_assumed_sources = any(value > 0 for value in assumed_sources)
+    return {
+        "runs": len(samples),
+        "map_seed": int(map_seed),
+        "minimum": min(counts, default=0),
+        "p25": _linear_percentile(counts, 0.25),
+        "median": _linear_percentile(counts, 0.50),
+        "mean": (sum(counts) / len(counts)) if counts else 0.0,
+        "p75": _linear_percentile(counts, 0.75),
+        "maximum": max(counts, default=0),
+        "assumed_source_count_min": min(assumed_sources, default=0),
+        "assumed_source_count_max": max(assumed_sources, default=0),
+        "uncertainty_type": (
+            "assumed_source_placement_and_stochastic_establishment"
+            if has_assumed_sources
+            else "stochastic_establishment"
+        ),
+        "samples": samples,
+        "tree_infestation_counts": dict(sorted(tree_counts.items())),
+        "tree_infestation_frequencies": {
+            tree_id: count / run_count
+            for tree_id, count in sorted(tree_counts.items())
+        } if run_count else {},
+        "interpretation": (
+            "Scenario range from deterministic realizations of the same inputs; "
+            "it is not a calibrated confidence interval."
+        ),
+    }
+
+
+async def _attach_cecid_uncertainty_summary(
+    result: SimulationResponse,
+    request: SimulationRequest,
+    weather_data: Optional[List[Dict[str, Any]]],
+    weather_context: Optional[List[Dict[str, Any]]],
+    weather_provenance: Optional[Dict[str, Any]],
+    orchard_coordinates: Dict[str, float],
+) -> None:
+    """Run additional, unpersisted Cecid realizations for an honest range."""
+    requested_runs = int(getattr(request, "cecid_uncertainty_runs", 1) or 1)
+    if request.pest_type.value != "cecid" or requested_runs <= 1:
+        return
+
+    def sample_from(response: SimulationResponse) -> Dict[str, Any]:
+        sources = response.metadata.cecid_sources or []
+        infested_tree_ids = []
+        for feature in (response.risk_geojson or {}).get("features", []):
+            properties = feature.get("properties") or {}
+            tree_id = properties.get("tree_id")
+            if tree_id is not None and str(properties.get("state", "")).lower() == "infested":
+                infested_tree_ids.append(str(tree_id))
+        return {
+            "seed": int(response.random_seed),
+            "n_infested_final": int(response.n_infested_final),
+            "source_count": int(response.metadata.cecid_source_count),
+            "assumed_source_count": int(response.metadata.cecid_assumed_source_count),
+            "source_tree_ids": [
+                str(source.get("tree_id"))
+                for source in sources
+                if source.get("tree_id") is not None
+            ],
+            "infested_tree_ids": sorted(set(infested_tree_ids)),
+        }
+
+    samples = [sample_from(result)]
+    for index in range(1, requested_runs):
+        replica_seed = _cecid_uncertainty_seed(result.random_seed, index)
+        replica_request = request.model_copy(update={
+            "random_seed": replica_seed,
+            "cecid_uncertainty_runs": 1,
+            "include_time_series": False,
+        })
+        replica = await simulation_service.run_simulation(
+            request=replica_request,
+            weather_data=weather_data,
+            weather_context=weather_context,
+            weather_provenance=weather_provenance,
+            orchard_coordinates=orchard_coordinates,
+        )
+        samples.append(sample_from(replica))
+
+    summary = _summarize_cecid_uncertainty_samples(
+        samples,
+        map_seed=result.random_seed,
+    )
+    result.metadata.cecid_uncertainty_summary = summary
+
+    frequencies = summary["tree_infestation_frequencies"]
+    counts_by_tree = summary["tree_infestation_counts"]
+
+    def annotate_geojson(geojson: Optional[Dict[str, Any]]) -> None:
+        for feature in (geojson or {}).get("features", []):
+            properties = feature.setdefault("properties", {})
+            tree_id = properties.get("tree_id")
+            if tree_id is None:
+                continue
+            key = str(tree_id)
+            properties["ensemble_infestation_frequency"] = float(
+                frequencies.get(key, 0.0)
+            )
+            properties["ensemble_infestation_count"] = int(
+                counts_by_tree.get(key, 0)
+            )
+            properties["ensemble_runs"] = int(summary["runs"])
+
+    annotate_geojson(result.risk_geojson)
+    for snapshot in result.time_series:
+        annotate_geojson(snapshot.risk_geojson)
+    for timestep in result.timesteps:
+        annotate_geojson(timestep.geojson)
 
 
 def _orchard_id_from_geojson(
@@ -186,6 +332,36 @@ def _model_to_json_dict(model: Any) -> Dict[str, Any]:
     if hasattr(model, "dict"):
         return model.dict()
     return dict(model)
+
+
+def _replayable_request_payload(
+    payload: Optional[Dict[str, Any]],
+    *,
+    random_seed: Optional[int],
+    model_version: Optional[str] = None,
+    tg_max_neighbor_dist_m: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Return a request snapshot that can reproduce its stochastic run.
+
+    The public request intentionally permits a missing seed so first-time runs
+    can be random. History must store the seed generated by the engine,
+    otherwise "Use as template" silently starts a different experiment.
+    """
+    replayable = dict(payload or {})
+    if replayable.get("random_seed") is None and random_seed is not None:
+        replayable["random_seed"] = int(random_seed)
+    if (
+        replayable.get("simulation_mode") == "tree_graph"
+        and replayable.get("tg_max_neighbor_dist_m") is None
+        and tg_max_neighbor_dist_m is not None
+    ):
+        replayable["tg_max_neighbor_dist_m"] = float(tg_max_neighbor_dist_m)
+    if model_version:
+        dashboard_state = replayable.get("dashboard_state")
+        dashboard_state = dict(dashboard_state) if isinstance(dashboard_state, dict) else {}
+        dashboard_state.setdefault("simulation_model_version", str(model_version))
+        replayable["dashboard_state"] = dashboard_state
+    return replayable
 
 
 def _timestamp_for_db(value: Optional[str]) -> Optional[datetime]:
@@ -392,6 +568,7 @@ async def run_simulation(
     """
     try:
         request = await _resolve_cecid_weed_zones(request, db)
+        request = await _resolve_management_zones(request, db)
 
         # Merge field observations into tree_overrides when requested
         if request.use_observations_as_seeds:
@@ -440,6 +617,14 @@ async def run_simulation(
 
         # Run simulation
         result = await simulation_service.run_simulation(
+            request=request,
+            weather_data=weather_data,
+            weather_context=weather_context,
+            weather_provenance=weather_provenance,
+            orchard_coordinates={"lat": lat, "lon": lon},
+        )
+        await _attach_cecid_uncertainty_summary(
+            result=result,
             request=request,
             weather_data=weather_data,
             weather_context=weather_context,
@@ -545,6 +730,29 @@ async def _resolve_cecid_weed_zones(
     return request.model_copy(update={"cecid_weed_zones": zones})
 
 
+async def _resolve_management_zones(
+    request: SimulationRequest,
+    db: AsyncSession,
+) -> SimulationRequest:
+    """Snapshot persistent named zones when a request omits an override."""
+    if request.management_zones is not None:
+        return request
+
+    orchard_id = _orchard_id_from_request(request, default="")
+    query = select(Orchard).where(Orchard.orchard_uid == orchard_id)
+    if str(orchard_id).isdigit():
+        query = select(Orchard).where(or_(
+            Orchard.orchard_uid == orchard_id,
+            Orchard.orchard_id == int(orchard_id),
+        ))
+    orchard = (await db.execute(query)).scalar_one_or_none()
+    zones = [
+        ManagementZone.model_validate(zone)
+        for zone in (getattr(orchard, "management_zones", None) or [])
+    ] if orchard else []
+    return request.model_copy(update={"management_zones": zones})
+
+
 async def _apply_observation_seeds(
     request: SimulationRequest,
     db: AsyncSession,
@@ -561,8 +769,9 @@ async def _apply_observation_seeds(
             else ("%fruit fly%", "%fruitfly%", "%bactrocera%")
         )
         query = (
-            select(InfestationRecord)
+            select(InfestationRecord, Tree)
             .join(Pest, Pest.pest_id == InfestationRecord.pest_id)
+            .join(Tree, Tree.tree_id == InfestationRecord.tree_id)
             .where(
                 InfestationRecord.infected_status == True,
                 InfestationRecord.simulation_id.is_(None),
@@ -572,15 +781,23 @@ async def _apply_observation_seeds(
         )
         orchard_id = _orchard_id_from_request(request, default="")
         if str(orchard_id).isdigit():
-            query = query.join(Tree, Tree.tree_id == InfestationRecord.tree_id).where(
-                Tree.orchard_id == int(orchard_id)
+            query = query.join(Orchard, Orchard.orchard_id == Tree.orchard_id).where(or_(
+                Orchard.orchard_uid == str(orchard_id),
+                Orchard.orchard_id == int(orchard_id),
+            ))
+        elif orchard_id:
+            query = query.join(Orchard, Orchard.orchard_id == Tree.orchard_id).where(
+                Orchard.orchard_uid == str(orchard_id)
             )
         result = await db.execute(query)
-        records = result.scalars().all()
-        if not records:
+        rows = result.all()
+        if not rows:
             return request
 
-        observed_tree_ids = {str(r.tree_id) for r in records}
+        observed_tree_ids = {
+            str(record.tree_external_id or tree.external_id or record.tree_id)
+            for record, tree in rows
+        }
         existing_overrides = dict(request.tree_overrides or {})
         for tid in observed_tree_ids:
             if tid not in existing_overrides:
@@ -618,7 +835,12 @@ async def save_simulation_run(
                 "cecid": PestType.CECID_FLY,
                 "fruitfly": PestType.FRUIT_FLY,
             }
-            request_payload = _model_to_json_dict(request)
+            request_payload = _replayable_request_payload(
+                _model_to_json_dict(request),
+                random_seed=result.random_seed,
+                model_version=result.metadata.model_version,
+                tg_max_neighbor_dist_m=result.metadata.tg_max_neighbor_dist_m,
+            )
             response_payload = _model_to_json_dict(result)
             result_metadata = response_payload.get("metadata") or {}
             impact_assumptions = (
@@ -982,7 +1204,14 @@ async def export_simulation_run(
 
     response_payload = run.response_payload or {}
     metadata = run.result_metadata or response_payload.get("metadata") or {}
-    request_payload = run.request_payload or {}
+    request_payload = _replayable_request_payload(
+        run.request_payload,
+        random_seed=run.random_seed,
+        model_version=metadata.get("model_version") if isinstance(metadata, dict) else None,
+        tg_max_neighbor_dist_m=(
+            metadata.get("tg_max_neighbor_dist_m") if isinstance(metadata, dict) else None
+        ),
+    )
     time_series = run.time_series or response_payload.get("time_series") or []
     weather_data = run.weather_data or []
     risk_features = (run.output_geojson or response_payload.get("risk_geojson") or {}).get("features", [])
@@ -1072,7 +1301,16 @@ async def get_simulation_run(
     if not run:
         raise HTTPException(status_code=404, detail="Simulation run not found")
 
-    request_payload = run.request_payload or {}
+    stored_metadata = run.result_metadata or (run.response_payload or {}).get("metadata") or {}
+    request_payload = _replayable_request_payload(
+        run.request_payload,
+        random_seed=run.random_seed,
+        model_version=(
+            stored_metadata.get("model_version")
+            if isinstance(stored_metadata, dict)
+            else None
+        ),
+    )
     response_payload = dict(run.response_payload or {})
     if response_payload:
         payload = response_payload

@@ -1,8 +1,28 @@
 import { useState } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 import api from '../../api'
+import { cecidForecastContext } from '../../utils/alertSimulation'
 
 const SEV_BADGE = { critical: 'danger', high: 'warning', medium: 'info', low: 'secondary' }
+
+function formatManilaWindow(value) {
+  if (!value) return 'Upcoming dawn/dusk'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+  return new Intl.DateTimeFormat('en-PH', {
+    timeZone: 'Asia/Manila',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
+function metric(value, suffix, digits = 1) {
+  const number = Number(value)
+  return Number.isFinite(number) ? `${number.toFixed(digits)}${suffix}` : '—'
+}
 
 export function AlertItem({ alert, onUpdate, onApplySuggested }) {
   const [ackNotes] = useState('')
@@ -28,6 +48,7 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
     ? new Date(alert.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : ''
   const isWeatherAlert = alert.zone_name?.toLowerCase().includes('weather forecast')
+  const cecidContext = cecidForecastContext(alert)
 
   return (
     <div
@@ -52,6 +73,30 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
         <small className="text-muted">{ts}</small>
       </div>
       <div className="mb-1">{alert.message}</div>
+      {cecidContext && (
+        <div className="rounded border bg-light p-2 mb-2" data-testid="cecid-live-forecast-details">
+          <div className="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-1">
+            <strong>
+              {String(cecidContext.twilight_window ?? 'dawn/dusk').replace(/^\w/, (letter) => letter.toUpperCase())}
+              {' · '}{formatManilaWindow(cecidContext.first_favorable_at)}
+            </strong>
+            <span className="badge text-bg-success">
+              {metric(Number(cecidContext.peak_suitability) * 100, '%', 0)} suitable
+            </span>
+          </div>
+          <div className="d-flex gap-2 flex-wrap text-muted" style={{ fontSize: '.72rem' }}>
+            <span>Soil wetness {metric(cecidContext.soil_wetness_mm, ' mm')}</span>
+            <span>Rain now {metric(cecidContext.current_rainfall_mm, ' mm/h')}</span>
+            <span>Wind {metric(cecidContext.wind_speed_ms, ' m/s')}</span>
+            <span>{cecidContext.favorable_hours ?? 0} favorable hour(s)</span>
+          </div>
+          <small className="d-block text-muted mt-1">
+            {cecidContext.source === 'open-meteo' ? 'Open-Meteo live forecast' : cecidContext.source}
+            {' · '}includes 72 hours of antecedent rain context
+            {' · '}screening only; no simulation has run
+          </small>
+        </div>
+      )}
       {alert.recommended_actions?.length > 0 && (
         <ul className="mb-1 ps-3 text-muted" style={{ fontSize: '.75rem' }}>
           {alert.recommended_actions.slice(0, 2).map((action, index) => <li key={index}>{action}</li>)}
@@ -64,7 +109,7 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
             className="btn btn-primary btn-sm py-0 fw-semibold"
             onClick={() => onApplySuggested(alert.suggested_simulation_params)}
           >
-            <i className="bi bi-play-circle me-1" />Pre-fill Simulation
+            <i className="bi bi-sliders me-1" />Open Simulation Controls
           </button>
         )}
         {alert.status === 'active' && (

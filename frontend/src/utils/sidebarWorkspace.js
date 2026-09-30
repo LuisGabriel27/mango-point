@@ -2,6 +2,7 @@ export const SIDEBAR_WORKFLOWS = [
   { id: 'setup', label: 'Setup', icon: 'sliders' },
   { id: 'simulate', label: 'Simulate', icon: 'play-circle' },
   { id: 'results', label: 'Results', icon: 'graph-up-arrow' },
+  { id: 'verify', label: 'Verify', icon: 'clipboard2-check' },
 ]
 
 export const DEFAULT_SIDEBAR_WORKFLOW = 'simulate'
@@ -19,6 +20,7 @@ export function nextSidebarWorkflowId(activeWorkflow, key) {
 export function sidebarWorkflowForEvent(event, currentWorkflow = DEFAULT_SIDEBAR_WORKFLOW) {
   if (event === 'simulation-success' || event === 'historical-result') return 'results'
   if (event === 'alert-prefill' || event === 'historical-template') return 'simulate'
+  if (event === 'tree-verification') return 'verify'
   return currentWorkflow
 }
 

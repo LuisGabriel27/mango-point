@@ -51,6 +51,8 @@ class TreeStatusEnum(str, enum.Enum):
     INFECTED = "infected"
     BAGGED = "bagged"
     DEAD = "dead"
+    HISTORY_INFECTED = "history_infected"
+    SUSPECT = "suspect"
 
 
 class TreeStageEnum(str, enum.Enum):
@@ -163,6 +165,9 @@ class Orchard(Base):
     area_size: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     tree_count: Mapped[int] = mapped_column(Integer, default=0)
     geojson: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    management_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list,
+    )
     cecid_weed_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list,
     )
@@ -210,6 +215,10 @@ class Tree(Base):
     tree_id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True,
     )
+    # Stable ID from the orchard GeoJSON (for example ``T05``). Database
+    # primary keys are installation-specific, so field observations and
+    # orchard edits must not use them as portable tree identifiers.
+    external_id: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     orchard_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("orchard.orchard_id", ondelete="CASCADE"),
@@ -228,12 +237,22 @@ class Tree(Base):
 
     age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[TreeStatusEnum] = mapped_column(
-        SQLEnum(TreeStatusEnum, name="tree_status_enum", create_type=False),
+        SQLEnum(
+            TreeStatusEnum,
+            name="tree_status_enum",
+            create_type=False,
+            values_callable=_enum_values,
+        ),
         nullable=False,
         default=TreeStatusEnum.HEALTHY,
     )
     current_stage: Mapped[TreeStageEnum] = mapped_column(
-        SQLEnum(TreeStageEnum, name="tree_stage_enum", create_type=False),
+        SQLEnum(
+            TreeStageEnum,
+            name="tree_stage_enum",
+            create_type=False,
+            values_callable=_enum_values,
+        ),
         nullable=False,
         default=TreeStageEnum.DORMANT,
     )
@@ -246,6 +265,12 @@ class Tree(Base):
 
     __table_args__ = (
         Index("idx_tree_orchard_id", "orchard_id"),
+        Index(
+            "uq_tree_orchard_external_id",
+            "orchard_id",
+            "external_id",
+            unique=True,
+        ),
         Index("idx_tree_geom", "geom", postgresql_using="gist"),
     )
 
@@ -421,6 +446,24 @@ class InfestationRecord(Base):
     infestation_level: Mapped[Optional[float]] = mapped_column(
         Numeric(5, 2), nullable=True,
     )
+    # Append-only ground-truth details. These remain nullable because rows
+    # produced by older installs and simulation output predate field logging.
+    tree_external_id: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    observation_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    affected_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    inspected_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    observation_method: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    observer_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    observation_lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    observation_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    verification_run_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    forecast_risk: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    forecast_lead_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow_naive,
+    )
 
     # Relationships
     tree: Mapped["Tree"] = relationship("Tree", back_populates="infestation_records")
@@ -433,6 +476,8 @@ class InfestationRecord(Base):
         Index("idx_infestation_tree_id", "tree_id"),
         Index("idx_infestation_pest_id", "pest_id"),
         Index("idx_infestation_simulation_id", "simulation_id"),
+        Index("idx_infestation_tree_external_id", "tree_external_id"),
+        Index("idx_infestation_verification_run_id", "verification_run_id"),
     )
 
 

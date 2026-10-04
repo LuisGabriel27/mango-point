@@ -26,7 +26,7 @@ function normalizeZones(value, kind, defaultScope = 'scenario') {
       [kind]: setting,
       coordinates,
       tree_count: Number.isFinite(Number(zone.tree_count)) ? Number(zone.tree_count) : 0,
-      scope: zone.scope === 'orchard' || defaultScope === 'orchard' ? 'orchard' : 'scenario',
+      scope: zone.scope === 'scenario' ? 'scenario' : zone.scope === 'orchard' || defaultScope === 'orchard' ? 'orchard' : 'scenario',
     }
   }).filter(Boolean)
 }

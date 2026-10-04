@@ -64,6 +64,8 @@ def update_geojson_trees(
     *,
     status: Optional[str] = None,
     stage: Optional[str] = None,
+    clear_status: bool = False,
+    clear_stage: bool = False,
 ) -> tuple[Dict[str, Any], list[str], list[str]]:
     """Return a copied map with stage/status properties updated by tree label."""
     wanted = list(dict.fromkeys(str(value).strip() for value in tree_ids if str(value).strip()))
@@ -79,9 +81,15 @@ def update_geojson_trees(
         if status is not None:
             properties["status"] = status
             properties["Status"] = status
+        if clear_status:
+            properties.pop("status", None)
+            properties.pop("Status", None)
         if stage is not None:
             properties["stage"] = stage
             properties["Stage"] = stage
+        if clear_stage:
+            properties.pop("stage", None)
+            properties.pop("Stage", None)
         found.add(external_id)
 
     return updated_geojson, [value for value in wanted if value in found], [value for value in wanted if value not in found]

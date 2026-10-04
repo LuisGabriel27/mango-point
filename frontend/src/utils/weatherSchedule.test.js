@@ -10,6 +10,14 @@ import {
   solarTimesForGuimaras,
   summarizeWeatherBlocks,
   repeatFirstDayBlocks,
+  addCustomWeatherPeriod,
+  createConstantWeatherTimeline,
+  createDefaultWeatherTimeline,
+  customWeatherBlocks,
+  customWeatherRequestFields,
+  expandWeatherBlocks,
+  restoreCustomWeatherTimeline,
+  weatherCoverage,
 } from './weatherSchedule.js'
 
 test('guided schedules repeat wet and dry phases across the simulation', () => {
@@ -23,6 +31,102 @@ test('guided schedules repeat wet and dry phases across the simulation', () => {
   assert.equal(blocks.filter((block) => block.rainfall_mm > 0).length, 3)
   assert.equal(blocks[2].start_hour, 24)
   assert.equal(blocks[4].start_hour, 48)
+})
+
+test('a new custom scenario has one dry period that follows the run duration', () => {
+  const timeline = createDefaultWeatherTimeline()
+  assert.equal(timeline.advanced_blocks.length, 1)
+  assert.equal(timeline.manual_soil_context.preset, 'dry')
+  for (const hours of [24, 48, 72, 168]) {
+    assert.deepEqual(customWeatherBlocks(timeline, hours).map((block) => [block.start_hour, block.end_hour]), [[0, hours]])
+  }
+})
+
+test('constant Fruit Fly custom weather preserves the legacy request values and local start', () => {
+  const params = {
+    hours: 168,
+    manual_weather: { temperature_c: 33.2, wind_speed_ms: 1.4, wind_dir_deg: 315, rainfall_mm: 0.3 },
+    manual_weather_start: '2026-10-04T06:00:00+08:00',
+  }
+  const restored = restoreCustomWeatherTimeline(params)
+  assert.deepEqual(customWeatherRequestFields(restored, params.hours, 'fruitfly'), {
+    manual_weather: params.manual_weather,
+    manual_weather_start: params.manual_weather_start,
+  })
+  assert.equal(customWeatherRequestFields(restored, 24, 'fruitfly').manual_weather_blocks, undefined)
+})
+
+test('adding a period preserves the existing hourly conditions', () => {
+  const timeline = createConstantWeatherTimeline({ temperature_c: 31, wind_speed_ms: 1, rainfall_mm: 3 }, 72)
+  const split = addCustomWeatherPeriod(timeline, 72)
+  assert.equal(split.coverage_mode, 'scheduled')
+  assert.deepEqual(split.advanced_blocks.map((block) => [block.start_hour, block.end_hour]), [[0, 8], [8, 72]])
+  assert.deepEqual(expandWeatherBlocks(customWeatherBlocks(split, 72), 72),
+    expandWeatherBlocks(customWeatherBlocks(timeline, 72), 72))
+})
+
+test('explicitly scheduled periods keep their boundaries and expose missing or overlapping hours', () => {
+  const timeline = {
+    mode: 'advanced', coverage_mode: 'scheduled',
+    advanced_blocks: [{ start_hour: 0, end_hour: 24, rainfall_mm: 8 }],
+  }
+  assert.equal(customWeatherBlocks(timeline, 168)[0].end_hour, 24)
+  assert.deepEqual(weatherCoverage(timeline.advanced_blocks, 168), { uncovered_hours: 144, overlapping_hours: 0 })
+  assert.deepEqual(weatherCoverage([
+    { start_hour: 0, end_hour: 12 }, { start_hour: 8, end_hour: 24 },
+  ], 24), { uncovered_hours: 0, overlapping_hours: 4 })
+  assert.throws(() => customWeatherRequestFields({ advanced_blocks: [] }, 48, 'fruitfly'), /Add a weather period/)
+})
+
+test('old multi-period Cecid scenarios preserve rain, start time, and soil history', () => {
+  const params = {
+    hours: 48,
+    manual_weather_start: '2026-04-01T00:00:00+08:00',
+    manual_weather_blocks: [
+      { start_hour: 0, end_hour: 4, temperature_c: 26, wind_speed_ms: 1, wind_dir_deg: 90, rainfall_mm: 2 },
+      { start_hour: 4, end_hour: 48, temperature_c: 28, wind_speed_ms: 1, wind_dir_deg: 90, rainfall_mm: 0 },
+    ],
+    manual_soil_context: { preset: 'recently_wet' },
+  }
+  const timeline = restoreCustomWeatherTimeline(params)
+  assert.equal(timeline.coverage_mode, 'scheduled')
+  assert.deepEqual(customWeatherRequestFields(timeline, 48, 'cecid'), {
+    manual_weather_blocks: params.manual_weather_blocks,
+    manual_weather_start: params.manual_weather_start,
+    manual_soil_context: params.manual_soil_context,
+  })
+  assert.equal(customWeatherRequestFields(timeline, 48, 'fruitfly').manual_soil_context, undefined)
+  assert.equal(restoreCustomWeatherTimeline({ hours: 48 }), null)
+})
+
+test('saved hourly series retain inherited values, nulls, precedence and repeated tail', () => {
+  const params = {
+    hours: 5,
+    manual_weather_start: '2026-10-04T05:00:00+08:00',
+    manual_weather_series: [
+      { temperature_c: 27, wind_speed_ms: 1, rainfall_mm: 2 },
+      { temperature_c: null, rainfall_mm: 0 },
+      { wind_speed_ms: 3 },
+    ],
+    manual_weather_blocks: [{ start_hour: 0, end_hour: 5, temperature_c: 40 }],
+  }
+  const timeline = restoreCustomWeatherTimeline(params)
+  const entries = expandWeatherBlocks(customWeatherBlocks(timeline, 5), 5)
+  assert.deepEqual(entries.map(({ temperature_c, wind_speed_ms, rainfall_mm }) => [temperature_c, wind_speed_ms, rainfall_mm]),
+    [[27, 1, 2], [27, 1, 0], [27, 3, 0], [27, 3, 0], [27, 3, 0]])
+  assert.equal(timeline.start_datetime, params.manual_weather_start)
+})
+
+test('saved requests take precedence over stale editor values without extending explicit periods', () => {
+  const stale = createConstantWeatherTimeline({ temperature_c: 40, rainfall_mm: 20 }, 48)
+  const recorded = { temperature_c: 27, wind_speed_ms: 1, wind_dir_deg: 90, rainfall_mm: 0 }
+  const params = { hours: 48, dashboard_state: { weather_timeline: stale } }
+  const blocks = [{ ...recorded, start_hour: 0, end_hour: 24 }]
+  const schedule = restoreCustomWeatherTimeline({ ...params, manual_weather_blocks: blocks })
+  assert.equal(schedule.coverage_mode, 'scheduled')
+  assert.deepEqual(customWeatherRequestFields(schedule, 48, 'fruitfly'), { manual_weather_blocks: blocks })
+  const constant = restoreCustomWeatherTimeline({ ...params, manual_weather: recorded })
+  assert.deepEqual(customWeatherRequestFields(constant, 48, 'fruitfly'), { manual_weather: recorded })
 })
 
 test('summary uses the local wall-clock start hour for dawn and dusk', () => {

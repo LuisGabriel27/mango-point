@@ -2,8 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 import api, { apiErrorMessage } from '../../api'
 import {
-  buildGuidedBlocks,
-  normalizeAdvancedBlocks,
+  customWeatherBlocks,
+  customWeatherRequestFields,
   summarizeWeatherBlocks,
 } from '../../utils/weatherSchedule'
 import {
@@ -302,6 +302,9 @@ export default function SimulationCard({
   manualWeather,
   weatherOverrideActive,
   weatherTimeline,
+  selectedPestType = 'fruitfly',
+  simulationHours = 48,
+  onHoursChange,
   orchardCoordinates,
   suggestedParams,
   onClearSuggested,
@@ -309,7 +312,7 @@ export default function SimulationCard({
   embedded = false,
 }) {
   const [simMode, setSimMode] = useState('grid')
-  const [pestType, setPestType] = useState('fruitfly')
+  const [pestType, setPestType] = useState(selectedPestType)
   const [orchardStage, setOrchardStage] = useState('mature')
   const [daysFlowering, setDaysFlowering] = useState(60)
   const [neighborThreat, setNeighborThreat] = useState(0)
@@ -317,7 +320,16 @@ export default function SimulationCard({
   const [treatmentEnabled, setTreatmentEnabled] = useState(false)
   const [treatmentType, setTreatmentType] = useState('targeted_spray')
   const [treatmentEfficacy, setTreatmentEfficacy] = useState(0.65)
-  const [simHours, setSimHours] = useState('48')
+  const [simHours, setSimHours] = useState(String(simulationHours))
+  useEffect(() => {
+    setPestType(selectedPestType)
+  }, [selectedPestType])
+  useEffect(() => {
+    setSimHours(String(simulationHours))
+  }, [simulationHours])
+  useEffect(() => {
+    onHoursChange?.(Number(simHours) || 48)
+  }, [simHours, onHoursChange])
   const [showModelPressure, setShowModelPressure] = useState(false)
   const [showTreatment, setShowTreatment] = useState(false)
   const [showImpact, setShowImpact] = useState(false)
@@ -357,20 +369,8 @@ export default function SimulationCard({
   const safeTimelineHours = Number.isFinite(timelineHours) ? timelineHours : 48
   const timelineBlocks = useMemo(() => {
     if (!timelineActive) return []
-    return weatherTimeline?.mode === 'advanced'
-      ? normalizeAdvancedBlocks(weatherTimeline?.advanced_blocks, safeTimelineHours)
-      : buildGuidedBlocks(weatherTimeline?.guided_phases, safeTimelineHours)
-  }, [safeTimelineHours, timelineActive, weatherTimeline?.advanced_blocks, weatherTimeline?.guided_phases, weatherTimeline?.mode])
-  const timelinePayloadBlocks = timelineBlocks.length
-    ? timelineBlocks
-    : [{
-      start_hour: 0,
-      end_hour: safeTimelineHours,
-      temperature_c: 30,
-      wind_speed_ms: 2,
-      wind_dir_deg: 90,
-      rainfall_mm: 0,
-    }]
+    return customWeatherBlocks(weatherTimeline, safeTimelineHours)
+  }, [safeTimelineHours, timelineActive, weatherTimeline])
   const timelineSummary = useMemo(() => {
     if (!timelineActive) return null
     const threshold = SENSITIVITY_PRESETS[sensitivity]?.cecid_rainfall_threshold_mm ?? 5
@@ -436,7 +436,7 @@ export default function SimulationCard({
     if (loadedParams.neighbor_threat != null) setNeighborThreat(Number(loadedParams.neighbor_threat))
     if (loadedParams.neighbor_direction) setNeighborDir(loadedParams.neighbor_direction)
     if (loadedParams.hours != null) setSimHours(String(loadedParams.hours))
-    if (loadedParams.manual_weather_prefix_rain != null) setPrefixRain(loadedParams.manual_weather_prefix_rain)
+    setPrefixRain(loadedParams.manual_weather_prefix_rain ?? null)
     const restoredSeed = Number(loadedParams.random_seed)
     setFixedRandomSeed(
       loadedParams.random_seed != null && Number.isInteger(restoredSeed)
@@ -568,13 +568,7 @@ export default function SimulationCard({
 
       if (weatherOverrideActive) {
         if (timelineActive) {
-          body.manual_weather_blocks = timelinePayloadBlocks
-          if (weatherTimeline?.manual_soil_context) {
-            body.manual_soil_context = weatherTimeline.manual_soil_context
-          }
-          if (weatherTimeline?.start_datetime) {
-            body.manual_weather_start = weatherTimeline.start_datetime
-          }
+          Object.assign(body, customWeatherRequestFields(weatherTimeline, requestedHours, pestType))
         } else {
           body.manual_weather = manualWeatherPayload(manualWeather)
           if (manualWeather?.sim_datetime) {
@@ -617,11 +611,8 @@ export default function SimulationCard({
         ? summarizeCecidResult(res.data)
         : null
       setCecidResultSummary(cecidSummary)
-      const peakPct = res.data.peak_risk != null ? `${(res.data.peak_risk * 100).toFixed(0)}%` : '—'
       const nInfested = res.data.n_infested_final ?? 0
-      const weatherSrc = timelineActive
-        ? 'weather timeline'
-        : weatherOverrideActive ? 'manual weather' : 'live forecast'
+      const weatherSrc = weatherOverrideActive ? 'custom weather' : 'live forecast'
       const seedNote = useObsSeeds
         ? 'field observations'
         : pestType === 'cecid' ? 'automatic 1–3 source fallback if needed' : 'auto seed'
@@ -653,8 +644,8 @@ export default function SimulationCard({
       setStatus({
         type: 'success',
         msg: pestType === 'cecid'
-          ? `Done — peak risk: ${peakPct}, ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${cecidInterpretation}${uncertaintyNote} · ${actualSourceCount} soil source anchor${actualSourceCount === 1 ? '' : 's'} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`
-          : `Done — peak risk: ${peakPct}, ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${reachabilityNote} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
+          ? `Done — ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${cecidInterpretation}${uncertaintyNote} · ${actualSourceCount} soil source anchor${actualSourceCount === 1 ? '' : 's'} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`
+          : `Done — ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${reachabilityNote} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
       })
       const replayableRequest = buildReplayableSimulationRequest(body, res.data)
       onSimulationComplete?.({

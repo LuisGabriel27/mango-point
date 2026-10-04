@@ -316,6 +316,37 @@ def test_bulk_tree_update_uses_portable_ids_without_mutating_input():
     assert updated["features"][1]["properties"]["stage"] == "fruitlet"
 
 
+def test_bulk_tree_clear_removes_persisted_stage_and_status_properties():
+    original = {
+        "type": "FeatureCollection",
+        "features": [{
+            **_point_feature(122.0, 10.0, "T1"),
+            "properties": {
+                "tree_id": "T1",
+                "stage": "mature",
+                "Stage": "mature",
+                "status": "healthy",
+                "Status": "healthy",
+            },
+        }],
+    }
+
+    updated, found, missing = update_geojson_trees(
+        original,
+        ["T1"],
+        clear_stage=True,
+        clear_status=True,
+    )
+
+    assert found == ["T1"]
+    assert missing == []
+    assert original["features"][0]["properties"]["stage"] == "mature"
+    assert "stage" not in updated["features"][0]["properties"]
+    assert "Stage" not in updated["features"][0]["properties"]
+    assert "status" not in updated["features"][0]["properties"]
+    assert "Status" not in updated["features"][0]["properties"]
+
+
 class _FakeOrchardSession:
     def __init__(self):
         self.added = None

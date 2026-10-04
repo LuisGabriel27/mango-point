@@ -7,12 +7,20 @@ const FOCUSABLE_SELECTOR = [
 ].join(',')
 
 export default function ZoneClearConfirmationModal({
+  clearType = 'all',
   zoneCount,
   persistentCount = 0,
   scenarioCount = 0,
   onConfirm,
   onClose,
 }) {
+  const copy = {
+    all: { title: 'Clear all zones?', action: 'Clear all zones', noun: 'zone' },
+    stage: { title: 'Clear stage zones?', action: 'Clear stage zones', noun: 'stage zone' },
+    status: { title: 'Clear status zones?', action: 'Clear status zones', noun: 'status zone' },
+    management: { title: 'Clear management zones?', action: 'Clear management zones', noun: 'management zone' },
+    cecid: { title: 'Clear weed habitats?', action: 'Clear weed habitats', noun: 'weed habitat' },
+  }[clearType] || { title: 'Clear zones?', action: 'Clear zones', noun: 'zone' }
   const dialogRef = useRef(null)
   const cancelRef = useRef(null)
   const previousFocusRef = useRef(null)
@@ -83,7 +91,7 @@ export default function ZoneClearConfirmationModal({
         <header className="orchard-modal-header zone-clear-modal-header">
           <div>
             <div className="orchard-modal-eyebrow">Zone management</div>
-            <h2 id="zone-clear-modal-title" className="orchard-modal-title">Clear all zones?</h2>
+          <h2 id="zone-clear-modal-title" className="orchard-modal-title">{copy.title}</h2>
           </div>
           <button type="button" className="btn-close" aria-label="Close confirmation" onClick={onClose} disabled={clearing} />
         </header>
@@ -94,7 +102,9 @@ export default function ZoneClearConfirmationModal({
           </div>
           <div>
             <p id="zone-clear-modal-description" className="zone-clear-modal-message">
-              This will remove <strong>{zoneCount} zone{zoneCount === 1 ? '' : 's'}</strong> from the current orchard map.
+              {zoneCount > 0
+                ? <>This will remove <strong>{zoneCount} {copy.noun}{zoneCount === 1 ? '' : 's'}</strong> from the current orchard map.</>
+                : <>No visible {copy.noun}s are listed, but this will still clear matching saved data from the orchard.</>}
             </p>
             <div className="zone-clear-modal-breakdown">
               {persistentCount > 0 && (
@@ -105,7 +115,7 @@ export default function ZoneClearConfirmationModal({
               )}
             </div>
             {persistentCount > 0 && (
-              <p className="zone-clear-modal-note">Saved orchard zones will also be removed from future sessions.</p>
+              <p className="zone-clear-modal-note">Saved orchard data will also be removed from future sessions.</p>
             )}
           </div>
         </div>
@@ -113,7 +123,7 @@ export default function ZoneClearConfirmationModal({
         <footer className="zone-clear-modal-actions">
           <button ref={cancelRef} type="button" className="btn btn-light" onClick={onClose} disabled={clearing}>Cancel</button>
           <button type="button" className="btn btn-danger" onClick={handleConfirm} disabled={clearing}>
-            {clearing ? <><span className="spinner-border spinner-border-sm me-2" />Clearing zones</> : <><i className="bi bi-trash3 me-2" />Clear all zones</>}
+            {clearing ? <><span className="spinner-border spinner-border-sm me-2" />Clearing</> : <><i className="bi bi-trash3 me-2" />{copy.action}</>}
           </button>
         </footer>
       </section>

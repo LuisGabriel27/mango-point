@@ -6,7 +6,7 @@ Full logo with name: [mangopoint-wordmark-v3.png](../../frontend/public/brand/ma
 
 Icon asset: [mangopoint-logo-v2.png](../../frontend/public/brand/mangopoint-logo-v2.png).
 
-The symbol combines a golden mango with a geographic location point and a green leaf. The navigation renders the MangoPoint wordmark as accessible live text alongside it. The icon PNG is 1254 x 1254 pixels with an alpha background and is used by the navigation and browser favicon. The login logo has the accessible image name "MangoPoint" inside the page heading. The previous logo remains at `frontend/public/mangopoint.png`.
+The symbol combines a golden mango with a geographic location point and a green leaf. The navigation renders the MangoPoint wordmark as accessible live text alongside it. The icon PNG is 1254 x 1254 pixels with an alpha background and is used by the navigation and browser favicon. The login logo has the accessible image name "MangoPoint" inside the page heading.
 
 ## Generation prompt
 

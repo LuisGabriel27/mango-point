@@ -390,10 +390,15 @@ function normalizePoints(
   geojson,
   treeOverrides = {},
   stageOverrides = {},
+  stageZones = [],
   pestType = 'fruitfly',
   cecidMapMode = 'representative',
 ) {
   const features = Array.isArray(geojson?.features) ? geojson.features : []
+  // Stage properties can remain in an older orchard GeoJSON after its zones
+  // are deleted. Only treat them as active map inputs while stage context
+  // exists; otherwise Cecid eligibility would incorrectly gray those trees.
+  const hasStageContext = Array.isArray(stageZones) && stageZones.length > 0
 
   return features
     .map((feature) => {
@@ -410,7 +415,9 @@ function normalizePoints(
       const treeIdStr = String(treeId)
       const overrideStatus = treeOverrides[treeIdStr]
       const overrideStage = stageOverrides[treeIdStr] ?? null
-      const stage = overrideStage ?? props.stage ?? props.Stage ?? null
+      const stage = hasStageContext
+        ? (overrideStage ?? props.stage ?? props.Stage ?? null)
+        : null
       const status = normalizeStatus(overrideStatus ?? rawStatus)
       const crown = Number.parseFloat(props.crown_size ?? props.Crown_Width ?? 5)
       const riskValue = Number(props.risk)
@@ -988,10 +995,11 @@ export default forwardRef(function RiskMap({
       activeGeojson,
       treeOverrides,
       stageOverrides,
+      stageZones,
       pestType,
       cecidMapMode,
     ),
-    [activeGeojson, treeOverrides, stageOverrides, pestType, cecidMapMode],
+    [activeGeojson, treeOverrides, stageOverrides, stageZones, pestType, cecidMapMode],
   )
   const heatmapGeojson = useMemo(() => {
     if (pestType !== 'cecid' || !geojson?.features?.length) return geojson ?? EMPTY_FC

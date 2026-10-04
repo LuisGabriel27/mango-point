@@ -9,7 +9,6 @@ export function zoneActionsForType(type, {
 }
 
 export function zoneScopeLabel(entry) {
-  if (entry?.type !== 'stage' && entry?.type !== 'status') return ''
   return entry.scope === 'orchard' ? 'Orchard' : 'Scenario only'
 }
 
@@ -23,11 +22,7 @@ export function zoneClearLabel(filter) {
 
 export function zoneClearSummary(entries = []) {
   const clearable = entries.filter((entry) => !entry?.legacy)
-  const persistent = clearable.filter((entry) => (
-    entry.scope === 'orchard'
-    || entry.type === 'management'
-    || entry.type === 'cecid'
-  ))
+  const persistent = clearable.filter((entry) => entry.scope === 'orchard')
   return {
     total: clearable.length,
     persistent: persistent.length,

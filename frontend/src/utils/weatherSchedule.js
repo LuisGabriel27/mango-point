@@ -80,23 +80,159 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-export function createDefaultWeatherTimeline() {
+export const WEATHER_VALUE_PRESETS = {
+  temperature_c: [
+    { label: 'Cool', value: 22 },
+    { label: 'Warm', value: 27 },
+    { label: 'Hot', value: 33 },
+    { label: 'Very hot', value: 38 },
+  ],
+  rainfall_mm: [
+    { label: 'None', value: 0 },
+    { label: 'Light', value: 3 },
+    { label: 'Moderate', value: 8 },
+    { label: 'Heavy', value: 20 },
+  ],
+  wind_speed_ms: [
+    { label: 'Calm', value: 1 },
+    { label: 'Light', value: 3 },
+    { label: 'Moderate', value: 6 },
+    { label: 'Strong', value: 10 },
+  ],
+}
+
+export function createConstantWeatherTimeline(weather = {}, hours = 48, startDatetime = '') {
+  const values = normalizeWeatherValues({
+    ...weather,
+    wind_dir_deg: weather.wind_dir_deg ?? weather.wind_direction_deg ?? WEATHER_DEFAULTS.wind_dir_deg,
+  })
   return {
-    enabled: false,
+    enabled: true,
     mode: 'advanced',
-    start_datetime: localMidnightValue(),
-    guided_phases: clone(DEFAULT_GUIDED_PHASES),
-    advanced_blocks: buildGuidedBlocks(DEFAULT_GUIDED_PHASES, 48),
+    coverage_mode: 'entire_simulation',
+    start_datetime: startDatetime || weather.sim_datetime || '',
+    advanced_blocks: [{ start_hour: 0, end_hour: hours, ...values }],
     manual_soil_context: {
-      preset: 'recently_wet',
-      total_rain_mm: 8,
-      event_duration_hours: 4,
-      hours_since_rain_ended: 6,
+      preset: 'dry',
+      total_rain_mm: 0,
+      event_duration_hours: 1,
+      hours_since_rain_ended: 0,
     },
   }
 }
 
-export function createCecidGateTestPreset(date = new Date()) {
+export function createDefaultWeatherTimeline() {
+  return { ...createConstantWeatherTimeline(), enabled: false }
+}
+
+export function customWeatherBlocks(timeline, hours = 48) {
+  if (timeline?.mode === 'guided') {
+    return buildGuidedBlocks(timeline.guided_phases || DEFAULT_GUIDED_PHASES, hours)
+  }
+  const blocks = timeline?.advanced_blocks || []
+  if (timeline?.coverage_mode === 'entire_simulation' && blocks.length === 1) {
+    return [{ ...normalizeWeatherValues(blocks[0]), start_hour: 0, end_hour: hours }]
+  }
+  return normalizeAdvancedBlocks(blocks, hours)
+}
+
+export function addCustomWeatherPeriod(timeline, hours = 48) {
+  const blocks = customWeatherBlocks(timeline, hours)
+  const last = blocks.at(-1)
+  if (!last) return createConstantWeatherTimeline({}, hours, timeline?.start_datetime)
+  const end = Math.min(hours, last.end_hour)
+  if (end >= hours && end - last.start_hour < 2) return timeline
+  const start = end < hours ? end : last.start_hour + Math.min(8, Math.ceil((end - last.start_hour) / 2))
+  return {
+    ...timeline,
+    coverage_mode: 'scheduled',
+    advanced_blocks: [
+      ...blocks.slice(0, -1),
+      { ...last, end_hour: start },
+      { ...normalizeWeatherValues(last), start_hour: start, end_hour: hours },
+    ],
+  }
+}
+
+export function weatherCoverage(blocks, hours) {
+  const coverage = Array.from({ length: hours }, () => 0)
+  for (const block of normalizeAdvancedBlocks(blocks, hours)) {
+    for (let hour = block.start_hour; hour < block.end_hour; hour += 1) coverage[hour] += 1
+  }
+  return {
+    uncovered_hours: coverage.filter((count) => count === 0).length,
+    overlapping_hours: coverage.filter((count) => count > 1).length,
+  }
+}
+
+export function customWeatherRequestFields(timeline, hours, pestType) {
+  const blocks = customWeatherBlocks(timeline, hours)
+  if (!blocks.length) throw new Error('Add a weather period with an end hour later than its start hour before running.')
+  const fields = timeline?.coverage_mode === 'entire_simulation' && blocks.length === 1
+    ? { manual_weather: normalizeWeatherValues(blocks[0]) }
+    : { manual_weather_blocks: blocks }
+  if (timeline?.start_datetime) fields.manual_weather_start = timeline.start_datetime
+  if (pestType === 'cecid' && timeline?.manual_soil_context) {
+    fields.manual_soil_context = { ...timeline.manual_soil_context }
+  }
+  return fields
+}
+
+export function restoreCustomWeatherTimeline(params = {}) {
+  const saved = params.dashboard_state?.weather_timeline ?? params.weather_timeline
+  const hours = Math.max(1, Math.min(168, Number(params.hours) || 48))
+  if (params.manual_weather_series?.length) {
+    let previous = { ...WEATHER_DEFAULTS }
+    const blocks = []
+    const length = Math.min(168, Math.max(hours, params.manual_weather_series.length))
+    for (let hour = 0; hour < length; hour += 1) {
+      const entry = params.manual_weather_series[hour] || {}
+      previous = normalizeWeatherValues({
+        ...previous,
+        ...Object.fromEntries(Object.entries(entry).filter(([, value]) => value != null)),
+      })
+      const last = blocks.at(-1)
+      if (last && Object.keys(WEATHER_DEFAULTS).every((key) => last[key] === previous[key])) {
+        last.end_hour = hour + 1
+      } else {
+        blocks.push({ ...previous, start_hour: hour, end_hour: hour + 1 })
+      }
+    }
+    return {
+      ...createConstantWeatherTimeline({}, hours), ...saved,
+      enabled: true, mode: 'advanced', coverage_mode: 'scheduled', advanced_blocks: blocks,
+      start_datetime: params.manual_weather_start || saved?.start_datetime || '',
+      manual_soil_context: params.manual_soil_context || saved?.manual_soil_context || { preset: 'dry' },
+    }
+  }
+  if (saved?.enabled || params.manual_weather_blocks?.length) {
+    // Recorded request values are authoritative; old editor state can be stale.
+    const recordedBlocks = params.manual_weather_blocks?.length ? params.manual_weather_blocks : null
+    const recordedConstant = params.manual_weather
+      ? createConstantWeatherTimeline(params.manual_weather, hours, params.manual_weather_start)
+      : null
+    return {
+      ...createConstantWeatherTimeline({}, hours), ...saved,
+      enabled: true, mode: 'advanced',
+      coverage_mode: recordedBlocks ? 'scheduled'
+        : recordedConstant ? 'entire_simulation' : saved?.coverage_mode || 'scheduled',
+      advanced_blocks: recordedBlocks || recordedConstant?.advanced_blocks || (saved?.mode === 'guided'
+        ? buildGuidedBlocks(saved.guided_phases || DEFAULT_GUIDED_PHASES, 168)
+        : saved?.advanced_blocks || []),
+      start_datetime: params.manual_weather_start || saved?.start_datetime || '',
+      manual_soil_context: params.manual_soil_context || saved?.manual_soil_context || { preset: 'dry' },
+    }
+  }
+  if (params.manual_weather) {
+    return {
+      ...createConstantWeatherTimeline(params.manual_weather, hours, params.manual_weather_start),
+      manual_soil_context: params.manual_soil_context || { preset: 'dry' },
+    }
+  }
+  return null
+}
+
+export function createCecidGateTestPreset(date = new Date(), hours = 168) {
   const dailyPattern = [
     {
       start_hour: 0,
@@ -119,9 +255,10 @@ export function createCecidGateTestPreset(date = new Date()) {
   return {
     enabled: true,
     mode: 'advanced',
+    coverage_mode: 'scheduled',
     start_datetime: localMidnightValue(date),
     guided_phases: clone(DEFAULT_GUIDED_PHASES),
-    advanced_blocks: repeatFirstDayBlocks(dailyPattern, 168),
+    advanced_blocks: repeatFirstDayBlocks(dailyPattern, hours),
     manual_soil_context: {
       preset: 'dry',
       total_rain_mm: 0,

@@ -29,6 +29,11 @@ test('management-zone payload keeps stable identity and drops display counts', (
   }])
 })
 
+test('management-zone payload excludes scenario-only areas', () => {
+  assert.deepEqual(managementZonePayload([{ ...ZONE, scope: 'scenario' }]), [])
+  assert.equal(normalizeManagementZones([{ ...ZONE, scope: 'scenario' }])[0].scope, 'scenario')
+})
+
 test('failed management-zone save retains optimistic data for retry', async () => {
   const failed = await saveManagementZones('orchard-a', [ZONE], async () => {
     throw new Error('offline')

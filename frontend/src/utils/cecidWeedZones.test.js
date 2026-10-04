@@ -30,13 +30,19 @@ test('orchard payload excludes display-only tree counts', () => {
   }])
 })
 
+test('weed habitat payload excludes scenario-only areas', () => {
+  assert.deepEqual(weedZonePayload([{ ...ZONE, scope: 'scenario' }]), [])
+  assert.equal(normalizeCecidWeedZones([{ ...ZONE, scope: 'scenario' }])[0].scope, 'scenario')
+})
+
 test('failed save keeps optimistic zones available for retry', async () => {
   const failed = await saveCecidWeedZones('orchard-a', [ZONE], async () => {
     throw new Error('offline')
   })
   assert.equal(failed.ok, false)
   assert.equal(failed.message, 'offline')
-  assert.deepEqual(failed.zones, [ZONE])
+  assert.equal(failed.zones[0].id, ZONE.id)
+  assert.equal(failed.zones[0].scope, 'orchard')
 
   let retryPayload
   const retried = await saveCecidWeedZones('orchard-a', failed.zones, async (_id, payload) => {

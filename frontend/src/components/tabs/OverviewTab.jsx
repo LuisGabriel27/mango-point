@@ -21,15 +21,6 @@ function KpiCard({ iconName, iconColor, title, value, detail }) {
   )
 }
 
-function riskBadge(score) {
-  if (score == null) return <span className="badge bg-secondary">—</span>
-  const v = score * 100
-  if (v >= 70) return <span className="badge bg-danger">Critical</span>
-  if (v >= 50) return <span className="badge bg-warning text-dark">High</span>
-  if (v >= 30) return <span className="badge bg-info text-dark">Moderate</span>
-  return <span className="badge bg-success">Low</span>
-}
-
 export default function OverviewTab({ monitoringData, simData, totalTrees: totalTreesProp = 0 }) {
   const m = monitoringData ?? {}
   const impact = simData?.impact_assumptions ?? {}
@@ -50,10 +41,6 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
     : (m.infestation_rate?.rate ?? null)
   const infestRate = infestRateVal != null ? `${(infestRateVal * 100).toFixed(1)}%` : '—'
   const infestRatePct = infestRateVal != null ? `${(infestRateVal * 100).toFixed(1)}%` : '0%'
-
-  // Risk score: prefer simulation peak_risk, fallback to monitoring risk_index
-  const riskScoreVal = simData?.peak_risk ?? m.risk_index?.score ?? null
-  const riskScore = riskScoreVal != null ? `${(riskScoreVal * 100).toFixed(1)}%` : '—'
 
   const infestedTrees = infestedFinal ?? m.infestation_rate?.infested_trees ?? 0
   const activeAlerts = m.alert_summary?.active ?? 0
@@ -99,19 +86,6 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
             </div>
             {infestedFinal != null && (
               <small className="text-muted">{infestedFinal} of {totalTrees || '?'} trees</small>
-            )}
-          </div>
-        }
-      />
-      <KpiCard
-        iconName="speedometer2" iconColor="text-warning"
-        title="Peak risk score"
-        value={riskScore}
-        detail={
-          <div className="mt-2 monitoring-risk-badge">
-            {riskBadge(riskScoreVal)}
-            {simData?.peak_risk != null && (
-              <small className="text-muted d-block mt-1">from simulation</small>
             )}
           </div>
         }

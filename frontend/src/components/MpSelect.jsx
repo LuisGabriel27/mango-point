@@ -20,8 +20,8 @@ export default function MpSelect({ value, onChange, options = [], className = ''
 
   const handleSelect = (val) => {
     if (disabled) return
-    onChange(val)
     setOpen(false)
+    onChange(val)
   }
 
   return (
@@ -41,6 +41,7 @@ export default function MpSelect({ value, onChange, options = [], className = ''
             <li
               key={o.value}
               className={`mp-select-option${o.value === value ? ' selected' : ''}`}
+              onMouseDown={() => { setOpen(false) }}
               onClick={() => handleSelect(o.value)}
             >
               {o.value === value && <i className="bi bi-check2 mp-select-check" />}

@@ -24,6 +24,8 @@ export default function Sidebar({
   manualWeather,
   weatherOverrideActive,
   weatherTimeline,
+  simulationHours = 48,
+  onSimulationHoursChange,
   onManualWeatherChange,
   onWeatherOverrideToggle,
   onWeatherTimelineChange,
@@ -113,7 +115,7 @@ export default function Sidebar({
     || (selectedOrchardId === 'default-orchard' ? 'Default Orchard (BPI)' : 'Select an orchard')
   const currentWeather = weather?.current
   const weatherLabel = weatherOverrideActive
-    ? (weatherTimeline?.enabled ? 'Timeline weather' : 'Weather override')
+    ? 'Custom weather'
     : currentWeather?.temperature_c != null
       ? `${Number(currentWeather.temperature_c).toFixed(1)}°C live`
       : 'Weather loading'
@@ -261,6 +263,10 @@ export default function Sidebar({
                 manualWeather={manualWeather}
                 weatherOverrideActive={weatherOverrideActive}
                 weatherTimeline={weatherTimeline}
+                simulationHours={simulationHours}
+                pestType={selectedPestType}
+                onCecidPresetLoad={() => onPestTypeChange?.('cecid')}
+                onSimulationHoursChange={onSimulationHoursChange}
                 onManualChange={onManualWeatherChange}
                 onOverrideToggle={onWeatherOverrideToggle}
                 onTimelineChange={onWeatherTimelineChange}
@@ -289,12 +295,15 @@ export default function Sidebar({
                 cecidWeedZones={cecidWeedZones}
                 legacyCecidEmergenceZones={legacyCecidEmergenceZones}
                 onPestTypeChange={onPestTypeChange}
+                selectedPestType={selectedPestType}
+                simulationHours={simulationHours}
                 onClearTreeStageOverrides={onClearTreeStageOverrides}
                 onSimulationComplete={handleSimulationComplete}
                 loadedParams={simulationTemplate}
                 manualWeather={manualWeather}
                 weatherOverrideActive={weatherOverrideActive}
                 weatherTimeline={weatherTimeline}
+                onHoursChange={onSimulationHoursChange}
                 orchardCoordinates={orchardCoordinates}
                 suggestedParams={suggestedSimParams}
                 onClearSuggested={onClearSuggestedSimParams}

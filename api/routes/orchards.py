@@ -858,6 +858,8 @@ async def update_orchard_trees(
             payload.tree_ids,
             status=payload.status,
             stage=stage,
+            clear_status=payload.clear_status,
+            clear_stage=payload.clear_stage,
         )
 
         orchard.geojson = updated_geojson
@@ -873,8 +875,12 @@ async def update_orchard_trees(
                 continue
             if payload.status is not None:
                 tree.status = payload.status
+            elif payload.clear_status:
+                tree.status = "healthy"
             if stage is not None:
                 tree.current_stage = stage
+            elif payload.clear_stage:
+                tree.current_stage = orchard.orchard_stage
 
         await db.flush()
         return TreeBulkUpdateResponse(

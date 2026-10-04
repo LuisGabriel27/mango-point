@@ -381,7 +381,7 @@ class OrchardListResponse(BaseModel):
 
 
 class TreeBulkUpdateRequest(BaseModel):
-    """Persist a stage and/or status for selected GeoJSON tree IDs."""
+    """Persist or clear a stage and/or status for selected GeoJSON tree IDs."""
 
     tree_ids: List[str] = Field(..., min_length=1, max_length=10000)
     status: Optional[str] = Field(
@@ -389,6 +389,8 @@ class TreeBulkUpdateRequest(BaseModel):
         pattern="^(healthy|infected|bagged|dead|history_infected|suspect)$",
     )
     stage: Optional[OrchardStageEnum] = None
+    clear_status: bool = False
+    clear_stage: bool = False
 
     @field_validator("tree_ids")
     @classmethod
@@ -400,8 +402,12 @@ class TreeBulkUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_change(self):
-        if self.status is None and self.stage is None:
-            raise ValueError("Provide a status, a stage, or both")
+        if self.status is None and self.stage is None and not self.clear_status and not self.clear_stage:
+            raise ValueError("Provide a status, a stage, or a clear operation")
+        if self.status is not None and self.clear_status:
+            raise ValueError("Choose status or clear_status, not both")
+        if self.stage is not None and self.clear_stage:
+            raise ValueError("Choose stage or clear_stage, not both")
         return self
 
 

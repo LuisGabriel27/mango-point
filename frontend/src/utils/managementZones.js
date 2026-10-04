@@ -10,7 +10,7 @@ function parseMaybeJson(value, fallback) {
   }
 }
 
-export function normalizeManagementZones(value) {
+export function normalizeManagementZones(value, defaultScope = 'orchard') {
   const zones = parseMaybeJson(value, [])
   if (!Array.isArray(zones)) return []
   return zones
@@ -26,18 +26,21 @@ export function normalizeManagementZones(value) {
         color,
         coordinates,
         tree_count: Number(zone?.tree_count) || 0,
+        scope: zone?.scope === 'scenario' ? 'scenario' : defaultScope === 'orchard' ? 'orchard' : 'scenario',
       }
     })
     .filter(Boolean)
 }
 
 export function managementZonePayload(zones) {
-  return normalizeManagementZones(zones).map((zone) => ({
+  return normalizeManagementZones(zones)
+    .filter((zone) => zone.scope === 'orchard')
+    .map((zone) => ({
     id: zone.id,
     label: zone.label,
     color: zone.color,
     coordinates: zone.coordinates,
-  }))
+    }))
 }
 
 export async function saveManagementZones(orchardId, zones, updateOrchard) {
@@ -48,7 +51,10 @@ export async function saveManagementZones(orchardId, zones, updateOrchard) {
     })
     return {
       ok: true,
-      zones: normalizeManagementZones(response?.data?.management_zones ?? localZones),
+      zones: [
+        ...localZones.filter((zone) => zone.scope !== 'orchard'),
+        ...normalizeManagementZones(response?.data?.management_zones ?? [], 'orchard'),
+      ],
       response,
       error: null,
       message: '',

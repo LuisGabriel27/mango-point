@@ -279,6 +279,24 @@ recipients, in dependency order. Orchard
 files must be restored separately from your local file backup because they are
 not stored in Supabase.
 
+## Simulation Weather Controls
+
+Choose **Live Forecast** or **Custom Weather** for either pest. Custom Weather
+starts with one period covering the entire selected simulation duration, so
+constant weather does not require repeating daily inputs. Temperature, rainfall,
+and wind have compact preset buttons alongside exact numeric inputs; wind
+direction uses compass letters.
+
+Use **Add period** or **Edit hours** for changing conditions, then navigate
+periods horizontally. **Repeat first day** copies the first 24-hour pattern
+through the selected duration. Uncovered hours use the existing default weather
+and display a warning; overlapping periods use the later period.
+
+For Cecid Fly, expand **Soil & Cecid test preset** to configure antecedent soil
+rainfall or load the weather-only dawn/dusk test. These controls are hidden for
+Fruit Fly. Existing constant-weather, timeline, and hourly-series history records
+remain supported; this UI does not change either pest's biological rules.
+
 ## Cecid Fly Weed Habitat
 
 Select `Weed Habitat` in the Live Map Zone Editor to draw persistent orchard

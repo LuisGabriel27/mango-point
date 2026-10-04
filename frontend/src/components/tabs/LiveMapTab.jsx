@@ -211,13 +211,11 @@ export default function LiveMapTab({
   legacyCecidEmergenceZones = [],
   cecidZoneDrawing = false,
   cecidZoneDensity = 'moderate',
-  cecidZoneLabel = 'Weed habitat',
   cecidZoneDraft = [],
   cecidZoneSelectedCount = 0,
   cecidZoneSaveState = 'idle',
   cecidZoneSaveError = '',
   onCecidZoneDensityChange,
-  onCecidZoneLabelChange,
   onCecidZoneStart,
   onCecidZoneCancel,
   onCecidZoneFinish,
@@ -250,7 +248,7 @@ export default function LiveMapTab({
   const [zoneEditorOpen, setZoneEditorOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
   const [legendOpen, setLegendOpen] = useState(false)
-  const [clearAllModalOpen, setClearAllModalOpen] = useState(false)
+  const [clearRequest, setClearRequest] = useState(null)
   const [zoneListFilter, setZoneListFilter] = useState('all')
   const [zoneEditorType, setZoneEditorType] = useState('stage')
   const [drawMode, setDrawMode] = useState('polygon')
@@ -266,7 +264,16 @@ export default function LiveMapTab({
   }), [stageZones, statusZones, managementZones, cecidWeedZones,
     legacyCecidEmergenceZones, treePoints, stageOptions, statusOptions])
   const zoneCounts = zoneInventoryCounts(zoneEntries)
-  const clearAllSummary = useMemo(() => zoneClearSummary(zoneEntries), [zoneEntries])
+  const clearSummary = useMemo(() => zoneClearSummary(
+    clearRequest && clearRequest !== 'all'
+      ? zoneEntries.filter((entry) => entry.type === clearRequest)
+      : zoneEntries,
+  ), [clearRequest, zoneEntries])
+  const clearAction = clearRequest === 'all' ? onZoneClearAll
+    : clearRequest === 'stage' ? onStageZoneClear
+      : clearRequest === 'status' ? onStatusZoneClear
+        : clearRequest === 'management' ? onManagementZoneClear
+          : clearRequest === 'cecid' ? onCecidZoneClear : null
 
   useEffect(() => {
     setZoneVisibility((current) => ({
@@ -504,7 +511,7 @@ export default function LiveMapTab({
                   <MpSelect small value={statusZoneStatus} onChange={onStatusZoneStatusChange} options={statusOptions} />
                 </label>
               )}
-              {(zoneEditorType === 'stage' || zoneEditorType === 'status') && (
+              {(zoneEditorType === 'stage' || zoneEditorType === 'status' || zoneEditorType === 'management' || zoneEditorType === 'cecid') && (
                 <label className="map-zone-editor-field">
                   <span>Save behavior</span>
                   <MpSelect small value={treeEditScope} onChange={onTreeEditScopeChange} options={EDIT_SCOPE_OPTIONS} />
@@ -517,16 +524,10 @@ export default function LiveMapTab({
                 </label>
               )}
               {zoneEditorType === 'cecid' && (
-                <>
-                  <label className="map-zone-editor-field">
-                    <span>Habitat name</span>
-                    <input className="form-control form-control-sm" value={cecidZoneLabel} onChange={(event) => onCecidZoneLabelChange?.(event.target.value)} placeholder="Weed habitat label" />
-                  </label>
-                  <label className="map-zone-editor-field">
-                    <span>Density</span>
-                    <MpSelect small value={cecidZoneDensity} onChange={onCecidZoneDensityChange} options={CECID_DENSITY_OPTIONS} />
-                  </label>
-                </>
+                <label className="map-zone-editor-field">
+                  <span>Density</span>
+                  <MpSelect small value={cecidZoneDensity} onChange={onCecidZoneDensityChange} options={CECID_DENSITY_OPTIONS} />
+                </label>
               )}
               <label className="map-zone-editor-field">
                 <span>Drawing method</span>
@@ -663,7 +664,7 @@ export default function LiveMapTab({
                   <MpSelect small value={statusZoneStatus} onChange={onStatusZoneStatusChange} options={statusOptions} />
                 </div>
               )}
-              {(zoneEditorType === 'stage' || zoneEditorType === 'status') && (
+              {(zoneEditorType === 'stage' || zoneEditorType === 'status' || zoneEditorType === 'management' || zoneEditorType === 'cecid') && (
                 <div style={{ flexShrink: 0, width: 132 }}>
                   <MpSelect
                     small
@@ -684,13 +685,6 @@ export default function LiveMapTab({
               )}
               {zoneEditorType === 'cecid' && (
                 <>
-                  <input
-                    className="form-control form-control-sm map-cecid-zone-label"
-                    value={cecidZoneLabel}
-                    aria-label="Weed habitat label"
-                    onChange={(event) => onCecidZoneLabelChange?.(event.target.value)}
-                    placeholder="Weed habitat label"
-                  />
                   <div style={{ flexShrink: 0, width: 130 }}>
                     <MpSelect
                       small
@@ -813,7 +807,7 @@ export default function LiveMapTab({
                   Undo Zone
                 </button>
               )}
-              <button type="button" className="btn btn-sm btn-light" onClick={onZoneClearAll}>
+              <button type="button" className="btn btn-sm btn-light" onClick={() => setClearRequest('all')}>
                 Clear All
               </button>
             </>
@@ -829,15 +823,15 @@ export default function LiveMapTab({
             onFilterChange={setZoneListFilter}
             zoneVisibility={zoneVisibility}
             densityOptions={CECID_DENSITY_OPTIONS}
-            onClearAll={() => setClearAllModalOpen(true)}
+            onClearAll={() => setClearRequest('all')}
             onClose={() => setShowZoneManager(false)}
             stageActions={{
               onDelete: onStageZoneDelete,
-              onClear: onStageZoneClear,
+              onClear: () => setClearRequest('stage'),
             }}
             statusActions={{
               onDelete: onStatusZoneDelete,
-              onClear: onStatusZoneClear,
+              onClear: () => setClearRequest('status'),
             }}
             managementActions={{
               onUpdate: onManagementZoneUpdate,
@@ -848,7 +842,7 @@ export default function LiveMapTab({
                 onManagementZoneRedraw?.(zoneId)
               },
               onDelete: onManagementZoneDelete,
-              onClear: onManagementZoneClear,
+              onClear: () => setClearRequest('management'),
               onRetry: onManagementZoneRetry,
               error: managementZoneSaveState === 'error' ? managementZoneSaveError : '',
             }}
@@ -861,7 +855,7 @@ export default function LiveMapTab({
                 onCecidZoneRedraw?.(zoneId)
               },
               onDelete: onCecidZoneDelete,
-              onClear: onCecidZoneClear,
+              onClear: () => setClearRequest('cecid'),
               onRetry: onCecidZoneRetry,
               error: cecidZoneSaveState === 'error' ? cecidZoneSaveError : '',
             }}
@@ -971,7 +965,7 @@ export default function LiveMapTab({
                 <i className="bi bi-arrow-counterclockwise me-1" />
                 Undo Zone
               </button>
-              <button type="button" className="btn btn-sm btn-light" onClick={onZoneClearAll}>
+              <button type="button" className="btn btn-sm btn-light" onClick={() => setClearRequest('all')}>
                 Clear All
               </button>
             </>
@@ -1075,17 +1069,18 @@ export default function LiveMapTab({
 
         <img src={COMPASS_URI} alt="Compass - True North" className="map-compass" />
 
-        {clearAllModalOpen && (
+        {clearRequest && (
           <ZoneClearConfirmationModal
-            zoneCount={clearAllSummary.total}
-            persistentCount={clearAllSummary.persistent}
-            scenarioCount={clearAllSummary.scenario}
+            clearType={clearRequest}
+            zoneCount={clearSummary.total}
+            persistentCount={clearSummary.persistent}
+            scenarioCount={clearSummary.scenario}
             onConfirm={async () => {
-              await onZoneClearAll?.()
+              await clearAction?.()
               setShowZoneManager(false)
               setZoneEditorOpen(false)
             }}
-            onClose={() => setClearAllModalOpen(false)}
+            onClose={() => setClearRequest(null)}
           />
         )}
       </div>

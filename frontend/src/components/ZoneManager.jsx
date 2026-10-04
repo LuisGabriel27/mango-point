@@ -35,7 +35,7 @@ export default function ZoneManager({
           <i className="bi bi-x-lg" />
         </button>
       </div>
-      <div className="d-flex flex-wrap gap-1 mb-2" role="group" aria-label="Filter zones by type">
+      <div className="zone-manager-filter-group mb-2" role="group" aria-label="Filter zones by type">
         {filters.map((option) => (
           <button
             key={option.value}
@@ -49,7 +49,11 @@ export default function ZoneManager({
         ))}
       </div>
       {filteredEntries.length === 0 ? (
-        <div className="text-muted small">{filter === 'all' ? 'No zones. Use Draw Zone to add one.' : 'No zones of this type.'}</div>
+        <div className="zone-manager-empty" role="status">
+          <i className="bi bi-bounding-box-circles" aria-hidden="true" />
+          <strong>{filter === 'all' ? 'No visible zones' : `No ${filters.find((option) => option.value === filter)?.label.toLowerCase() || 'matching'} zones`}</strong>
+          <span>{filter === 'all' ? 'Use Draw Zone to add a stage, status, area, or weed habitat zone.' : 'Choose another filter or draw a new zone.'}</span>
+        </div>
       ) : (
         <div className="d-flex flex-column gap-2">
           {filteredEntries.map((entry) => {
@@ -58,60 +62,65 @@ export default function ZoneManager({
               stageActions, statusActions, managementActions, weedActions,
             }, legacy)
             const canEdit = type === 'management' || (type === 'cecid' && !legacy)
+            const canRename = type === 'management'
             return (
-              <div className="border rounded p-2" key={`${entry.key}:${label}`}>
-                <div className="d-flex flex-wrap align-items-center gap-1 mb-1 small">
-                  <span className="badge text-bg-light">{entry.typeLabel}</span>
-                  {entry.detail && <span>{entry.detail}</span>}
-                  {(type === 'stage' || type === 'status') && (
-                    <span className={`badge ${entry.scope === 'orchard' ? 'text-bg-success' : 'text-bg-secondary'}`}>
-                      {zoneScopeLabel(entry)}
-                    </span>
-                  )}
-                  {legacy && <span className="badge text-bg-secondary">Read-only</span>}
-                  {zoneVisibility[type] === false && <span className="text-muted ms-auto">Hidden on map</span>}
-                </div>
-                <div className="d-flex gap-2 align-items-center">
-                  <span className="management-zone-color" style={{ backgroundColor: entry.color }} aria-hidden="true" />
-                  {canEdit ? (
-                    <input
-                      className="form-control form-control-sm"
-                      defaultValue={label}
-                      aria-label={`Label for ${label}`}
-                      onBlur={(event) => {
-                        const nextLabel = event.target.value.trim() || label
-                        if (nextLabel !== label) actions.onUpdate?.(zone.id, { label: nextLabel })
-                      }}
-                    />
-                  ) : <span className="fw-semibold small">{label}</span>}
-                  {canEdit && (
-                    <>
+              <div className="zone-manager-entry" key={`${entry.key}:${label}`}>
+                <div className="zone-manager-entry-top">
+                  <div className="zone-manager-entry-summary">
+                    <span className="zone-manager-entry-color" style={{ backgroundColor: entry.color }} aria-hidden="true" />
+                    <div className="zone-manager-entry-content">
+                      <div className="zone-manager-entry-meta">
+                        <span className="zone-manager-entry-type">{entry.typeLabel}</span>
+                        {entry.detail && <span className="zone-manager-entry-detail">{entry.detail}</span>}
+                        <span className={`badge ${entry.scope === 'orchard' ? 'text-bg-success' : 'text-bg-secondary'}`}>
+                          {zoneScopeLabel(entry)}
+                        </span>
+                        {legacy && <span className="badge text-bg-secondary">Read-only</span>}
+                      </div>
+                      <div className="zone-manager-entry-label">
+                        {canRename ? (
+                          <input
+                            className="form-control form-control-sm"
+                            defaultValue={label}
+                            aria-label={`Label for ${label}`}
+                            onBlur={(event) => {
+                              const nextLabel = event.target.value.trim() || label
+                              if (nextLabel !== label) actions.onUpdate?.(zone.id, { label: nextLabel })
+                            }}
+                          />
+                        ) : label}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="zone-manager-entry-actions">
+                    {canEdit && (
                       <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => actions.onRedraw?.(zone.id)}>
                         Redraw
                       </button>
-                    </>
-                  )}
-                  {actions?.onDelete && (
-                    <button type="button" className="btn btn-sm btn-outline-danger" aria-label={`Delete ${label}`} onClick={() => actions.onDelete(zone.id)}>
-                      <i className="bi bi-trash" />
-                    </button>
-                  )}
+                    )}
+                    {actions?.onDelete && (
+                      <button type="button" className="btn btn-sm btn-outline-danger" aria-label={`Delete ${label}`} onClick={() => actions.onDelete(zone.id)}>
+                        <i className="bi bi-trash" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {type === 'cecid' && !legacy && (
-                  <div className="mt-2">
+                  <div className="zone-manager-entry-density">
                     <MpSelect small value={zone.density} options={densityOptions} onChange={(density) => weedActions.onUpdate?.(zone.id, { density })} />
                   </div>
                 )}
-                <div className="text-muted mt-1 small">
-                  {entry.treeCount == null ? 'Tree count unavailable' : `${entry.treeCount} tree${entry.treeCount === 1 ? '' : 's'} in this area`}
+                <div className="zone-manager-entry-footer">
+                  {zoneVisibility[type] === false && <span className="text-muted">Hidden on map</span>}
+                  <span>{entry.treeCount == null ? 'Tree count unavailable' : `${entry.treeCount} tree${entry.treeCount === 1 ? '' : 's'} in this area`}</span>
                 </div>
               </div>
             )
           })}
         </div>
       )}
-      {clearAction && filteredEntries.some((entry) => !entry.legacy) && (
-        <button type="button" className="btn btn-sm btn-outline-danger mt-2" onClick={clearAction}>
+      {clearAction && (
+        <button type="button" className="btn btn-sm btn-outline-danger mt-3 zone-manager-clear-action" onClick={clearAction}>
           {zoneClearLabel(filter)}
         </button>
       )}

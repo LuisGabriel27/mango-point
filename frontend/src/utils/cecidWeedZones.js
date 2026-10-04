@@ -8,7 +8,7 @@ function parseMaybeJson(value, fallback) {
   }
 }
 
-export function normalizeCecidWeedZones(value) {
+export function normalizeCecidWeedZones(value, defaultScope = 'orchard') {
   const zones = parseMaybeJson(value, [])
   if (!Array.isArray(zones)) return []
   return zones
@@ -24,18 +24,21 @@ export function normalizeCecidWeedZones(value) {
         density,
         coordinates,
         tree_count: zone.tree_count ?? 0,
+        scope: zone?.scope === 'scenario' ? 'scenario' : defaultScope === 'orchard' ? 'orchard' : 'scenario',
       }
     })
     .filter(Boolean)
 }
 
 export function weedZonePayload(zones) {
-  return normalizeCecidWeedZones(zones).map((zone) => ({
+  return normalizeCecidWeedZones(zones)
+    .filter((zone) => zone.scope === 'orchard')
+    .map((zone) => ({
     id: zone.id,
     label: zone.label,
     density: zone.density,
     coordinates: zone.coordinates,
-  }))
+    }))
 }
 
 export async function saveCecidWeedZones(orchardId, zones, updateOrchard) {
@@ -46,7 +49,10 @@ export async function saveCecidWeedZones(orchardId, zones, updateOrchard) {
     })
     return {
       ok: true,
-      zones: normalizeCecidWeedZones(response?.data?.cecid_weed_zones ?? localZones),
+      zones: [
+        ...localZones.filter((zone) => zone.scope !== 'orchard'),
+        ...normalizeCecidWeedZones(response?.data?.cecid_weed_zones ?? [], 'orchard'),
+      ],
       response,
       error: null,
       message: '',

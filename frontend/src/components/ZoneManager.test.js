@@ -80,9 +80,10 @@ test('removing zones updates counts and incomplete boundaries are omitted', () =
 
 test('clear-all summary separates temporary and persistent zones', () => {
   const entries = inventory({
+    managementZones: [{ ...AREA, scope: 'orchard' }],
     stageZones: [{ ...AREA, stage: 'mature', scope: 'scenario' }],
     statusZones: [{ ...STATUS, scope: 'orchard' }],
-    cecidWeedZones: [{ ...AREA, label: 'Shelter', density: 'dense' }],
+    cecidWeedZones: [{ ...AREA, label: 'Shelter', density: 'dense', scope: 'orchard' }],
     legacyCecidEmergenceZones: [{ ...AREA, label: 'Historical outline' }],
   })
 

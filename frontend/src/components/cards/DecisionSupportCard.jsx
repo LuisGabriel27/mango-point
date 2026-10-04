@@ -143,14 +143,31 @@ export default function DecisionSupportCard({ metrics, defaultOpen = true, embed
       <small className="d-block mb-2">
         <i className="bi bi-piggy-bank me-1" /><strong>Economic Impact</strong>
       </small>
-      <div className="d-flex justify-content-between align-items-center py-1">
-        <span className="text-muted small"><i className="bi bi-arrows-collapse me-1" />Pesticide Reduction</span>
-        <span className="badge bg-success">{pct(economic.pesticide_reduction)}</span>
-      </div>
-      <div className="d-flex justify-content-between align-items-center py-1">
-        <span className="text-muted small"><i className="bi bi-cash-coin me-1" />Est. Savings</span>
-        <span className="fw-bold text-success">{php(economic.estimated_savings)}</span>
-      </div>
+      {metrics.economic ? (
+        <>
+          <div className="d-flex justify-content-between align-items-center py-1">
+            <span className="text-muted small"><i className="bi bi-graph-down-arrow me-1" />Projected Loss at Risk</span>
+            <span className="fw-semibold text-danger">{php(economic.projected_loss)}</span>
+          </div>
+          <div className="d-flex justify-content-between align-items-center py-1">
+            <span className="text-muted small"><i className="bi bi-piggy-bank me-1" />Potential Savings</span>
+            <span className="fw-bold text-success">{php(economic.estimated_savings)}</span>
+          </div>
+          <div className="d-flex justify-content-between align-items-center py-1">
+            <span className="text-muted small"><i className="bi bi-cash-coin me-1" />Remaining Loss</span>
+            <span className="fw-semibold">{php(economic.remaining_loss)}</span>
+          </div>
+          <div className="d-flex justify-content-between align-items-center py-1">
+            <span className="text-muted small"><i className="bi bi-arrows-collapse me-1" />Pesticide Use Avoided</span>
+            <span className="badge bg-success">{pct(economic.pesticide_reduction)}</span>
+          </div>
+          <small className="text-muted d-block mt-2">
+            Assumes the recommendations prevent {pct(economic.recommendation_effectiveness)} of the projected base-scenario damage. Treatment and labor costs are not subtracted.
+          </small>
+        </>
+      ) : (
+        <div className="text-muted small">Economic inputs were not recorded for this result.</div>
+      )}
 
       {/* Summary message */}
       {metrics.summary_message && (

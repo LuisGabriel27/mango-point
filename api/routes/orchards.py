@@ -275,6 +275,8 @@ def orchard_to_response(
         area_size=float(orchard.area_size) if orchard.area_size is not None else None,
         tree_count=orchard.tree_count or 0,
         geojson=orchard.geojson if include_geojson else None,
+        stage_zones=getattr(orchard, "stage_zones", None) or [],
+        status_zones=getattr(orchard, "status_zones", None) or [],
         management_zones=getattr(orchard, "management_zones", None) or [],
         cecid_weed_zones=getattr(orchard, "cecid_weed_zones", None) or [],
         centroid_lon=orchard.centroid_lon,
@@ -498,6 +500,12 @@ async def create_orchard(
             area_size=payload.area_size,
             tree_count=tree_count,
             geojson=payload.geojson,
+            stage_zones=[
+                zone.model_dump(mode="json") for zone in payload.stage_zones
+            ],
+            status_zones=[
+                zone.model_dump(mode="json") for zone in payload.status_zones
+            ],
             management_zones=[
                 zone.model_dump(mode="json") for zone in payload.management_zones
             ],
@@ -623,6 +631,8 @@ async def upload_orchard(
             location=auto_location,
             tree_count=count_geojson_trees(geojson),
             geojson=geojson,
+            stage_zones=[],
+            status_zones=[],
             management_zones=[],
             cecid_weed_zones=[],
             centroid_lon=centroid_lon,
@@ -759,6 +769,16 @@ async def update_orchard(
     try:
         orchard = await _get_orchard_or_404(db, orchard_id)
         updates = payload.model_dump(exclude_unset=True)
+
+        if "stage_zones" in updates and payload.stage_zones is not None:
+            updates["stage_zones"] = [
+                zone.model_dump(mode="json") for zone in payload.stage_zones
+            ]
+
+        if "status_zones" in updates and payload.status_zones is not None:
+            updates["status_zones"] = [
+                zone.model_dump(mode="json") for zone in payload.status_zones
+            ]
 
         if "management_zones" in updates and payload.management_zones is not None:
             updates["management_zones"] = [

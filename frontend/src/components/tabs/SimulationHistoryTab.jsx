@@ -6,13 +6,21 @@ import {
   listSimulationRunsFromHistory,
   saveSimulationRunToHistory,
 } from '../../utils/simulationHistoryStore'
+import {
+  HISTORY_PERIOD_ALL_HISTORY,
+  HISTORY_PERIOD_MONTH,
+  filterRunsByHistoryPeriod,
+  historyMonthKey,
+  historyMonthLabel,
+  historyMonthParts,
+} from '../../utils/historyPeriod'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
 const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
 const ALL_ORCHARDS = 'all'
 
 const HISTORY_GROUP_OPTIONS = [
-  { value: 'all', label: 'All dates' },
+  { value: 'all', label: 'No grouping' },
   { value: 'day', label: 'By day' },
   { value: 'week', label: 'By week' },
   { value: 'month', label: 'By month' },
@@ -149,6 +157,7 @@ export default function SimulationHistoryTab({
   refreshKey = 0,
   onLoadRun,
   onUseTemplate,
+  onPrintRun,
 }) {
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(false)
@@ -157,8 +166,12 @@ export default function SimulationHistoryTab({
   const [exportingHistory, setExportingHistory] = useState(false)
   const [syncingToSupabase, setSyncingToSupabase] = useState(false)
   const [historyOrchardId, setHistoryOrchardId] = useState(ALL_ORCHARDS)
+  const [historyPeriod, setHistoryPeriod] = useState(HISTORY_PERIOD_MONTH)
+  const [historyMonth, setHistoryMonth] = useState(() => historyMonthKey())
   const [historyGrouping, setHistoryGrouping] = useState('all')
   const [status, setStatus] = useState(null)
+  const currentMonthKey = useMemo(() => historyMonthKey(), [])
+  const selectedMonthLabel = useMemo(() => historyMonthLabel(historyMonth), [historyMonth])
 
   const historyOrchardOptions = useMemo(() => {
     const options = [
@@ -181,9 +194,14 @@ export default function SimulationHistoryTab({
     [historyOrchardId, historyOrchardOptions],
   )
 
+  const displayedRuns = useMemo(
+    () => filterRunsByHistoryPeriod(runs, historyPeriod, historyMonth),
+    [historyMonth, historyPeriod, runs],
+  )
+
   const groupedRuns = useMemo(
-    () => groupRuns(runs, historyGrouping),
-    [runs, historyGrouping],
+    () => groupRuns(displayedRuns, historyGrouping),
+    [displayedRuns, historyGrouping],
   )
 
   const orchardLabel = (runOrchardId) => {
@@ -271,11 +289,24 @@ export default function SimulationHistoryTab({
         })
   }
 
+  const handlePrint = async (runId) => {
+    const data = await fetchRunDetails(runId)
+    if (data) onPrintRun?.(data)
+  }
+
   const handleExportHistory = async () => {
     setExportingHistory(true)
     setStatus(null)
     try {
-      const params = { period: 'all', limit: 5000 }
+      const selectedMonth = historyMonthParts(historyMonth)
+      const params = historyPeriod === HISTORY_PERIOD_ALL_HISTORY
+        ? { period: 'all', limit: 5000 }
+        : {
+            period: 'month',
+            year: selectedMonth?.year,
+            month: selectedMonth?.month,
+            limit: 5000,
+          }
       if (historyOrchardId !== ALL_ORCHARDS) params.orchard_id = historyOrchardId
       const res = await api.exportSimulationRuns(params)
       const fallback = 'mangopoint_simulation_history.xlsx'
@@ -351,7 +382,7 @@ export default function SimulationHistoryTab({
                 Simulation History
               </div>
               <div className="text-muted" style={{ fontSize: '.75rem', marginTop: '.1rem' }}>
-                {selectedHistoryOrchardName} — saved runs, parameters, weather &amp; playback
+                {selectedHistoryOrchardName} — {historyPeriod === HISTORY_PERIOD_ALL_HISTORY ? 'all saved runs' : selectedMonthLabel}
               </div>
             </div>
             <div className="d-flex flex-wrap align-items-center justify-content-end gap-2">
@@ -363,6 +394,32 @@ export default function SimulationHistoryTab({
                   onChange={setHistoryOrchardId}
                   options={historyOrchardOptions}
                 />
+              </div>
+              <div className="history-period-filter">
+                <label className={`history-month-picker${historyPeriod === HISTORY_PERIOD_MONTH ? ' active' : ''}`}>
+                  <i className="bi bi-calendar3" aria-hidden="true" />
+                  <span className="visually-hidden">History month and year</span>
+                  <input
+                    type="month"
+                    value={historyMonth}
+                    max={currentMonthKey}
+                    aria-label="History month and year"
+                    onFocus={() => setHistoryPeriod(HISTORY_PERIOD_MONTH)}
+                    onChange={(event) => {
+                      if (!event.target.value) return
+                      setHistoryMonth(event.target.value)
+                      setHistoryPeriod(HISTORY_PERIOD_MONTH)
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${historyPeriod === HISTORY_PERIOD_ALL_HISTORY ? 'btn-success' : 'btn-outline-secondary'}`}
+                  aria-pressed={historyPeriod === HISTORY_PERIOD_ALL_HISTORY}
+                  onClick={() => setHistoryPeriod(HISTORY_PERIOD_ALL_HISTORY)}
+                >
+                  All history
+                </button>
               </div>
               <div style={{ width: 130 }}>
                 <MpSelect
@@ -414,7 +471,7 @@ export default function SimulationHistoryTab({
 
           {loading && !runs.length ? (
             <div className="text-muted small py-4 text-center">Loading saved simulations...</div>
-          ) : runs.length ? (
+          ) : displayedRuns.length ? (
             <div className="table-responsive">
               <table className="table table-sm align-middle mb-0 simulation-history-table">
                 <thead>
@@ -487,8 +544,13 @@ export default function SimulationHistoryTab({
                                   onClick={() => handleExportRun(run.run_id)}
                                 >
                                   {exporting ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
-                                  Export
+                                  Export Excel
                                 </button>
+                                {onPrintRun && (
+                                  <button type="button" className="btn btn-outline-success btn-sm" disabled={busy} onClick={() => handlePrint(run.run_id)}>
+                                    <i className="bi bi-printer me-1" />Print report
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -501,7 +563,9 @@ export default function SimulationHistoryTab({
             </div>
           ) : (
             <div className="text-muted small py-4 text-center">
-              No saved simulations for {selectedHistoryOrchardName.toLowerCase()} yet. Run a simulation first, then it will appear here.
+              {historyPeriod === HISTORY_PERIOD_MONTH
+                ? `No simulations saved in ${selectedMonthLabel} for ${selectedHistoryOrchardName.toLowerCase()}. Choose another month or select All history.`
+                : `No saved simulations for ${selectedHistoryOrchardName.toLowerCase()} yet. Run a simulation first, then it will appear here.`}
             </div>
           )}
         </div>

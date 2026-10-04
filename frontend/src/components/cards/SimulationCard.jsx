@@ -287,6 +287,8 @@ function CecidTimelineResult({ diagnostics, resultSummary }) {
 export default function SimulationCard({
   orchardGeojson,
   orchardId,
+  orchardName,
+  orthophotoOverlay,
   treeOverrides,
   statusZones,
   treeStageOverrides,
@@ -510,6 +512,10 @@ export default function SimulationCard({
         include_time_series: true,
         impact_assumptions: impact,
         dashboard_state: {
+          report_orchard: {
+            name: orchardName,
+            orthophoto_overlay: orthophotoOverlay ?? null,
+          },
           sensitivity,
           treatment_enabled: treatmentEnabled,
           treatment_type: treatmentType,

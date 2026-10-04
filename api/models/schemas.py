@@ -140,6 +140,60 @@ class GeoJSONFeatureCollection(BaseModel):
     features: List[GeoJSONFeature]
 
 
+def _validated_zone_coordinates(
+    value: List[List[float]],
+    zone_name: str,
+) -> List[List[float]]:
+    """Validate an open polygon ring stored on an orchard record."""
+    normalized: List[List[float]] = []
+    for point in value:
+        if len(point) < 2:
+            raise ValueError(f"Each {zone_name} point must contain longitude and latitude")
+        lon, lat = float(point[0]), float(point[1])
+        if not -180.0 <= lon <= 180.0 or not -90.0 <= lat <= 90.0:
+            raise ValueError(f"{zone_name.title()} coordinates are outside valid longitude/latitude bounds")
+        normalized.append([lon, lat])
+    if len({(point[0], point[1]) for point in normalized}) < 3:
+        raise ValueError(f"A {zone_name} requires at least three distinct coordinates")
+    signed_area = sum(
+        normalized[index][0] * normalized[(index + 1) % len(normalized)][1]
+        - normalized[(index + 1) % len(normalized)][0] * normalized[index][1]
+        for index in range(len(normalized))
+    )
+    if abs(signed_area) <= 1e-15:
+        raise ValueError(f"A {zone_name} polygon must enclose a non-zero area")
+    return normalized
+
+
+class OrchardStageZone(BaseModel):
+    """Phenology zone whose boundary is persisted on an orchard."""
+
+    id: str = Field(..., min_length=1, max_length=120)
+    stage: OrchardStageEnum
+    coordinates: List[List[float]] = Field(..., min_length=3)
+
+    @field_validator("coordinates")
+    @classmethod
+    def coordinates_are_lon_lat(cls, value: List[List[float]]) -> List[List[float]]:
+        return _validated_zone_coordinates(value, "stage zone")
+
+
+class OrchardStatusZone(BaseModel):
+    """Tree-status zone whose boundary is persisted on an orchard."""
+
+    id: str = Field(..., min_length=1, max_length=120)
+    status: str = Field(
+        ...,
+        pattern="^(healthy|infected|bagged|dead|history_infected|suspect)$",
+    )
+    coordinates: List[List[float]] = Field(..., min_length=3)
+
+    @field_validator("coordinates")
+    @classmethod
+    def coordinates_are_lon_lat(cls, value: List[List[float]]) -> List[List[float]]:
+        return _validated_zone_coordinates(value, "status zone")
+
+
 class CecidWeedZone(BaseModel):
     """Orchard-persisted weed habitat used only as an adult Cecid relay."""
 
@@ -235,6 +289,8 @@ class OrchardCreate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    stage_zones: List[OrchardStageZone] = Field(default_factory=list)
+    status_zones: List[OrchardStatusZone] = Field(default_factory=list)
     management_zones: List[ManagementZone] = Field(default_factory=list)
     cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     description: Optional[str] = Field(default=None)
@@ -264,6 +320,8 @@ class OrchardUpdate(BaseModel):
     area_size: Optional[float] = Field(default=None, ge=0.0)
     tree_count: Optional[int] = Field(default=None, ge=0)
     geojson: Optional[Dict[str, Any]] = Field(default=None)
+    stage_zones: Optional[List[OrchardStageZone]] = Field(default=None)
+    status_zones: Optional[List[OrchardStatusZone]] = Field(default=None)
     management_zones: Optional[List[ManagementZone]] = Field(default=None)
     cecid_weed_zones: Optional[List[CecidWeedZone]] = Field(default=None)
     description: Optional[str] = Field(default=None)
@@ -294,6 +352,8 @@ class OrchardResponse(BaseModel):
     area_size: Optional[float] = None
     tree_count: int
     geojson: Optional[Dict[str, Any]] = None
+    stage_zones: List[OrchardStageZone] = Field(default_factory=list)
+    status_zones: List[OrchardStatusZone] = Field(default_factory=list)
     management_zones: List[ManagementZone] = Field(default_factory=list)
     cecid_weed_zones: List[CecidWeedZone] = Field(default_factory=list)
     centroid_lon: Optional[float] = None

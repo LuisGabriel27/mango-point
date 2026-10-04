@@ -1,0 +1,5 @@
+ALTER TABLE orchard
+ADD COLUMN IF NOT EXISTS stage_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE orchard
+ADD COLUMN IF NOT EXISTS status_zones JSONB NOT NULL DEFAULT '[]'::jsonb;

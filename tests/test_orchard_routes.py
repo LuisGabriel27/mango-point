@@ -9,6 +9,8 @@ from api.core.database import _ensure_default_orchard
 from api.models.schemas import (
     CecidWeedZone,
     ManagementZone,
+    OrchardStageZone,
+    OrchardStatusZone,
     OrchardCreate,
     OrchardUpdate,
     SimulationRequest,
@@ -140,6 +142,16 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
         area_size=Decimal("1.25"),
         tree_count=42,
         geojson={"type": "FeatureCollection", "features": []},
+        stage_zones=[{
+            "id": "stage-1",
+            "stage": "fruitlet",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
+        status_zones=[{
+            "id": "status-1",
+            "status": "suspect",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
         management_zones=[{
             "id": "zone-1",
             "label": "Zone 1",
@@ -182,6 +194,8 @@ def test_orchard_response_uses_public_orchard_id_and_can_omit_geojson():
     assert response.has_dsm is False
     assert response.monitoring_enabled is True
     assert response.orchard_stage == "mature"
+    assert response.stage_zones[0].stage.value == "fruitlet"
+    assert response.status_zones[0].status == "suspect"
     assert response.management_zones[0].label == "Zone 1"
     assert response.cecid_weed_zones[0].density.value == "dense"
 
@@ -258,6 +272,28 @@ def test_management_zone_schema_keeps_stable_label_and_polygon():
         )
 
 
+def test_persistent_tree_zone_schemas_validate_setting_and_polygon():
+    stage_zone = OrchardStageZone(
+        id="stage-north",
+        stage="fruitlet",
+        coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    )
+    status_zone = OrchardStatusZone(
+        id="status-north",
+        status="suspect",
+        coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+    )
+    assert stage_zone.stage.value == "fruitlet"
+    assert status_zone.status == "suspect"
+
+    with pytest.raises(ValidationError):
+        OrchardStatusZone(
+            id="bad-status",
+            status="unknown",
+            coordinates=[[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        )
+
+
 def test_bulk_tree_update_uses_portable_ids_without_mutating_input():
     original = {
         "type": "FeatureCollection",
@@ -308,6 +344,16 @@ async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
         orchard_id="weed-demo",
         name="Weed Demo",
         geojson={"type": "FeatureCollection", "features": []},
+        stage_zones=[{
+            "id": "stage-a",
+            "stage": "fruitlet",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
+        status_zones=[{
+            "id": "status-a",
+            "status": "infected",
+            "coordinates": [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]],
+        }],
         cecid_weed_zones=[{
             "id": "zone-a",
             "label": "Canal-side weeds",
@@ -325,6 +371,8 @@ async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
     assert created.cecid_weed_zones[0].density.value == "sparse"
     assert session.added.cecid_weed_zones[0]["density"] == "sparse"
     assert created.management_zones[0].label == "Block A"
+    assert created.stage_zones[0].stage.value == "fruitlet"
+    assert created.status_zones[0].status == "infected"
 
     orchard = session.added
 
@@ -334,11 +382,13 @@ async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
     monkeypatch.setattr(orchard_routes, "_get_orchard_or_404", return_orchard)
     updated = await orchard_routes.update_orchard(
         "weed-demo",
-        OrchardUpdate(cecid_weed_zones=[]),
+        OrchardUpdate(cecid_weed_zones=[], stage_zones=[], status_zones=[]),
         db=session,
     )
     assert updated.cecid_weed_zones == []
     assert orchard.cecid_weed_zones == []
+    assert orchard.stage_zones == []
+    assert orchard.status_zones == []
 
 
 class _BootstrapConnection:
@@ -387,6 +437,18 @@ def test_release1_local_and_supabase_migrations_are_mirrored():
         "external_id VARCHAR(150)",
         "observation_status VARCHAR(30)",
         "forecast_risk DOUBLE PRECISION",
+    ):
+        assert expected in local_sql
+        assert expected in cloud_sql
+
+
+def test_persistent_tree_zone_migrations_are_mirrored():
+    project_root = Path(__file__).resolve().parents[1]
+    local_sql = (project_root / "db/migrations/0009_persistent_stage_status_zones.sql").read_text(encoding="utf-8")
+    cloud_sql = (project_root / "supabase/migrations/202610020000_persistent_stage_status_zones.sql").read_text(encoding="utf-8")
+    for expected in (
+        "stage_zones JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "status_zones JSONB NOT NULL DEFAULT '[]'::jsonb",
     ):
         assert expected in local_sql
         assert expected in cloud_sql

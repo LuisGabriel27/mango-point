@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: Optional[str] = None
     AUTH_ALGORITHM: str = "HS256"
     AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
+    PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = 10
+    PASSWORD_RESET_MAX_ATTEMPTS: int = 5
+    PASSWORD_RESET_APP_URL: Optional[str] = None
     DEFAULT_ADMIN_ENABLED: bool = True
     DEFAULT_ADMIN_FULL_NAME: str = "MangoPoint Administrator"
     DEFAULT_ADMIN_USERNAME: str = "admin"

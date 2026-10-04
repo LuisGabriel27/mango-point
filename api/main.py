@@ -147,10 +147,17 @@ app.add_middleware(
 @app.exception_handler(SQLAlchemyError)
 @app.exception_handler(asyncpg.PostgresError)
 async def database_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Database error on {request.method} {request.url.path}: {exc}")
+    if is_database_unavailable(exc):
+        logger.error(f"Database unavailable on {request.method} {request.url.path}: {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": DATABASE_UNAVAILABLE_DETAIL},
+        )
+
+    logger.error(f"Database operation failed on {request.method} {request.url.path}: {exc}")
     return JSONResponse(
-        status_code=503,
-        content={"detail": DATABASE_UNAVAILABLE_DETAIL},
+        status_code=500,
+        content={"detail": "The requested data could not be saved."},
     )
 
 

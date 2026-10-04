@@ -12,7 +12,13 @@ from typing import AsyncGenerator
 import asyncpg
 from fastapi import HTTPException
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -23,12 +29,14 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ORCHARD_GEOJSON = PROJECT_ROOT / "data" / "trees.geojson"
 
-DATABASE_UNAVAILABLE_DETAIL = "Database unavailable. Check PostgreSQL configuration and credentials."
+DATABASE_UNAVAILABLE_DETAIL = "Data storage is temporarily unavailable. Please try again."
 DATABASE_ERROR_TYPES = (
-    SQLAlchemyError,
-    asyncpg.PostgresError,
     ConnectionError,
     OSError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    SQLAlchemyTimeoutError,
 )
 
 # Convert sync URL to async
@@ -183,6 +191,8 @@ def is_database_unavailable(exc: Exception) -> bool:
     """Return True when an exception indicates a database connectivity issue."""
     if isinstance(exc, DATABASE_ERROR_TYPES):
         return True
+    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+        return True
 
     message = str(exc).lower()
     connectivity_markers = (
@@ -191,6 +201,11 @@ def is_database_unavailable(exc: Exception) -> bool:
         "could not connect",
         "failed to establish a new connection",
         "remote computer refused",
+        "connection is closed",
+        "connection was closed",
+        "password authentication failed",
+        "the database system is starting up",
+        "the database system is shutting down",
     )
     return any(marker in message for marker in connectivity_markers)
 
@@ -243,14 +258,16 @@ async def _ensure_default_orchard(conn) -> None:
             await conn.execute(text("""
                 INSERT INTO orchard (
                     orchard_uid, name, location, tree_count, geojson,
-                    management_zones, cecid_weed_zones, centroid_lon, centroid_lat,
+                    stage_zones, status_zones, management_zones, cecid_weed_zones,
+                    centroid_lon, centroid_lat,
                     is_active, monitoring_enabled, orchard_stage,
                     days_since_flowering, monitored_pest_types,
                     created_at, updated_at
                 ) VALUES (
                     'default-orchard', 'Default Orchard (BPI)',
                     'Guimaras, Philippines', :tree_count, CAST(:geojson AS JSONB),
-                    '[]'::jsonb, '[]'::jsonb, :centroid_lon, :centroid_lat,
+                    '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                    :centroid_lon, :centroid_lat,
                     TRUE, TRUE, 'mature', 60, '["cecid", "fruitfly"]'::jsonb,
                     NOW(), NOW()
                 )
@@ -298,6 +315,14 @@ async def init_db():
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS orchard_uid VARCHAR(100);"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS owner_name VARCHAR(200);"))
         await conn.execute(text("ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS geojson JSONB;"))
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
+            "stage_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
+            "status_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"
+        ))
         await conn.execute(text(
             "ALTER TABLE IF EXISTS orchard ADD COLUMN IF NOT EXISTS "
             "management_zones JSONB NOT NULL DEFAULT '[]'::jsonb;"

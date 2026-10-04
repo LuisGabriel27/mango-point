@@ -30,6 +30,8 @@ export default function Sidebar({
   onWeatherRetry,
   orchardCoordinates,
   orchardGeojson,
+  orchardOrthophoto,
+  onPrintReport,
   treeOverrides,
   statusZones,
   treeStageOverrides,
@@ -275,6 +277,8 @@ export default function Sidebar({
               hidden={activeWorkflow !== 'simulate'}
             >
               <SimulationCard
+                orchardName={orchardLabel}
+                orthophotoOverlay={orchardOrthophoto}
                 orchardGeojson={orchardGeojson}
                 orchardId={selectedOrchardId}
                 treeOverrides={treeOverrides}
@@ -312,6 +316,13 @@ export default function Sidebar({
                   <span>Run a simulation to unlock playback and decision support.</span>
                   <button type="button" className="btn btn-success btn-sm" onClick={() => selectWorkflow('simulate')}>
                     Go to Simulate
+                  </button>
+                </div>
+              )}
+              {onPrintReport && (
+                <div className="p-3">
+                  <button type="button" className="btn btn-outline-success w-100" onClick={onPrintReport}>
+                    <i className="bi bi-printer me-1" />Print / Export report
                   </button>
                 </div>
               )}

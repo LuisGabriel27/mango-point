@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import AlertRecipientModal from './AlertRecipientModal'
+import SettingsModal from './SettingsModal'
 import { AlertList } from './cards/AlertPanel'
 
 const TABS = [
@@ -23,7 +23,7 @@ export default function Navbar({
   const { user, logout } = useAuth()
   const [clock, setClock] = useState('')
   const [bellOpen, setBellOpen] = useState(false)
-  const [recipientModalOpen, setRecipientModalOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const bellRef = useRef(null)
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function Navbar({
     <>
       <nav className="main-navbar">
       <a className="navbar-brand" href="/">
-        <img src="/mangopoint.png" className="navbar-logo" alt="MangoPoint" />
+        <img src="/brand/mangopoint-logo-v2.png" className="navbar-logo" alt="" width="40" height="40" />
         <span>MangoPoint</span>
       </a>
 
@@ -91,6 +91,19 @@ export default function Navbar({
           <span>Controls</span>
         </button>
 
+        <button
+          type="button"
+          className="navbar-settings-btn"
+          onClick={() => {
+            setBellOpen(false)
+            setSettingsOpen(true)
+          }}
+          aria-label="Open settings"
+          title="Settings"
+        >
+          <i className="bi bi-gear-fill" />
+        </button>
+
         <div className="navbar-bell-wrap" ref={bellRef}>
           <button
             type="button"
@@ -107,22 +120,7 @@ export default function Navbar({
             <div className="navbar-bell-dropdown">
               <div className="navbar-bell-header">
                 <span><i className="bi bi-bell-fill me-1" />Alerts</span>
-                <div className="navbar-bell-header-actions">
-                  {String(user?.role || '').toLowerCase() === 'admin' && (
-                    <button
-                      type="button"
-                      className="navbar-alert-recipient-btn"
-                      onClick={() => {
-                        setBellOpen(false)
-                        setRecipientModalOpen(true)
-                      }}
-                    >
-                      <i className="bi bi-envelope-plus-fill" />
-                      Add emails
-                    </button>
-                  )}
-                  <span className="navbar-bell-count">{active.length} active</span>
-                </div>
+                <span className="navbar-bell-count">{active.length} active</span>
               </div>
               <div className="navbar-bell-list navbar-alert-action-list">
                 <AlertList
@@ -141,9 +139,7 @@ export default function Navbar({
         </button>
       </div>
       </nav>
-      {recipientModalOpen && (
-        <AlertRecipientModal onClose={() => setRecipientModalOpen(false)} />
-      )}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </>
   )
 }

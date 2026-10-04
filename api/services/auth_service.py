@@ -4,9 +4,11 @@ MangoPoint API - Authentication Service
 User lookup, credential verification, token issuance, and default admin seeding.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import secrets
+import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
@@ -18,11 +20,24 @@ from api.core.security import (
     verify_password,
 )
 from api.models.auth import AuthUserResponse, LoginResponse
-from db.models import UserAccount, UserRoleEnum
+from db.models import PasswordResetChallenge, UserAccount, UserRoleEnum
+from utils.datetime_utils import utcnow_naive
 
 
 class AuthenticationError(RuntimeError):
     """Raised when login credentials are invalid or the account is unavailable."""
+
+
+class CurrentPasswordError(RuntimeError):
+    """Raised when an account change is not authorized by the current password."""
+
+
+class PasswordResetCodeError(RuntimeError):
+    """Raised when a password-reset challenge or code cannot be accepted."""
+
+
+class EmailAlreadyUsedError(RuntimeError):
+    """Raised when another account already owns a requested email address."""
 
 
 class AuthService:
@@ -119,6 +134,16 @@ class AuthService:
         )
         return result.scalar_one_or_none()
 
+    async def get_user_by_email(self, db: AsyncSession, email: str) -> UserAccount | None:
+        """Fetch a user by email without accepting usernames."""
+        normalized = email.strip().lower()
+        if not normalized:
+            return None
+        result = await db.execute(
+            select(UserAccount).where(func.lower(UserAccount.email) == normalized)
+        )
+        return result.scalar_one_or_none()
+
     async def authenticate_user(
         self,
         db: AsyncSession,
@@ -166,8 +191,111 @@ class AuthService:
             user=AuthUserResponse.from_user(user),
         )
 
+    @staticmethod
+    def update_profile(user: UserAccount, full_name: str) -> UserAccount:
+        """Apply the current user's editable profile fields."""
+        user.full_name = full_name.strip()
+        return user
+
+    @staticmethod
+    def change_password(
+        user: UserAccount,
+        current_password: str,
+        new_password: str,
+    ) -> UserAccount:
+        """Verify the existing password before storing a replacement hash."""
+        if not user.password_hash or not verify_password(current_password, user.password_hash):
+            raise CurrentPasswordError("Current password is incorrect.")
+        user.password_hash = get_password_hash(new_password)
+        return user
+
+    async def change_email(
+        self,
+        db: AsyncSession,
+        user: UserAccount,
+        email: str,
+        current_password: str,
+    ) -> UserAccount:
+        """Change the login and recovery email after rechecking the password."""
+        if not user.password_hash or not verify_password(current_password, user.password_hash):
+            raise CurrentPasswordError("Current password is incorrect.")
+        normalized = email.strip().lower()
+        existing = await self.get_user_by_email(db, normalized)
+        if existing is not None and existing.user_id != user.user_id:
+            raise EmailAlreadyUsedError("That email is already used by another account.")
+        user.email = normalized
+        return user
+
+    async def create_password_reset_challenge(
+        self,
+        db: AsyncSession,
+        user: UserAccount,
+    ) -> tuple[PasswordResetChallenge, str]:
+        """Create a hashed six-digit code and invalidate older unused codes."""
+        now = utcnow_naive()
+        await db.execute(
+            update(PasswordResetChallenge)
+            .where(
+                PasswordResetChallenge.user_id == user.user_id,
+                PasswordResetChallenge.consumed_at.is_(None),
+            )
+            .values(consumed_at=now)
+        )
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        challenge = PasswordResetChallenge(
+            challenge_id=str(uuid.uuid4()),
+            user_id=user.user_id,
+            code_hash=get_password_hash(code),
+            attempt_count=0,
+            expires_at=now + timedelta(minutes=settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES),
+            created_at=now,
+        )
+        db.add(challenge)
+        await db.flush()
+        return challenge, code
+
+    async def reset_password(
+        self,
+        db: AsyncSession,
+        challenge_id: str,
+        code: str,
+        new_password: str,
+    ) -> UserAccount:
+        """Validate an emailed code and replace the associated password."""
+        result = await db.execute(
+            select(PasswordResetChallenge).where(
+                PasswordResetChallenge.challenge_id == challenge_id
+            )
+        )
+        challenge = result.scalar_one_or_none()
+        now = utcnow_naive()
+        if challenge is None or challenge.consumed_at is not None or challenge.expires_at <= now:
+            raise PasswordResetCodeError("This reset code is invalid or has expired.")
+        if challenge.attempt_count >= settings.PASSWORD_RESET_MAX_ATTEMPTS:
+            challenge.consumed_at = now
+            raise PasswordResetCodeError("Too many incorrect attempts. Request a new code.")
+        if not verify_password(code, challenge.code_hash):
+            challenge.attempt_count += 1
+            if challenge.attempt_count >= settings.PASSWORD_RESET_MAX_ATTEMPTS:
+                challenge.consumed_at = now
+                raise PasswordResetCodeError("Too many incorrect attempts. Request a new code.")
+            remaining = settings.PASSWORD_RESET_MAX_ATTEMPTS - challenge.attempt_count
+            raise PasswordResetCodeError(f"Incorrect reset code. {remaining} attempts remaining.")
+
+        user = await self.get_user_by_id(db, challenge.user_id)
+        if user is None or not user.is_active:
+            challenge.consumed_at = now
+            raise PasswordResetCodeError("This reset code is invalid or has expired.")
+
+        if verify_password(new_password, user.password_hash):
+            raise PasswordResetCodeError("Choose a password you have not already used.")
+
+        user.password_hash = get_password_hash(new_password)
+        challenge.consumed_at = now
+        return user
+
     async def ensure_default_admin(self, db: AsyncSession) -> tuple[str, UserAccount | None]:
-        """Create or sync the configured default admin account."""
+        """Create the configured default admin and keep its account identity active."""
         if not settings.DEFAULT_ADMIN_ENABLED:
             return "disabled", None
 
@@ -195,23 +323,16 @@ class AuthService:
         if existing_user is not None:
             updated = False
 
-            if existing_user.full_name != full_name:
-                existing_user.full_name = full_name
-                updated = True
             if existing_user.username != username:
                 existing_user.username = username
                 updated = True
-            if existing_user.email.lower() != email:
-                existing_user.email = email
-                updated = True
+            # Account owners can replace the bootstrap email with a real
+            # recovery address. Never overwrite that choice during startup.
             if existing_user.role != role:
                 existing_user.role = role
                 updated = True
             if not existing_user.is_active:
                 existing_user.is_active = True
-                updated = True
-            if not verify_password(password, existing_user.password_hash):
-                existing_user.password_hash = get_password_hash(password)
                 updated = True
 
             if updated:

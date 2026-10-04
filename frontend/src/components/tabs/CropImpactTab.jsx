@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import createPlotlyComponent from 'react-plotly.js/factory'
 import Plotly from 'plotly.js-dist-min'
+import { calculateSimulationEconomicImpact, formatPhp } from '../../utils/economicImpact'
 
 const Plot = createPlotlyComponent(Plotly)
 
@@ -55,6 +56,7 @@ const PRICE_PHP = 60
 
 export default function CropImpactTab({ monitoringData, simData }) {
   const lossResize = useChartResize()
+  const economic = useMemo(() => calculateSimulationEconomicImpact(simData ?? {}), [simData])
   const assumptions = useMemo(() => ({
     yieldKg: Number(simData?.impact_assumptions?.yield_per_tree_kg ?? YIELD_KG),
     pricePhp: Number(simData?.impact_assumptions?.farmgate_price_php_per_kg ?? PRICE_PHP),
@@ -185,6 +187,50 @@ export default function CropImpactTab({ monitoringData, simData }) {
                   style={{ height: 260, width: '100%' }}
                 />
               </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-12">
+          <div className="card shadow-sm border-0 monitoring-module-chart-card">
+            <div className="card-header py-2">
+              <div className="d-flex align-items-center">
+                <i className="bi bi-piggy-bank me-2" />
+                <span className="fw-semibold">Potential Savings With Recommendations</span>
+              </div>
+            </div>
+            <div className="card-body px-3 py-3">
+              {economic ? (
+                <>
+                  <div className="row g-2">
+                    <div className="col-12 col-md-4">
+                      <div className="rounded border p-3 h-100">
+                        <div className="text-muted small">Projected loss at risk</div>
+                        <div className="fw-bold text-danger fs-5">{formatPhp(economic.projected_loss)}</div>
+                      </div>
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <div className="rounded border border-success-subtle bg-success-subtle p-3 h-100">
+                        <div className="text-muted small">Potential savings</div>
+                        <div className="fw-bold text-success fs-5">{formatPhp(economic.estimated_savings)}</div>
+                      </div>
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <div className="rounded border p-3 h-100">
+                        <div className="text-muted small">Remaining loss after action</div>
+                        <div className="fw-bold fs-5">{formatPhp(economic.remaining_loss)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <small className="text-muted d-block mt-2">
+                    Planning estimate assumes the system recommendations prevent {Math.round(economic.recommendation_effectiveness * 100)}% of projected base-scenario damage. Treatment and labor costs are not subtracted.
+                  </small>
+                </>
+              ) : (
+                <div className="text-muted small py-1">
+                  <i className="bi bi-info-circle me-1" />Run a simulation to estimate potential savings.
+                </div>
+              )}
             </div>
           </div>
         </div>

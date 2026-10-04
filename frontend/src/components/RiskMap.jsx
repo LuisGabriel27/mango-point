@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import guimarasWondersFarmOrthophotoUrl from '../assets/guimaras-wonders-farm-orthophoto.png'
@@ -8,6 +8,9 @@ import {
 } from '../utils/bundledOrchards'
 import { simplifyLassoCoordinates } from '../utils/zoneSelection'
 import { interpretCecidTree } from '../utils/cecidMapInterpretation'
+import { runWhenMapReady } from '../utils/mapReady'
+import { geometryCenter } from '../utils/mapGeometry'
+import { captureMapSnapshot, waitForMapSnapshot } from '../utils/mapSnapshot'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
@@ -382,47 +385,6 @@ function normalizeStatus(value) {
   return String(value ?? 'healthy').trim().toLowerCase().replace(/\s+/g, '_')
 }
 
-function averageCoordinates(coordinates) {
-  const points = coordinates
-    .filter((coord) => Array.isArray(coord) && coord.length >= 2)
-    .map((coord) => [Number(coord[0]), Number(coord[1])])
-    .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat))
-
-  if (!points.length) return null
-
-  const lon = points.reduce((sum, point) => sum + point[0], 0) / points.length
-  const lat = points.reduce((sum, point) => sum + point[1], 0) / points.length
-  return [lon, lat]
-}
-
-function geometryCenter(geometry) {
-  if (!geometry) return null
-
-  if (geometry.type === 'Point') {
-    const lon = Number(geometry.coordinates?.[0])
-    const lat = Number(geometry.coordinates?.[1])
-    return Number.isFinite(lon) && Number.isFinite(lat) ? [lon, lat] : null
-  }
-
-  if (geometry.type === 'MultiPoint' || geometry.type === 'LineString') {
-    return averageCoordinates(geometry.coordinates || [])
-  }
-
-  if (geometry.type === 'Polygon') {
-    const ring = geometry.coordinates?.[0] || []
-    const openRing = ring.length > 1 && ring[0]?.[0] === ring.at(-1)?.[0] && ring[0]?.[1] === ring.at(-1)?.[1]
-      ? ring.slice(0, -1)
-      : ring
-    return averageCoordinates(openRing)
-  }
-
-  if (geometry.type === 'MultiPolygon') {
-    const outerRings = (geometry.coordinates || []).flatMap((polygon) => polygon?.[0] || [])
-    return averageCoordinates(outerRings)
-  }
-
-  return null
-}
 
 function normalizePoints(
   geojson,
@@ -502,10 +464,35 @@ function imageCoordinateBounds(coordinates) {
   return bounds
 }
 
-function fitMapToBounds(map, bounds, duration = 450) {
+const DEFAULT_FIT_PADDING = { top: 72, right: 96, bottom: 72, left: 72 }
+const REPORT_FIT_PADDING = { top: 24, right: 24, bottom: 24, left: 24 }
+
+function reportContentBounds(points, zoneCollections) {
+  const bounds = new maplibregl.LngLatBounds()
+  let hasCoordinates = false
+  for (const point of points) {
+    if (!Number.isFinite(point.lon) || !Number.isFinite(point.lat)) continue
+    bounds.extend([point.lon, point.lat])
+    hasCoordinates = true
+  }
+  for (const zones of zoneCollections) {
+    for (const zone of zones || []) {
+      for (const coordinate of zone?.coordinates || []) {
+        const lon = Number(coordinate?.[0])
+        const lat = Number(coordinate?.[1])
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
+        bounds.extend([lon, lat])
+        hasCoordinates = true
+      }
+    }
+  }
+  return hasCoordinates ? bounds : null
+}
+
+function fitMapToBounds(map, bounds, duration = 450, padding = DEFAULT_FIT_PADDING) {
   if (!bounds) return false
   map.fitBounds(bounds, {
-    padding: { top: 72, right: 96, bottom: 72, left: 72 },
+    padding,
     maxZoom: 19,
     duration,
   })
@@ -622,6 +609,7 @@ function isGuimarasWondersFarm(viewportKey, overlayUrl) {
 }
 
 function normalizedOverlay(overlay, viewportKey) {
+  if (overlay === false) return null
   const isGuimarasWonders = isGuimarasWondersFarm(viewportKey, overlay?.url)
   if (overlay?.url && validImageCoordinates(overlay.coordinates)) {
     return {
@@ -942,7 +930,7 @@ function gridGeojsonFromPoints(points) {
   return { type: 'FeatureCollection', features }
 }
 
-export default function RiskMap({
+export default forwardRef(function RiskMap({
   geojson,
   baseGeojson,
   alerts = [],
@@ -978,11 +966,13 @@ export default function RiskMap({
   pestType = 'fruitfly',
   cecidMapMode = 'representative',
   onTreeClick,
-}) {
+  reportMode = false,
+}, ref) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef([])
   const mapLoadedRef = useRef(false)
+  const overlayPendingRef = useRef(true)
   // Tracks whether the orthophoto image is currently being fetched/applied,
   // so the UI can render a spinner. The GWF overlay is ~6 MB and used to
   // appear "broken" while it silently downloaded.
@@ -1021,6 +1011,17 @@ export default function RiskMap({
     }
   }, [cecidMapMode, geojson, pestType])
 
+  useImperativeHandle(ref, () => ({
+    async captureImage() {
+      const map = mapRef.current
+      if (!map || !reportMode) throw new Error('The report map is not ready.')
+      await waitForMapSnapshot(map, () => (
+        mapRef.current === map && mapLoadedRef.current && !overlayPendingRef.current
+      ))
+      return captureMapSnapshot(map, points)
+    },
+  }), [points, reportMode])
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return undefined
 
@@ -1030,9 +1031,12 @@ export default function RiskMap({
       center: [DEFAULT_LON, DEFAULT_LAT],
       zoom: DEFAULT_ZOOM,
       attributionControl: false,
+      preserveDrawingBuffer: reportMode,
+      interactive: !reportMode,
+      ...(reportMode ? { pixelRatio: 2 } : {}),
     })
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+    if (!reportMode) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
     map.on('error', (event) => {
       if (event?.error) console.warn('Map render warning:', event.error.message)
@@ -1069,8 +1073,15 @@ export default function RiskMap({
 
     let cancelled = false
     let objectUrl = null
+    overlayPendingRef.current = true
 
     const applyOverlay = async () => {
+      if (!activeOverlay) {
+        if (map.getLayer('ortho-layer')) map.removeLayer('ortho-layer')
+        if (map.getSource('ortho-src')) map.removeSource('ortho-src')
+        overlayPendingRef.current = false
+        return
+      }
       // Show the spinner only when we actually need to fetch the image over
       // the network. Static `/ortho.png` (BPI default) resolves instantly,
       // so flashing a spinner would be noise.
@@ -1110,14 +1121,17 @@ export default function RiskMap({
       } catch (error) {
         console.warn('Orthophoto overlay unavailable:', error.message)
       } finally {
-        if (!cancelled) setOverlayLoading(false)
+        if (!cancelled) {
+          overlayPendingRef.current = false
+          setOverlayLoading(false)
+        }
       }
     }
 
-    if (map.loaded()) applyOverlay()
-    else map.once('load', applyOverlay)
+    const cleanup = runWhenMapReady(map, mapLoadedRef.current, applyOverlay)
 
     return () => {
+      cleanup()
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
@@ -1137,10 +1151,7 @@ export default function RiskMap({
       if (map.getLayer('stage-zone-draft-vertices')) map.moveLayer('stage-zone-draft-vertices')
     }
 
-    if (map.loaded()) updateStageZones()
-    else map.once('load', updateStageZones)
-
-    return () => map.off('load', updateStageZones)
+    return runWhenMapReady(map, mapLoadedRef.current, updateStageZones)
   }, [stageZones, stageZoneDraft])
 
   // ── Status zone layers update ──────────────────────────────────────────
@@ -1158,10 +1169,7 @@ export default function RiskMap({
       if (map.getLayer('status-zone-draft-vertices')) map.moveLayer('status-zone-draft-vertices')
     }
 
-    if (map.loaded()) updateStatusZones()
-    else map.once('load', updateStatusZones)
-
-    return () => map.off('load', updateStatusZones)
+    return runWhenMapReady(map, mapLoadedRef.current, updateStatusZones)
   }, [statusZones, statusZoneDraft])
 
   useEffect(() => {
@@ -1178,10 +1186,7 @@ export default function RiskMap({
       if (map.getLayer('management-zone-draft-vertices')) map.moveLayer('management-zone-draft-vertices')
     }
 
-    if (map.loaded()) updateManagementZones()
-    else map.once('load', updateManagementZones)
-
-    return () => map.off('load', updateManagementZones)
+    return runWhenMapReady(map, mapLoadedRef.current, updateManagementZones)
   }, [managementZones, managementZoneDraft])
 
   useEffect(() => {
@@ -1201,9 +1206,7 @@ export default function RiskMap({
       if (map.getLayer('cecid-zone-draft-vertices')) map.moveLayer('cecid-zone-draft-vertices')
     }
 
-    if (map.loaded()) updateCecidZones()
-    else map.once('load', updateCecidZones)
-    return () => map.off('load', updateCecidZones)
+    return runWhenMapReady(map, mapLoadedRef.current, updateCecidZones)
   }, [cecidWeedZones, legacyCecidEmergenceZones, cecidZoneDraft])
 
   useEffect(() => {
@@ -1224,9 +1227,7 @@ export default function RiskMap({
         })
       })
     }
-    if (map.loaded()) applyVisibility()
-    else map.once('load', applyVisibility)
-    return () => map.off('load', applyVisibility)
+    return runWhenMapReady(map, mapLoadedRef.current, applyVisibility)
   }, [zoneVisibility])
 
   // ── Status zone drawing interaction ──────────────────────────────────
@@ -1372,33 +1373,55 @@ export default function RiskMap({
 
     const fitSelectedOrchard = () => {
       map.resize()
-      const overlayBounds = fitToOrthophoto
+      const contentBounds = reportMode
+        ? reportContentBounds(points, [
+          stageZones,
+          statusZones,
+          managementZones,
+          cecidWeedZones,
+          legacyCecidEmergenceZones,
+        ])
+        : null
+      if (fitMapToBounds(map, contentBounds, 0, REPORT_FIT_PADDING)) return
+
+      const overlayBounds = fitToOrthophoto && activeOverlay
         ? imageCoordinateBounds(activeOverlay.coordinates)
         : null
-      if (fitMapToBounds(map, overlayBounds)) return
+      if (fitMapToBounds(map, overlayBounds, reportMode ? 0 : 450)) return
 
       if (points.length === 1) {
-        map.easeTo({ center: [points[0].lon, points[0].lat], zoom: DEFAULT_ZOOM, duration: 350 })
+        map.easeTo({ center: [points[0].lon, points[0].lat], zoom: DEFAULT_ZOOM, duration: reportMode ? 0 : 350 })
         return
       }
 
-      fitMapToBounds(map, pointBounds(points))
+      fitMapToBounds(map, pointBounds(points), reportMode ? 0 : 450)
     }
 
     const runFitSequence = () => {
       fitSelectedOrchard()
+      if (reportMode) return
       timers.push(window.setTimeout(fitSelectedOrchard, 150))
       timers.push(window.setTimeout(fitSelectedOrchard, 450))
     }
 
-    if (map.loaded()) runFitSequence()
-    else map.once('load', runFitSequence)
+    const cleanup = runWhenMapReady(map, mapLoadedRef.current, runFitSequence)
 
     return () => {
-      map.off('load', runFitSequence)
+      cleanup()
       timers.forEach((timer) => window.clearTimeout(timer))
     }
-  }, [viewportKey, activeOverlay, fitToOrthophoto, points])
+  }, [
+    viewportKey,
+    activeOverlay,
+    fitToOrthophoto,
+    points,
+    reportMode,
+    stageZones,
+    statusZones,
+    managementZones,
+    cecidWeedZones,
+    legacyCecidEmergenceZones,
+  ])
 
   // ── Heatmap data update ────────────────────────────────────────────────
   useEffect(() => {
@@ -1412,14 +1435,7 @@ export default function RiskMap({
       if (src) src.setData(data)
     }
 
-    if (mapLoadedRef.current) {
-      setHeatmapData()
-    } else {
-      map.once('load', setHeatmapData)
-      return () => map.off('load', setHeatmapData)
-    }
-
-    return undefined
+    return runWhenMapReady(map, mapLoadedRef.current, setHeatmapData)
   }, [heatmapGeojson])
 
   useEffect(() => {
@@ -1446,10 +1462,10 @@ export default function RiskMap({
       })
     }
 
-    if (map.loaded()) updateGrid()
-    else map.once('load', updateGrid)
+    const cleanup = runWhenMapReady(map, mapLoadedRef.current, updateGrid)
 
     return () => {
+      cleanup()
       if (mapRef.current) removeGrid(mapRef.current)
     }
   }, [points, activeGeojson, showGridOverlay])
@@ -1470,4 +1486,4 @@ export default function RiskMap({
       )}
     </div>
   )
-}
+})

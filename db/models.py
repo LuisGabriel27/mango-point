@@ -151,6 +151,28 @@ class UserAccount(Base):
     )
 
 
+class PasswordResetChallenge(Base):
+    """Short-lived verification codes for account recovery."""
+    __tablename__ = "password_reset_challenge"
+
+    challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("user_account.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (
+        Index("idx_password_reset_challenge_user", "user_id"),
+        Index("idx_password_reset_challenge_expires", "expires_at"),
+    )
+
+
 class Orchard(Base):
     """General information about a mango orchard."""
     __tablename__ = "orchard"
@@ -165,6 +187,12 @@ class Orchard(Base):
     area_size: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     tree_count: Mapped[int] = mapped_column(Integer, default=0)
     geojson: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    stage_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list,
+    )
+    status_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list,
+    )
     management_zones: Mapped[List[Dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list,
     )

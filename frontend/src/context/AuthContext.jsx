@@ -24,6 +24,10 @@ export function AuthProvider({ children }) {
     setUser(null)
   }, [])
 
+  const updateUser = useCallback((userData) => {
+    setUser(userData)
+  }, [])
+
   useEffect(() => {
     if (!token) { setLoading(false); return }
     api.me()
@@ -36,7 +40,7 @@ export function AuthProvider({ children }) {
   }, [token])
 
   return (
-    <AuthContext.Provider value={{ token, user, loading, login, logout }}>
+    <AuthContext.Provider value={{ token, user, loading, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   )

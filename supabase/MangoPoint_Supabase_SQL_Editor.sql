@@ -1,6 +1,9 @@
--- MangoPoint: Supabase SQL Editor setup
+-- MangoPoint: consolidated Supabase SQL Editor setup
 --
 -- Paste this entire file into the Supabase SQL Editor and click Run.
+-- It includes the base schema and every migration through 2026-10-04.
+-- The statements are idempotent so the same file can initialize a new project
+-- or bring an existing MangoPoint Supabase database up to date.
 -- This creates the MangoPoint application schema and local-to-cloud backup
 -- metadata. It does not upload existing local rows or orchard files.
 -- It also does not create a Supabase Auth user: MangoPoint keeps using its
@@ -64,6 +67,49 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- Normalize enum labels from older SQLAlchemy-created databases before any
+-- table/default statements use the current lowercase API values.
+DO $$
+BEGIN
+    IF to_regtype('tree_status_enum') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'HEALTHY')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'healthy') THEN
+            ALTER TYPE tree_status_enum RENAME VALUE 'HEALTHY' TO 'healthy';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'INFECTED')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'infected') THEN
+            ALTER TYPE tree_status_enum RENAME VALUE 'INFECTED' TO 'infected';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'BAGGED')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'bagged') THEN
+            ALTER TYPE tree_status_enum RENAME VALUE 'BAGGED' TO 'bagged';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'DEAD')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_status_enum'::regtype AND enumlabel = 'dead') THEN
+            ALTER TYPE tree_status_enum RENAME VALUE 'DEAD' TO 'dead';
+        END IF;
+    END IF;
+
+    IF to_regtype('tree_stage_enum') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'DORMANT')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'dormant') THEN
+            ALTER TYPE tree_stage_enum RENAME VALUE 'DORMANT' TO 'dormant';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'FLOWERING')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'flowering') THEN
+            ALTER TYPE tree_stage_enum RENAME VALUE 'FLOWERING' TO 'flowering';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'FRUITLET')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'fruitlet') THEN
+            ALTER TYPE tree_stage_enum RENAME VALUE 'FRUITLET' TO 'fruitlet';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'MATURE')
+           AND NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = 'tree_stage_enum'::regtype AND enumlabel = 'mature') THEN
+            ALTER TYPE tree_stage_enum RENAME VALUE 'MATURE' TO 'mature';
+        END IF;
+    END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION set_updated_at_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -96,6 +142,33 @@ CREATE TRIGGER trg_user_account_set_updated_at
 BEFORE UPDATE ON user_account
 FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
 
+CREATE TABLE IF NOT EXISTS password_reset_challenge (
+    challenge_id VARCHAR(36) PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES user_account (user_id) ON DELETE CASCADE,
+    code_hash VARCHAR(255) NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    expires_at TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_challenge_user
+    ON password_reset_challenge (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_challenge_expires
+    ON password_reset_challenge (expires_at);
+
+-- Reset-code hashes are server-only and must never be exposed by PostgREST.
+ALTER TABLE password_reset_challenge ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON TABLE password_reset_challenge FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL PRIVILEGES ON TABLE password_reset_challenge FROM authenticated;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS orchard (
     orchard_id SERIAL PRIMARY KEY,
     orchard_uid VARCHAR(100) NOT NULL,
@@ -105,6 +178,8 @@ CREATE TABLE IF NOT EXISTS orchard (
     area_size NUMERIC(10, 2),
     tree_count INTEGER DEFAULT 0,
     geojson JSONB,
+    stage_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     management_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb,
     centroid_lon DOUBLE PRECISION,
@@ -131,6 +206,12 @@ ADD COLUMN IF NOT EXISTS cecid_weed_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE IF EXISTS orchard
 ADD COLUMN IF NOT EXISTS management_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+ALTER TABLE IF EXISTS orchard
+ADD COLUMN IF NOT EXISTS stage_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE IF EXISTS orchard
+ADD COLUMN IF NOT EXISTS status_zones JSONB NOT NULL DEFAULT '[]'::jsonb;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orchard_uid ON orchard (orchard_uid);
 CREATE INDEX IF NOT EXISTS idx_orchard_active ON orchard (is_active);
 CREATE INDEX IF NOT EXISTS idx_orchard_monitoring_enabled ON orchard (monitoring_enabled);
@@ -156,6 +237,8 @@ ALTER TABLE IF EXISTS tree ADD COLUMN IF NOT EXISTS external_id VARCHAR(150);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tree_orchard_external_id
     ON tree (orchard_id, external_id);
 CREATE INDEX IF NOT EXISTS idx_tree_geom ON tree USING GIST (geom);
+ALTER TABLE IF EXISTS tree ALTER COLUMN status SET DEFAULT 'healthy';
+ALTER TABLE IF EXISTS tree ALTER COLUMN current_stage SET DEFAULT 'dormant';
 
 CREATE TABLE IF NOT EXISTS pest (
     pest_id SERIAL PRIMARY KEY,
@@ -342,6 +425,8 @@ CREATE TABLE IF NOT EXISTS alert (
 CREATE INDEX IF NOT EXISTS idx_alert_id ON alert (alert_id);
 CREATE INDEX IF NOT EXISTS idx_alert_status ON alert (status);
 CREATE INDEX IF NOT EXISTS idx_alert_severity ON alert (severity);
+ALTER TABLE IF EXISTS alert
+    ADD COLUMN IF NOT EXISTS suggested_simulation_params JSONB;
 
 -- Admin-managed notification recipients. These contact records are backed up
 -- through the server-side PostgreSQL connection and hidden from public APIs.
@@ -425,6 +510,27 @@ CREATE INDEX IF NOT EXISTS idx_weather_cache_key ON weather_cache (cache_key);
 -- -------------------------------------------------------------------------
 -- Backup/synchronization metadata
 -- -------------------------------------------------------------------------
+
+-- Private metadata for the consolidated schema updater. The hash is recorded
+-- only after all schema statements succeed in the same transaction.
+CREATE TABLE IF NOT EXISTS public.mangopoint_schema_state (
+    schema_key VARCHAR(100) PRIMARY KEY,
+    schema_hash VARCHAR(64) NOT NULL,
+    applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.mangopoint_schema_state ENABLE ROW LEVEL SECURITY;
+REVOKE ALL PRIVILEGES ON TABLE public.mangopoint_schema_state FROM PUBLIC;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON TABLE public.mangopoint_schema_state FROM anon;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL PRIVILEGES ON TABLE public.mangopoint_schema_state FROM authenticated;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS sync_outbox (
     outbox_id BIGSERIAL PRIMARY KEY,
@@ -550,6 +656,7 @@ FOR EACH ROW EXECUTE FUNCTION enqueue_mangopoint_sync_event('id');
 
 -- Orchard files and their manifest remain local-only.
 DROP TRIGGER IF EXISTS trg_orchard_asset_sync ON orchard_asset;
+DELETE FROM sync_outbox WHERE entity_type = 'orchard_asset';
 
 DROP TRIGGER IF EXISTS trg_alert_email_recipient_sync ON alert_email_recipient;
 CREATE TRIGGER trg_alert_email_recipient_sync

@@ -6,6 +6,13 @@ import {
   buildReplayableSimulationRequest,
   normalizeSimulationRunForHistory,
 } from './simulationHistoryStore.js'
+import {
+  HISTORY_PERIOD_ALL_HISTORY,
+  HISTORY_PERIOD_MONTH,
+  filterRunsByHistoryPeriod,
+  historyMonthKey,
+  historyMonthLabel,
+} from './historyPeriod.js'
 
 test('frontend simulation model version matches the backend release', () => {
   assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-cecid-map-interpretation-v7')
@@ -107,4 +114,19 @@ test('an old-model template adopts the current default graph distance', () => {
   )
 
   assert.equal(request.tg_max_neighbor_dist_m, undefined)
+})
+
+test('history calendar selects a month and year until All history is selected', () => {
+  const now = new Date(2026, 9, 15, 12, 0, 0)
+  const current = { run_id: 'current', started_at: new Date(2026, 9, 2, 12, 0, 0).toISOString() }
+  const older = { run_id: 'older', started_at: new Date(2026, 8, 30, 12, 0, 0).toISOString() }
+  const unknown = { run_id: 'unknown', started_at: null }
+  const runs = [current, older, unknown]
+
+  assert.deepEqual(
+    filterRunsByHistoryPeriod(runs, HISTORY_PERIOD_MONTH, historyMonthKey(now)).map((run) => run.run_id),
+    ['current'],
+  )
+  assert.equal(historyMonthLabel('2026-10'), 'October 2026')
+  assert.equal(filterRunsByHistoryPeriod(runs, HISTORY_PERIOD_ALL_HISTORY, '2026-10'), runs)
 })

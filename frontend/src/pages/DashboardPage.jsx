@@ -6,10 +6,12 @@ import OverviewTab from '../components/tabs/OverviewTab'
 import CropImpactTab from '../components/tabs/CropImpactTab'
 import SurveillanceTab from '../components/tabs/SurveillanceTab'
 import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
+import SimulationReportModal from '../components/SimulationReportModal'
 import api from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
 import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
 import { summarizeCecidResult } from '../utils/cecidResultSummary'
+import { calculateSimulationEconomicImpact } from '../utils/economicImpact'
 import { buildGuidedBlocks, createDefaultWeatherTimeline } from '../utils/weatherSchedule'
 import {
   normalizeCecidWeedZones,
@@ -19,6 +21,12 @@ import {
   normalizeManagementZones,
   saveManagementZones,
 } from '../utils/managementZones'
+import {
+  normalizeStageZones,
+  normalizeStatusZones,
+  stageZonePayload,
+  statusZonePayload,
+} from '../utils/orchardTreeZones'
 import {
   overlappingManagementZones,
   treeIdsInPolygon,
@@ -61,6 +69,8 @@ const GUIMARAS_WONDERS_FARM_ORCHARD = {
   orchard_stage: 'mature',
   days_since_flowering: 60,
   monitored_pest_types: ['cecid', 'fruitfly'],
+  stage_zones: [],
+  status_zones: [],
   management_zones: [],
   cecid_weed_zones: [],
 }
@@ -179,40 +189,6 @@ function parseMaybeJson(value, fallback) {
   }
 }
 
-function normalizeStageZones(value) {
-  const zones = parseMaybeJson(value, [])
-  if (!Array.isArray(zones)) return []
-  return zones
-    .map((zone, index) => {
-      const coordinates = parseMaybeJson(zone?.coordinates, [])
-      if (!Array.isArray(coordinates) || coordinates.length < 3) return null
-      return {
-        id: zone.id ?? `restored-stage-zone-${index + 1}`,
-        stage: zone.stage ?? 'mature',
-        coordinates,
-        tree_count: zone.tree_count ?? 0,
-      }
-    })
-    .filter(Boolean)
-}
-
-function normalizeStatusZones(value) {
-  const zones = parseMaybeJson(value, [])
-  if (!Array.isArray(zones)) return []
-  return zones
-    .map((zone, index) => {
-      const coordinates = parseMaybeJson(zone?.coordinates, [])
-      if (!Array.isArray(coordinates) || coordinates.length < 3) return null
-      return {
-        id: zone.id ?? `restored-status-zone-${index + 1}`,
-        status: zone.status ?? 'infected',
-        coordinates,
-        tree_count: zone.tree_count ?? 0,
-      }
-    })
-    .filter(Boolean)
-}
-
 function normalizeCecidEmergenceZones(value) {
   const zones = parseMaybeJson(value, [])
   if (!Array.isArray(zones)) return []
@@ -322,6 +298,31 @@ function stageOverridesFromZones(zones, treePoints) {
   return overrides
 }
 
+function statusOverridesFromZones(zones, treePoints) {
+  const overrides = {}
+  for (const zone of zones || []) {
+    const coordinates = Array.isArray(zone?.coordinates) ? zone.coordinates : []
+    if (coordinates.length < 3 || !zone?.status) continue
+    for (const treeId of treeIdsInPolygon(treePoints, coordinates)) overrides[treeId] = zone.status
+  }
+  return overrides
+}
+
+function persistentZoneReapplyUpdates(kind, affectedIds, remainingZones, treePoints, resetValue) {
+  if (!affectedIds.length) return []
+  const affected = new Set(affectedIds.map(String))
+  const updates = [{ treeIds: [...affected], patch: { [kind]: resetValue } }]
+  for (const zone of remainingZones) {
+    if (zone.scope !== 'orchard') continue
+    const overlappingIds = treeIdsInPolygon(treePoints, zone.coordinates)
+      .filter((treeId) => affected.has(String(treeId)))
+    if (overlappingIds.length) {
+      updates.push({ treeIds: overlappingIds, patch: { [kind]: zone[kind] } })
+    }
+  }
+  return updates
+}
+
 function isActiveAlert(alert) {
   return String(alert?.status ?? '').toLowerCase() === 'active'
 }
@@ -359,6 +360,7 @@ export default function DashboardPage() {
 
   // Simulation / map state
   const [simData, setSimData] = useState(null)
+  const [reportRequest, setReportRequest] = useState(null)
   const [treeOverrides, setTreeOverrides] = useState({})
   const [treeStageOverrides, setTreeStageOverrides] = useState({})
   const [phenologyZones, setPhenologyZones] = useState([])
@@ -381,6 +383,9 @@ export default function DashboardPage() {
   const [treeEditScope, setTreeEditScope] = useState('scenario')
   const [treeEditSaveState, setTreeEditSaveState] = useState('idle')
   const [treeEditSaveError, setTreeEditSaveError] = useState('')
+  const treeZoneOrchardIdRef = useRef(null)
+  const treeZoneSaveVersionRef = useRef({ stage: 0, status: 0 })
+  const treeZoneSaveQueueRef = useRef(Promise.resolve())
 
   // Persistent named areas used by field teams and future zone reports.
   const [managementZones, setManagementZones] = useState([])
@@ -501,6 +506,40 @@ export default function DashboardPage() {
     () => JSON.stringify(selectedOrchardRecord?.management_zones ?? []),
     [selectedOrchardRecord?.management_zones],
   )
+  const selectedOrchardStageZonesKey = useMemo(
+    () => JSON.stringify(selectedOrchardRecord?.stage_zones ?? []),
+    [selectedOrchardRecord?.stage_zones],
+  )
+  const selectedOrchardStatusZonesKey = useMemo(
+    () => JSON.stringify(selectedOrchardRecord?.status_zones ?? []),
+    [selectedOrchardRecord?.status_zones],
+  )
+
+  useEffect(() => {
+    const orchardChanged = treeZoneOrchardIdRef.current !== selectedOrchardId
+    const savedStageZones = normalizeStageZones(selectedOrchardRecord?.stage_zones, 'orchard')
+    const savedStatusZones = normalizeStatusZones(selectedOrchardRecord?.status_zones, 'orchard')
+    setPhenologyZones((current) => [
+      ...(orchardChanged ? [] : current.filter((zone) => zone.scope !== 'orchard')),
+      ...savedStageZones,
+    ])
+    setStatusZones((current) => [
+      ...(orchardChanged ? [] : current.filter((zone) => zone.scope !== 'orchard')),
+      ...savedStatusZones,
+    ])
+    if (orchardChanged) {
+      setTreeStageOverrides({})
+      setTreeOverrides({})
+      setZoneHistory([])
+    }
+    treeZoneOrchardIdRef.current = selectedOrchardId
+    setTreeEditSaveState('idle')
+    setTreeEditSaveError('')
+  }, [
+    selectedOrchardId,
+    selectedOrchardStageZonesKey,
+    selectedOrchardStatusZonesKey,
+  ])
 
   useEffect(() => {
     setCecidWeedZones(normalizeCecidWeedZones(selectedOrchardRecord?.cecid_weed_zones))
@@ -516,6 +555,15 @@ export default function DashboardPage() {
     setManagementZoneSaveState('idle')
     setManagementZoneSaveError('')
   }, [selectedOrchardId, selectedOrchardManagementZonesKey])
+
+  useEffect(() => {
+    if (treeEditSaveState !== 'saved') return undefined
+    const timeoutId = window.setTimeout(() => {
+      setTreeEditSaveState('idle')
+      setTreeEditSaveError('')
+    }, 2200)
+    return () => window.clearTimeout(timeoutId)
+  }, [treeEditSaveState])
 
   const stageZoneSelectedCount = useMemo(
     () => treeIdsInPolygon(orchardTreePoints, stageZoneDraft).length,
@@ -555,6 +603,24 @@ export default function DashboardPage() {
     ? null
     : currentFrame
 
+  const handleOpenSimulationReport = useCallback((run, includeDisplayed = false) => {
+    if (!run) return
+    const params = parseMaybeJson(run.request_payload ?? run.input_parameters, {})
+    const orchardId = run.orchard_id ?? params.orchard_id ?? (includeDisplayed ? selectedOrchardId : DEFAULT_ORCHARD_ID)
+    const record = orchards.find((orchard) => orchard.orchard_id === orchardId)
+    setReportRequest({
+      run,
+      orchard: {
+        ...record,
+        orchard_id: orchardId,
+        name: record?.name || (orchardId === DEFAULT_ORCHARD_ID ? DEFAULT_ORCHARD_LABEL : orchardId),
+        geojson: record?.geojson ?? (orchardId === DEFAULT_ORCHARD_ID ? fallbackGeojson : null),
+      },
+      displayed: includeDisplayed ? { geojson: mapGeojson, frame: displayedFrame, mode: cecidMapMode } : null,
+    })
+  }, [orchards, selectedOrchardId, fallbackGeojson, mapGeojson, displayedFrame, cecidMapMode])
+  const handleCloseSimulationReport = useCallback(() => setReportRequest(null), [])
+
   const activeOrchardAlerts = useMemo(
     () => alerts.filter((alert) => isOrchardAlert(alert, selectedOrchardId)),
     [alerts, selectedOrchardId],
@@ -581,12 +647,11 @@ export default function DashboardPage() {
 
     const z1 = zone1 / total, z2 = zone2 / total, z3 = zone3 / total
     const peak = simData.peak_risk ?? 0
-    const nInfested = simData.n_infested_final ?? 0
     const cecid = simData.pest_type === 'cecid'
       ? summarizeCecidResult(simData)
       : null
-    const pestReduction = z3 < 0.3 ? 0.45 : z3 < 0.6 ? 0.25 : 0.10
-    const savings = total * 180 * pestReduction
+    const economic = calculateSimulationEconomicImpact(simData)
+    const pesticideReduction = Math.max(0, 1 - (z3 > 0.02 ? z3 : 0))
 
     const actions = []
     if (z3 > 0.02) actions.push({
@@ -634,7 +699,7 @@ export default function DashboardPage() {
 
     return {
       zones: { zone_1_pct: z1, zone_2_pct: z2, zone_3_pct: z3 },
-      economic: { pesticide_reduction: pestReduction, estimated_savings: savings },
+      economic: economic ? { ...economic, pesticide_reduction: pesticideReduction } : null,
       action_plan: actions,
       summary_message: summary,
       cecid,
@@ -755,28 +820,53 @@ export default function DashboardPage() {
     persistManagementZones(managementZones)
   }, [managementZones, persistManagementZones])
 
-  const persistTreeSelection = useCallback(async (treeIds, patch) => {
-    if (treeEditScope !== 'orchard' || treeIds.length === 0) return
+  const persistOrchardTreeZones = useCallback((kind, nextZones, treeUpdates = []) => {
     const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+    const saveVersion = treeZoneSaveVersionRef.current[kind] + 1
+    treeZoneSaveVersionRef.current[kind] = saveVersion
+    const field = kind === 'stage' ? 'stage_zones' : 'status_zones'
+    const payload = kind === 'stage' ? stageZonePayload(nextZones) : statusZonePayload(nextZones)
     setTreeEditSaveState('saving')
     setTreeEditSaveError('')
-    try {
-      const response = await api.updateOrchardTrees(orchardId, {
-        tree_ids: treeIds,
-        ...patch,
-      })
-      const savedRecord = response.data.orchard
-      setOrchards((current) => current.map((record) => (
-        record.orchard_id === orchardId ? { ...record, ...savedRecord } : record
-      )))
-      setTreeEditSaveState('saved')
-    } catch (error) {
-      setTreeEditSaveState('error')
-      setTreeEditSaveError(
-        error?.response?.data?.detail || error?.message || 'Could not save selected trees.',
-      )
+    const save = async () => {
+      try {
+        let response = await api.updateOrchard(orchardId, { [field]: payload })
+        let savedRecord = response.data
+        for (const update of treeUpdates) {
+          if (!update.treeIds?.length) continue
+          response = await api.updateOrchardTrees(orchardId, {
+            tree_ids: update.treeIds,
+            ...update.patch,
+          })
+          savedRecord = response.data.orchard
+        }
+        if (
+          treeZoneSaveVersionRef.current[kind] !== saveVersion
+          || selectedOrchardIdRef.current !== orchardId
+        ) return false
+        setOrchards((current) => current.map((record) => (
+          record.orchard_id === orchardId
+            ? { ...record, geojson: savedRecord.geojson, [field]: savedRecord[field] ?? payload }
+            : record
+        )))
+        setTreeEditSaveState('saved')
+        return true
+      } catch (error) {
+        if (
+          treeZoneSaveVersionRef.current[kind] !== saveVersion
+          || selectedOrchardIdRef.current !== orchardId
+        ) return false
+        setTreeEditSaveState('error')
+        setTreeEditSaveError(
+          error?.response?.data?.detail || error?.message || 'Could not save orchard zones.',
+        )
+        return false
+      }
     }
-  }, [treeEditScope])
+    const pending = treeZoneSaveQueueRef.current.catch(() => false).then(save)
+    treeZoneSaveQueueRef.current = pending
+    return pending
+  }, [])
 
   const handleOrchardUpload = useCallback(async ({ name, treeGeojson, orthophoto, dtm, dsm }) => {
     const formData = new FormData()
@@ -1138,6 +1228,8 @@ export default function DashboardPage() {
   }, [currentFrame, selectedTree])
 
   const handleStageZoneStart = useCallback(() => {
+    setTreeEditSaveState('idle')
+    setTreeEditSaveError('')
     // Cancel any active status zone drawing (mutual exclusivity)
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
@@ -1167,16 +1259,15 @@ export default function DashboardPage() {
   const handleStageZoneFinish = useCallback(() => {
     if (stageZoneDraft.length < 3) return
     const targetIds = treeIdsInPolygon(orchardTreePoints, stageZoneDraft)
-
-    setPhenologyZones((prev) => ([
-      ...prev,
-      {
-        id: `stage-zone-${Date.now()}`,
-        stage: stageZoneStage,
-        coordinates: stageZoneDraft,
-        tree_count: targetIds.length,
-      },
-    ]))
+    const newZone = {
+      id: `stage-zone-${Date.now()}`,
+      stage: stageZoneStage,
+      coordinates: stageZoneDraft,
+      tree_count: targetIds.length,
+      scope: treeEditScope,
+    }
+    const nextZones = [...phenologyZones, newZone]
+    setPhenologyZones(nextZones)
     setTreeStageOverrides((prev) => {
       const next = { ...prev }
       for (const id of targetIds) next[id] = stageZoneStage
@@ -1184,20 +1275,26 @@ export default function DashboardPage() {
     })
     setStageZoneDraft([])
     setStageZoneDrawing(false)
-    setZoneHistory((prev) => [...prev, { type: 'stage' }])
-    persistTreeSelection(targetIds, { stage: stageZoneStage })
-  }, [orchardTreePoints, persistTreeSelection, stageZoneDraft, stageZoneStage])
-
-  const handleStageZoneUndoLast = useCallback(() => {
-    const nextZones = phenologyZones.slice(0, -1)
-    setPhenologyZones(nextZones)
-    setTreeStageOverrides(stageOverridesFromZones(nextZones, orchardTreePoints))
-    setStageZoneDraft([])
-    setStageZoneDrawing(false)
-  }, [orchardTreePoints, phenologyZones])
+    setZoneHistory((prev) => [...prev, { type: 'stage', id: newZone.id }])
+    if (treeEditScope === 'orchard') {
+      persistOrchardTreeZones('stage', nextZones, [{
+        treeIds: targetIds,
+        patch: { stage: stageZoneStage },
+      }])
+    }
+  }, [
+    orchardTreePoints,
+    persistOrchardTreeZones,
+    phenologyZones,
+    stageZoneDraft,
+    stageZoneStage,
+    treeEditScope,
+  ])
 
   // ── Status zone handlers (bulk status change) ─────────────────────────
   const handleStatusZoneStart = useCallback(() => {
+    setTreeEditSaveState('idle')
+    setTreeEditSaveError('')
     // Cancel any active stage zone drawing (mutual exclusivity)
     setStageZoneDraft([])
     setStageZoneDrawing(false)
@@ -1227,16 +1324,15 @@ export default function DashboardPage() {
   const handleStatusZoneFinish = useCallback(() => {
     if (statusZoneDraft.length < 3) return
     const targetIds = treeIdsInPolygon(orchardTreePoints, statusZoneDraft)
-
-    setStatusZones((prev) => ([
-      ...prev,
-      {
-        id: `status-zone-${Date.now()}`,
-        status: statusZoneStatus,
-        coordinates: statusZoneDraft,
-        tree_count: targetIds.length,
-      },
-    ]))
+    const newZone = {
+      id: `status-zone-${Date.now()}`,
+      status: statusZoneStatus,
+      coordinates: statusZoneDraft,
+      tree_count: targetIds.length,
+      scope: treeEditScope,
+    }
+    const nextZones = [...statusZones, newZone]
+    setStatusZones(nextZones)
     setTreeOverrides((prev) => {
       const next = { ...prev }
       for (const id of targetIds) next[id] = statusZoneStatus
@@ -1244,42 +1340,125 @@ export default function DashboardPage() {
     })
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
-    setZoneHistory((prev) => [...prev, { type: 'status' }])
-    persistTreeSelection(targetIds, { status: statusZoneStatus })
-  }, [orchardTreePoints, persistTreeSelection, statusZoneDraft, statusZoneStatus])
-
-  const handleStatusZoneUndoLast = useCallback(() => {
-    const removed = statusZones[statusZones.length - 1]
-    const nextZones = statusZones.slice(0, -1)
-    setStatusZones(nextZones)
-    // Remove the tree overrides that were set by the removed zone
-    if (removed) {
-      const removedIds = new Set(
-        treeIdsInPolygon(orchardTreePoints, removed.coordinates),
-      )
-      setTreeOverrides((prev) => {
-        const next = { ...prev }
-        for (const id of removedIds) delete next[id]
-        // Re-apply remaining status zones in order
-        for (const zone of nextZones) {
-          const ids = treeIdsInPolygon(orchardTreePoints, zone.coordinates)
-          for (const zoneId of ids) next[zoneId] = zone.status
-        }
-        return next
-      })
+    setZoneHistory((prev) => [...prev, { type: 'status', id: newZone.id }])
+    if (treeEditScope === 'orchard') {
+      persistOrchardTreeZones('status', nextZones, [{
+        treeIds: targetIds,
+        patch: { status: statusZoneStatus },
+      }])
     }
-    setStatusZoneDraft([])
-    setStatusZoneDrawing(false)
-  }, [orchardTreePoints, statusZones])
-
-  const handleStatusZoneClear = useCallback(() => {
-    setStatusZones([])
-    setTreeOverrides({})
-    setStatusZoneDraft([])
-    setStatusZoneDrawing(false)
-  }, [])
+  }, [
+    orchardTreePoints,
+    persistOrchardTreeZones,
+    statusZones,
+    statusZoneDraft,
+    statusZoneStatus,
+    treeEditScope,
+  ])
 
   // ── Persistent management/reporting zone handlers ─────────────────────
+  const handleStageZoneDelete = useCallback((zoneId) => {
+    const removed = phenologyZones.find((zone) => zone.id === zoneId)
+    if (!removed) return
+    const nextZones = phenologyZones.filter((zone) => zone.id !== zoneId)
+    const affectedIds = treeIdsInPolygon(orchardTreePoints, removed.coordinates)
+    const nextOverrides = stageOverridesFromZones(nextZones, orchardTreePoints)
+    const resetStage = selectedOrchardRecord?.orchard_stage || 'mature'
+    if (removed.scope === 'orchard') {
+      for (const treeId of affectedIds) {
+        if (!(treeId in nextOverrides)) nextOverrides[treeId] = resetStage
+      }
+      persistOrchardTreeZones(
+        'stage',
+        nextZones,
+        persistentZoneReapplyUpdates('stage', affectedIds, nextZones, orchardTreePoints, resetStage),
+      )
+    }
+    setPhenologyZones(nextZones)
+    setTreeStageOverrides(nextOverrides)
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+    setZoneHistory((current) => current.filter((entry) => (
+      entry.type !== 'stage' || entry.id !== zoneId
+    )))
+  }, [
+    orchardTreePoints,
+    persistOrchardTreeZones,
+    phenologyZones,
+    selectedOrchardRecord?.orchard_stage,
+  ])
+
+  const handleStatusZoneDelete = useCallback((zoneId) => {
+    const removed = statusZones.find((zone) => zone.id === zoneId)
+    if (!removed) return
+    const nextZones = statusZones.filter((zone) => zone.id !== zoneId)
+    const affectedIds = treeIdsInPolygon(orchardTreePoints, removed.coordinates)
+    const nextOverrides = statusOverridesFromZones(nextZones, orchardTreePoints)
+    if (removed.scope === 'orchard') {
+      for (const treeId of affectedIds) {
+        if (!(treeId in nextOverrides)) nextOverrides[treeId] = 'healthy'
+      }
+      persistOrchardTreeZones(
+        'status',
+        nextZones,
+        persistentZoneReapplyUpdates('status', affectedIds, nextZones, orchardTreePoints, 'healthy'),
+      )
+    }
+    setStatusZones(nextZones)
+    setTreeOverrides(nextOverrides)
+    setStatusZoneDraft([])
+    setStatusZoneDrawing(false)
+    setZoneHistory((current) => current.filter((entry) => (
+      entry.type !== 'status' || entry.id !== zoneId
+    )))
+  }, [orchardTreePoints, persistOrchardTreeZones, statusZones])
+
+  const handleStageZoneClear = useCallback(() => {
+    if (!phenologyZones.length) return
+    const savedZones = phenologyZones.filter((zone) => zone.scope === 'orchard')
+    if (savedZones.length && !window.confirm('Delete all stage zones from this orchard?')) return
+    const affectedIds = [...new Set(savedZones.flatMap((zone) => (
+      treeIdsInPolygon(orchardTreePoints, zone.coordinates)
+    )))]
+    const resetStage = selectedOrchardRecord?.orchard_stage || 'mature'
+    setPhenologyZones([])
+    setTreeStageOverrides(Object.fromEntries(affectedIds.map((treeId) => [treeId, resetStage])))
+    setStageZoneDraft([])
+    setStageZoneDrawing(false)
+    setZoneHistory((current) => current.filter((entry) => entry.type !== 'stage'))
+    if (savedZones.length) {
+      persistOrchardTreeZones('stage', [], affectedIds.length ? [{
+        treeIds: affectedIds,
+        patch: { stage: resetStage },
+      }] : [])
+    }
+  }, [
+    orchardTreePoints,
+    persistOrchardTreeZones,
+    phenologyZones,
+    selectedOrchardRecord?.orchard_stage,
+  ])
+
+  const handleStatusZoneClear = useCallback(() => {
+    if (!statusZones.length) return
+    const savedZones = statusZones.filter((zone) => zone.scope === 'orchard')
+    if (savedZones.length && !window.confirm('Delete all status zones from this orchard?')) return
+    const affectedIds = [...new Set(savedZones.flatMap((zone) => (
+      treeIdsInPolygon(orchardTreePoints, zone.coordinates)
+    )))]
+    setStatusZones([])
+    setTreeOverrides(Object.fromEntries(affectedIds.map((treeId) => [treeId, 'healthy'])))
+    setStatusZoneDraft([])
+    setStatusZoneDrawing(false)
+    setZoneHistory((current) => current.filter((entry) => entry.type !== 'status'))
+    if (savedZones.length) {
+      persistOrchardTreeZones('status', [], affectedIds.length ? [{
+        treeIds: affectedIds,
+        patch: { status: 'healthy' },
+      }] : [])
+    }
+  }, [orchardTreePoints, persistOrchardTreeZones, statusZones])
+
   const handleManagementZoneStart = useCallback(() => {
     setStageZoneDraft([])
     setStageZoneDrawing(false)
@@ -1477,75 +1656,54 @@ export default function DashboardPage() {
     setZoneHistory((current) => current.filter((entry) => entry.type !== 'cecid'))
   }, [cecidWeedZones.length, persistCecidWeedZones])
 
-  const handleStageZoneClear = useCallback(() => {
-    setPhenologyZones([])
-    setTreeStageOverrides({})
-    setStageZoneDraft([])
-    setStageZoneDrawing(false)
-  }, [])
-
   // ── Unified zone undo / clear ─────────────────────────────────────────
   const handleZoneUndoLast = useCallback(() => {
     if (!zoneHistory.length) return
     const last = zoneHistory[zoneHistory.length - 1]
-    setZoneHistory((prev) => prev.slice(0, -1))
     if (last.type === 'stage') {
-      const nextZones = phenologyZones.slice(0, -1)
-      setPhenologyZones(nextZones)
-      setTreeStageOverrides(stageOverridesFromZones(nextZones, orchardTreePoints))
-      setStageZoneDraft([])
-      setStageZoneDrawing(false)
+      handleStageZoneDelete(last.id)
     } else if (last.type === 'status') {
-      const removed = statusZones[statusZones.length - 1]
-      const nextZones = statusZones.slice(0, -1)
-      setStatusZones(nextZones)
-      if (removed) {
-        const removedIds = new Set(
-          treeIdsInPolygon(orchardTreePoints, removed.coordinates),
-        )
-        setTreeOverrides((prev) => {
-          const next = { ...prev }
-          for (const id of removedIds) delete next[id]
-          for (const zone of nextZones) {
-            const ids = treeIdsInPolygon(orchardTreePoints, zone.coordinates)
-            for (const zoneId of ids) next[zoneId] = zone.status
-          }
-          return next
-        })
-      }
-      setStatusZoneDraft([])
-      setStatusZoneDrawing(false)
+      handleStatusZoneDelete(last.id)
     } else {
-      const nextZones = last.id
-        ? cecidWeedZones.filter((zone) => zone.id !== last.id)
-        : cecidWeedZones.slice(0, -1)
-      persistCecidWeedZones(nextZones)
-      setCecidZoneDraft([])
-      setCecidZoneEditingId(null)
-      setCecidZoneDrawing(false)
+      handleCecidZoneDelete(last.id)
     }
   }, [
-    cecidWeedZones,
-    orchardTreePoints,
-    persistCecidWeedZones,
-    phenologyZones,
-    statusZones,
+    handleCecidZoneDelete,
+    handleStageZoneDelete,
+    handleStatusZoneDelete,
     zoneHistory,
   ])
 
-  const handleZoneClearAll = useCallback(() => {
-    if (
-      (cecidWeedZones.length || managementZones.length)
-      && !window.confirm('Clear all zones, including saved management and weed zones, from this orchard?')
-    ) return
+  const handleZoneClearAll = useCallback(async () => {
+    const savedStageZones = phenologyZones.filter((zone) => zone.scope === 'orchard')
+    const savedStatusZones = statusZones.filter((zone) => zone.scope === 'orchard')
+    const stageIds = [...new Set(savedStageZones.flatMap((zone) => (
+      treeIdsInPolygon(orchardTreePoints, zone.coordinates)
+    )))]
+    const statusIds = [...new Set(savedStatusZones.flatMap((zone) => (
+      treeIdsInPolygon(orchardTreePoints, zone.coordinates)
+    )))]
+    const resetStage = selectedOrchardRecord?.orchard_stage || 'mature'
     setPhenologyZones([])
-    setTreeStageOverrides({})
+    setTreeStageOverrides(Object.fromEntries(stageIds.map((treeId) => [treeId, resetStage])))
     setStageZoneDraft([])
     setStageZoneDrawing(false)
     setStatusZones([])
-    setTreeOverrides({})
+    setTreeOverrides(Object.fromEntries(statusIds.map((treeId) => [treeId, 'healthy'])))
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
+    if (savedStageZones.length) {
+      await persistOrchardTreeZones('stage', [], stageIds.length ? [{
+        treeIds: stageIds,
+        patch: { stage: resetStage },
+      }] : [])
+    }
+    if (savedStatusZones.length) {
+      await persistOrchardTreeZones('status', [], statusIds.length ? [{
+        treeIds: statusIds,
+        patch: { status: 'healthy' },
+      }] : [])
+    }
     if (managementZones.length) persistManagementZones([])
     setManagementZoneDraft([])
     setManagementZoneEditingId(null)
@@ -1556,10 +1714,15 @@ export default function DashboardPage() {
     setCecidZoneDrawing(false)
     setZoneHistory([])
   }, [
+    orchardTreePoints,
+    phenologyZones,
+    statusZones,
     cecidWeedZones.length,
     managementZones.length,
+    persistOrchardTreeZones,
     persistCecidWeedZones,
     persistManagementZones,
+    selectedOrchardRecord?.orchard_stage,
   ])
 
   return (
@@ -1588,6 +1751,7 @@ export default function DashboardPage() {
                 <LiveMapTab
                   geojson={mapGeojson}
                   baseGeojson={orchardGeojson}
+                  treePoints={orchardTreePoints}
                   alerts={mapAlerts}
                   treeOverrides={treeOverrides}
                   stageOverrides={treeStageOverrides}
@@ -1604,6 +1768,8 @@ export default function DashboardPage() {
                   onStageZoneUndoPoint={handleStageZoneUndoPoint}
                   onStageZoneMapClick={handleStageZoneMapClick}
                   onStageZoneDraftChange={setStageZoneDraft}
+                  onStageZoneDelete={handleStageZoneDelete}
+                  onStageZoneClear={handleStageZoneClear}
                   statusZones={statusZones}
                   statusZoneDrawing={statusZoneDrawing}
                   statusZoneStatus={statusZoneStatus}
@@ -1617,6 +1783,8 @@ export default function DashboardPage() {
                   onStatusZoneUndoPoint={handleStatusZoneUndoPoint}
                   onStatusZoneMapClick={handleStatusZoneMapClick}
                   onStatusZoneDraftChange={setStatusZoneDraft}
+                  onStatusZoneDelete={handleStatusZoneDelete}
+                  onStatusZoneClear={handleStatusZoneClear}
                   treeEditScope={treeEditScope}
                   treeEditSaveState={treeEditSaveState}
                   treeEditSaveError={treeEditSaveError}
@@ -1676,6 +1844,7 @@ export default function DashboardPage() {
                   cecidEnsembleRuns={cecidLikelihoodAvailable ? cecidEnsembleRuns : 0}
                   onCecidMapModeChange={handleCecidMapModeChange}
                   onTreeClick={handleTreeClick}
+                  onPrintReport={simData ? () => handleOpenSimulationReport(simData, true) : null}
                 />
               </div>
 
@@ -1714,6 +1883,7 @@ export default function DashboardPage() {
                 style={{ display: activeTab === 'history' ? 'block' : 'none' }}
               >
                 <SimulationHistoryTab
+                  onPrintRun={handleOpenSimulationReport}
                   orchards={orchards}
                   refreshKey={historyRefreshKey}
                   onLoadRun={handleHistoricalSimulationLoad}
@@ -1727,6 +1897,8 @@ export default function DashboardPage() {
 
         {/* ── Right sidebar ── */}
         <Sidebar
+          onPrintReport={simData ? () => handleOpenSimulationReport(simData, true) : null}
+          orchardOrthophoto={orchardOrthophoto}
           orchards={orchards}
           selectedOrchardId={selectedOrchardId}
           onOrchardSelect={handleOrchardSelect}
@@ -1783,6 +1955,8 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Tree Management Modal ── */}
+      {reportRequest && <SimulationReportModal {...reportRequest} onClose={handleCloseSimulationReport} />}
+
       {selectedTree && (
         <div
           className="modal fade show d-block"

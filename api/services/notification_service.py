@@ -135,8 +135,12 @@ class NotificationService:
     def _configuration_error(self, recipients: List[str]) -> Optional[str]:
         if not self.email_enabled:
             return "Alert email delivery is disabled."
+        return self._transport_configuration_error(recipients)
+
+    def _transport_configuration_error(self, recipients: List[str]) -> Optional[str]:
+        """Validate the shared mail transport for alerts and account email."""
         if not recipients:
-            return "No valid ALERT_EMAIL_RECIPIENTS are configured."
+            return "No valid email recipient was provided."
         if not self.from_email or not _EMAIL_PATTERN.fullmatch(self.from_email):
             return "A valid SMTP_FROM_EMAIL (or SMTP_USER) is required."
 
@@ -154,6 +158,43 @@ class NotificationService:
         if self.smtp_security not in {"starttls", "ssl", "none"}:
             return "SMTP_SECURITY must be starttls, ssl, or none."
         return None
+
+    def _build_password_reset_code_message(
+        self,
+        code: str,
+        expires_minutes: int,
+    ) -> EmailMessage:
+        """Build the plain-text and HTML versions of a reset-code email."""
+        email = EmailMessage()
+        email["Subject"] = f"{code} is your MangoPoint password reset code"
+        email["From"] = formataddr((self.from_name, self.from_email))
+        email["To"] = "Undisclosed recipient:;"
+        email.set_content(
+            "MangoPoint password reset\n"
+            "=========================\n\n"
+            "We received a request to reset your MangoPoint password.\n\n"
+            f"Your verification code is: {code}\n\n"
+            f"This link expires in {expires_minutes} minutes. If you did not request "
+            "this change, you can ignore this email.\n"
+        )
+
+        safe_code = html.escape(code)
+        email.add_alternative(
+            f"""<!doctype html>
+<html><body style="margin:0;background:#f3f7f4;font-family:Arial,sans-serif;color:#17211d;">
+  <div style="max-width:600px;margin:32px auto;padding:0 16px;">
+    <div style="background:#fff;border:1px solid #d7e3db;border-top:5px solid #1b4332;border-radius:12px;padding:28px;">
+      <div style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#1b4332;">MangoPoint secure access</div>
+      <h1 style="font-size:24px;margin:10px 0;color:#17211d;">Reset your password</h1>
+      <p style="font-size:15px;line-height:1.6;color:#58645e;">Enter this verification code on the MangoPoint password reset screen.</p>
+      <div style="margin:24px 0;padding:16px;border:1px solid #cddfd4;border-radius:10px;background:#edf5f0;color:#1b4332;font-size:30px;font-weight:800;letter-spacing:.28em;text-align:center;">{safe_code}</div>
+      <p style="font-size:13px;line-height:1.6;color:#667085;">This link expires in {expires_minutes} minutes. If you did not request this change, you can ignore this email.</p>
+    </div>
+  </div>
+</body></html>""",
+            subtype="html",
+        )
+        return email
 
     def _connect(self):
         context = ssl.create_default_context()
@@ -356,6 +397,40 @@ class NotificationService:
                 logger.warning(
                     "Email alert %s attempt %d/%d failed: %s",
                     alert_id,
+                    attempt,
+                    self.retry_attempts,
+                    exc,
+                )
+                if attempt < self.retry_attempts and self.retry_delay:
+                    await asyncio.sleep(self.retry_delay * attempt)
+        return False
+
+    async def send_password_reset_code(
+        self,
+        recipient: str,
+        code: str,
+        expires_minutes: int,
+    ) -> bool:
+        """Send a private six-digit recovery code using the configured transport."""
+        recipients = normalize_email_recipients([recipient])
+        configuration_error = self._transport_configuration_error(recipients)
+        if configuration_error:
+            self.last_error = configuration_error
+            logger.warning("Skipping password reset email: %s", configuration_error)
+            return False
+
+        email = self._build_password_reset_code_message(code, expires_minutes)
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                await self._deliver_email(email, recipients)
+                self.last_error = None
+                self.last_success_at = datetime.now(timezone.utc).isoformat()
+                logger.info("Password reset email sent via %s", self.email_provider)
+                return True
+            except Exception as exc:
+                self.last_error = str(exc)[:500]
+                logger.warning(
+                    "Password reset email attempt %d/%d failed: %s",
                     attempt,
                     self.retry_attempts,
                     exc,

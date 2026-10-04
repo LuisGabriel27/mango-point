@@ -45,6 +45,11 @@ const api = {
     client.post('/auth/login', { username_or_email: usernameOrEmail, password }),
   logout: () => client.post('/auth/logout'),
   me: () => client.get('/auth/me'),
+  updateProfile: (body) => client.patch('/auth/me', body),
+  updateAccountEmail: (body) => client.patch('/auth/me/email', body),
+  changePassword: (body) => client.post('/auth/password', body),
+  requestPasswordReset: (body) => client.post('/auth/password/forgot', body),
+  resetPassword: (body) => client.post('/auth/password/reset', body),
 
   // Orchards
   getOrchards: (params = {}) => client.get('/orchards', { params }),

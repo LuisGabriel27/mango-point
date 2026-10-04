@@ -7,7 +7,7 @@ Pydantic models used by the auth endpoints.
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.datetime_utils import format_rfc3339
 
 
@@ -69,6 +69,80 @@ class CurrentUserResponse(BaseModel):
 
     authenticated: bool = True
     user: AuthUserResponse
+
+
+class CurrentUserUpdateRequest(BaseModel):
+    """Editable profile fields for the authenticated account."""
+
+    full_name: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Name cannot be empty.")
+        return normalized
+
+
+class PasswordChangeRequest(BaseModel):
+    """Current and replacement credentials for a password change."""
+
+    current_password: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=256)
+
+    @model_validator(mode="after")
+    def passwords_must_differ(self) -> "PasswordChangeRequest":
+        if self.current_password == self.new_password:
+            raise ValueError("New password must be different from the current password.")
+        return self
+
+
+class PasswordChangeResponse(BaseModel):
+    """Confirmation returned after a password is replaced."""
+
+    message: str
+
+
+class PasswordResetRequest(BaseModel):
+    """Email address used to request a password-reset link."""
+
+    email: str = Field(..., min_length=3, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized.count("@") != 1 or "." not in normalized.rsplit("@", 1)[-1]:
+            raise ValueError("Enter a valid email address.")
+        return normalized
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    """Verification challenge, emailed code, and replacement password."""
+
+    challenge_id: str = Field(..., min_length=36, max_length=36)
+    code: str = Field(..., pattern=r"^\d{6}$")
+    new_password: str = Field(..., min_length=8, max_length=256)
+
+
+class PasswordResetResponse(BaseModel):
+    """Neutral password-reset acknowledgement."""
+
+    message: str
+    challenge_id: Optional[str] = None
+
+
+class AccountEmailUpdateRequest(BaseModel):
+    """Recovery email change authorized by the current password."""
+
+    email: str = Field(..., min_length=3, max_length=255)
+    current_password: str = Field(..., min_length=1, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return PasswordResetRequest.normalize_email(value)
 
 
 class LogoutResponse(BaseModel):

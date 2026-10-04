@@ -187,12 +187,21 @@ Restart the API after changing `.env`. Then sign in as an administrator and use
 are available from `GET /alerts/email/status`. Successful alert deliveries are
 marked `email_sent=true` and show an **Emailed** badge in the notification list.
 
-Administrators can manage the live recipient list from the dashboard notification
-menu using **Add emails**. The first time that dialog is opened, addresses from
+Administrators can manage the live recipient list from **Settings > Notification
+emails**. The first time that section is opened, addresses from
 `ALERT_EMAIL_RECIPIENTS` are imported into the local database. From then on, the
 admin-managed list is authoritative, including when every recipient is removed.
 Admins can edit contact details, pause or resume delivery, and permanently delete
-recipient records from the same dialog.
+recipient records from the same settings section. Every signed-in user can also
+change their displayed name, login/recovery email, and password from **Settings >
+Account**. Changing the recovery email requires the current password.
+
+Password recovery uses the same Brevo or SMTP transport. **Forgot password?**
+sends a six-digit code only to the email saved on the user account. The code
+expires after 10 minutes, is stored only as a password hash, and locks after five
+incorrect attempts. The default `admin@mangopoint.local` bootstrap address cannot
+receive mail, so replace it with a real recovery address in Settings before using
+password recovery.
 Recipient records and their active/paused state are added to the protected cloud
 backup outbox. In Supabase, row-level security is enabled and access is revoked
 from the `anon` and `authenticated` API roles; the server-side PostgreSQL backup
@@ -213,12 +222,35 @@ allowing a later, distinct favorable window to be reported.
 Supabase is used as a server-side backup target. Do not put these values in
 `frontend/.env` or expose them through Vite:
 
+For a new or existing Supabase project, paste the complete contents of
+`supabase/MangoPoint_Supabase_SQL_Editor.sql` into the Supabase SQL Editor and
+run it once. This single idempotent file contains the base schema and every
+Supabase migration through the latest release.
+
 ```env
 SUPABASE_DATABASE_URL=postgresql://...
 CLOUD_SYNC_ENABLED=true
 CLOUD_SYNC_ASSETS=false
 CLOUD_SYNC_INTERVAL_SECONDS=7200
 ```
+
+Codex can use the official project-scoped Supabase MCP connection for database
+inspection and migration work. The connection uses Supabase OAuth and keeps
+credentials outside the repository. After changing the consolidated schema,
+check or apply it directly from the project:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.sync_supabase_schema --check
+.\.venv\Scripts\python.exe -m scripts.sync_supabase_schema --apply
+```
+
+The apply command uses an advisory lock and records the consolidated file's
+SHA-256 hash in `mangopoint_schema_state`. Running it again without SQL changes
+is a no-op. Schema updates run in one transaction; a failed update rolls back
+without recording the new hash. Validate SQL against local PostgreSQL before
+applying it to Supabase. `AGENTS.md` tells Codex to do this whenever its work
+changes the database schema. UI-only changes use the existing data sync and
+do not run schema updates.
 
 The API starts a best-effort two-hour scheduler when the cloud database URL is
 configured. You can also run a manual batch:

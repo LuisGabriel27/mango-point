@@ -1,3 +1,5 @@
+import { calculateSimulationEconomicImpact, formatPhp } from '../../utils/economicImpact'
+
 function KpiCard({ iconName, iconColor, title, value, detail }) {
   return (
     <div className="col-12 col-md-4">
@@ -34,6 +36,7 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
   const yieldKg = Number(impact.yield_per_tree_kg ?? 45)
   const pricePhp = Number(impact.farmgate_price_php_per_kg ?? 60)
   const baseDamage = Number(impact.damage_base ?? 30) / 100
+  const economic = calculateSimulationEconomicImpact(simData ?? {})
 
   // Simulation data takes priority over monitoring DB data
   const infestedFinal = simData?.n_infested_final ?? null
@@ -55,9 +58,11 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
   const infestedTrees = infestedFinal ?? m.infestation_rate?.infested_trees ?? 0
   const activeAlerts = m.alert_summary?.active ?? 0
 
-  const lossBase = infestedFinal != null
-    ? `PHP ${((infestedFinal * yieldKg * pricePhp * baseDamage) / 1000).toFixed(0)}K (est.)`
-    : '—'
+  const lossBase = economic
+    ? formatPhp(economic.projected_loss)
+    : infestedFinal != null
+      ? formatPhp(infestedFinal * yieldKg * pricePhp * baseDamage)
+      : '—'
 
   // Susceptible stage: prefer sim metadata stage_breakdown, fallback to monitoring phenology
   const susceptible = (() => {
@@ -139,7 +144,15 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
         iconName="cash-coin" iconColor="text-success"
         title="Estimated loss at risk"
         value={lossBase}
-        detail={<small className="text-muted">base scenario (30% damage rate)</small>}
+        detail={<small className="text-muted">base scenario ({Math.round(baseDamage * 100)}% damage rate)</small>}
+      />
+      <KpiCard
+        iconName="piggy-bank" iconColor="text-success"
+        title="Potential savings with recommendations"
+        value={economic ? formatPhp(economic.estimated_savings) : '—'}
+        detail={economic ? (
+          <small className="text-muted">{Math.round(economic.recommendation_effectiveness * 100)}% of projected loss potentially avoided</small>
+        ) : <small className="text-muted">run a simulation to estimate</small>}
       />
       <KpiCard
         iconName="flower1" iconColor="text-primary"

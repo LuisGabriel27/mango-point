@@ -22,7 +22,7 @@ Why standalone?
 Gate diagnostics
     ``compute_gate_diagnostics`` replays the per-hour weather through the
     selected pest gate and returns its hard requirements and soft suitability
-    components. Cecid fruitlet stage and solar dawn/dusk are hard requirements;
+    components. Cecid needs fruitlets and twilight or cloudy daylight activity;
     decayed soil wetness, current rain, and wind activity modulate probability.
 """
 
@@ -39,6 +39,7 @@ from utils.datetime_utils import (
     utcnow_naive,
 )
 from utils.solar import MANILA_TZ
+from utils.daylight import DAYLIGHT_WEATHER_FIELDS, DAYLIGHT_CONDITION_SCORES, nonnegative_finite
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ _WEATHER_DEFAULTS: Dict[str, float] = {
     "wind_speed_ms": 2.0,
     "wind_dir_deg":  90.0,
     "rainfall_mm":   0.0,
+    "cloud_cover_pct": 0.0,
 }
 
 _WEATHER_KEYS = tuple(_WEATHER_DEFAULTS.keys())
@@ -73,14 +75,16 @@ def _coerce_weather_value(key: str, value: Any) -> float:
         return max(0.0, f)
     if key == "wind_dir_deg":
         return f % 360.0
+    if key == "cloud_cover_pct":
+        return max(0.0, min(100.0, f))
     return f
 
 
 def _to_weather_dict(
     overrides: Optional[Dict[str, Any]],
-    base: Optional[Dict[str, float]] = None,
-) -> Dict[str, float]:
-    """Normalize a partial override dict to all four numeric weather keys."""
+    base: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Normalize partial overrides, with clear sky as the manual default."""
     out = dict(_WEATHER_DEFAULTS if base is None else base)
     if overrides:
         for k in _WEATHER_KEYS:
@@ -91,7 +95,36 @@ def _to_weather_dict(
                 except (TypeError, ValueError):
                     # Ignore unparseable values — default / inherited stays
                     pass
+        for key in DAYLIGHT_WEATHER_FIELDS:
+            value = overrides.get(key)
+            if value is None:
+                continue
+            if key.endswith("_wm2"):
+                number = nonnegative_finite(value)
+                if number is not None:
+                    out[key] = number
+            elif key == "daylight_condition" and value in DAYLIGHT_CONDITION_SCORES:
+                out[key] = value
+            elif key == "daylight_condition_basis" and value in ("observed", "assumed"):
+                out[key] = value
     return out
+
+
+def resolve_initial_soil_moisture(request_obj: Any) -> Optional[float]:
+    """Resolve the explicit Hour 0 assumption independently of rain history."""
+    direct = getattr(request_obj, "cecid_initial_soil_moisture_score", None)
+    if direct is not None:
+        return float(direct)
+    context = getattr(request_obj, "manual_soil_context", None)
+    if context is None:
+        return None
+    if hasattr(context, "model_dump"):
+        context = context.model_dump()
+    elif not isinstance(context, dict):
+        context = dict(context)
+    if context.get("preset") == "moist":
+        return float(context.get("initial_moisture_score", 1.0))
+    return None
 
 
 def _compute_gate_diagnostics_v2(
@@ -106,6 +139,7 @@ def _compute_gate_diagnostics_v2(
     latitude: float = 10.585,
     longitude: float = 122.580,
     favorable_threshold: float = 0.25,
+    cecid_initial_soil_moisture_score: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Replay the exact gate configuration used by a simulation engine."""
     from core.biological_rules import CecidFlyGate, FruitFlyGate
@@ -118,9 +152,10 @@ def _compute_gate_diagnostics_v2(
             latitude=latitude,
             longitude=longitude,
             favorable_threshold=favorable_threshold,
+            initial_soil_moisture_score=cecid_initial_soil_moisture_score,
         )
     elif pest == "fruitfly":
-        gate = FruitFlyGate(temp_threshold_c=fruit_fly_temp_threshold_c)
+        gate = FruitFlyGate(temp_threshold_c=fruit_fly_temp_threshold_c, latitude=latitude, longitude=longitude)
     else:
         return []
 
@@ -157,8 +192,9 @@ def _compute_gate_diagnostics_v2(
         temperature = float(entry.get("temperature_c", 30.0) or 30.0)
         history.append(rainfall)
 
-        if hasattr(gate, "set_time_context"):
-            gate.set_time_context(dt_value)
+        if isinstance(gate, CecidFlyGate):
+            gate.set_simulation_step(step)
+        gate.set_weather_context({**entry, "datetime": dt_value})
 
         is_open = gate.is_open(
             hour=local_dt.hour,
@@ -183,6 +219,7 @@ def _compute_gate_diagnostics_v2(
             "wind_from_deg": wind_direction,
             "downwind_bearing_deg": (wind_direction + 180.0) % 360.0,
             "temperature_c": temperature,
+            "cloud_cover_pct": entry.get("cloud_cover_pct"),
             "gate_open": bool(is_open),
         }
 
@@ -206,18 +243,23 @@ def _compute_gate_diagnostics_v2(
                 "status": status,
                 "favorable": status == "favorable",
                 "gate_open": bool(hard_open and score > 0.0),
+                "score_scope": "soil emergence weather suitability; adult supply not evaluated",
+                "emergence_available": bool(hard_open and components["emergence_score"] > 0.0),
+                "movement_available": bool(hard_open and components["movement_score"] > 0.0),
                 "wind_speed_kmh": wind_speed * 3.6,
                 "wind_from_deg": wind_direction,
                 "downwind_bearing_deg": (wind_direction + 180.0) % 360.0,
             })
         else:
+            activity = gate.activity_components(local_dt.hour, temperature)
             record.update({
                 "hard_open": bool(is_open),
-                "status": "favorable" if is_open else "closed",
-                "favorable": bool(is_open),
-                "suitability_score": 1.0 if is_open else 0.0,
+                "status": "favorable" if is_open and activity["activity_window"] == "daylight" else "limited" if is_open else "closed",
+                "favorable": bool(is_open and activity["activity_window"] == "daylight"),
+                "suitability_score": activity["activity_score"] * activity["temperature_score"] if is_open else 0.0,
                 "hard_reasons": [] if is_open else ["biological gate closed"],
                 "limiting_factors": [],
+                **activity,
             })
 
         out.append(record)
@@ -229,7 +271,7 @@ def _compute_gate_diagnostics_v2(
 compute_gate_diagnostics = _compute_gate_diagnostics_v2
 
 
-def _make_entry(start_dt: datetime, hour_index: int, weather: Dict[str, float]) -> Dict[str, Any]:
+def _make_entry(start_dt: datetime, hour_index: int, weather: Dict[str, Any]) -> Dict[str, Any]:
     """Assemble a single hourly weather record."""
     return {
         "datetime":      _format_rfc3339(start_dt + timedelta(hours=hour_index)),
@@ -237,6 +279,8 @@ def _make_entry(start_dt: datetime, hour_index: int, weather: Dict[str, float]) 
         "wind_speed_ms": float(weather["wind_speed_ms"]),
         "wind_dir_deg":  float(weather["wind_dir_deg"]),
         "rainfall_mm":   float(weather["rainfall_mm"]),
+        "cloud_cover_pct": float(weather["cloud_cover_pct"]),
+        **{key: weather[key] for key in DAYLIGHT_WEATHER_FIELDS if key in weather},
     }
 
 
@@ -364,7 +408,7 @@ def _series_from_blocks(
     base_dt = _resolve_start_dt(start_dt)
 
     # Initialize every hour with defaults
-    per_hour: List[Dict[str, float]] = [dict(_WEATHER_DEFAULTS) for _ in range(hours)]
+    per_hour: List[Dict[str, Any]] = [dict(_WEATHER_DEFAULTS) for _ in range(hours)]
 
     for block in blocks:
         start_h = int(block.get("start_hour", 0))
@@ -412,8 +456,9 @@ def build_manual_antecedent_weather(
     """Expand manual soil context into hourly weather before simulation Hour 0.
 
     ``manual_weather_prefix_rain`` has precedence for backward compatibility.
-    The compact selector otherwise supports ``dry``, ``recently_wet``, and a
-    custom event described by total rain, event duration, and elapsed dry time.
+    The compact selector supports dry, moist at Hour 0, recently wet, and
+    custom antecedent rain. The moist preset adds no rain; its starting
+    moisture is resolved separately and must not be backdated into the replay.
     """
     history_hours = max(1, int(history_hours))
     prefix = getattr(request_obj, "manual_weather_prefix_rain", None)

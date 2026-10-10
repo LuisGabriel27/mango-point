@@ -16,6 +16,8 @@ import asyncio
 
 from ..core.config import settings
 from utils.datetime_utils import format_rfc3339, utcnow_naive
+from utils.solar import clear_sky_shortwave_reference
+from utils.daylight import nonnegative_finite
 
 logger = logging.getLogger(__name__)
 
@@ -423,7 +425,7 @@ class WeatherService:
         params = {
             "latitude": lat,
             "longitude": lon,
-            "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+            "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,cloud_cover,shortwave_radiation_instant,direct_normal_irradiance_instant",
             "wind_speed_unit": "ms",
             "timezone": "Asia/Manila",
         }
@@ -445,6 +447,9 @@ class WeatherService:
             "wind_dir_deg": float(current.get("wind_direction_10m", 0.0)),
             "temperature_c": float(current.get("temperature_2m", 25.0)),
             "humidity": float(current.get("relative_humidity_2m", 70.0)),
+            "cloud_cover_pct": current.get("cloud_cover"),
+            "shortwave_radiation_wm2": nonnegative_finite(current.get("shortwave_radiation_instant")),
+            "direct_normal_irradiance_wm2": nonnegative_finite(current.get("direct_normal_irradiance_instant")),
             "datetime": format_rfc3339(observed),
             "source": "open-meteo",
             "provenance": provenance,
@@ -545,7 +550,7 @@ class WeatherService:
         params = {
             "latitude": lat,
             "longitude": lon,
-            "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation",
+            "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,shortwave_radiation_instant,direct_normal_irradiance_instant",
             "wind_speed_unit": "ms",
             "timezone": "Asia/Manila",
             "past_hours": ANTECEDENT_HOURS,
@@ -586,6 +591,9 @@ class WeatherService:
             "wind_speed_ms": hourly.get("wind_speed_10m") or [],
             "wind_dir_deg": hourly.get("wind_direction_10m") or [],
             "rainfall_mm": hourly.get("precipitation") or [],
+            "cloud_cover_pct": hourly.get("cloud_cover") or [],
+            "shortwave_radiation_wm2": hourly.get("shortwave_radiation_instant") or [],
+            "direct_normal_irradiance_wm2": hourly.get("direct_normal_irradiance_instant") or [],
         }
         defaults = {
             "temperature_c": 28.0,
@@ -593,6 +601,9 @@ class WeatherService:
             "wind_speed_ms": 2.0,
             "wind_dir_deg": 45.0,
             "rainfall_mm": 0.0,
+            "cloud_cover_pct": None,
+            "shortwave_radiation_wm2": None,
+            "direct_normal_irradiance_wm2": None,
         }
         records = []
         for index, raw_time in enumerate(times):
@@ -606,7 +617,8 @@ class WeatherService:
                 "source": source,
             }
             for name, values in fields.items():
-                record[name] = float(values[index]) if index < len(values) else defaults[name]
+                value = values[index] if index < len(values) else defaults[name]
+                record[name] = nonnegative_finite(value) if name.endswith("_wm2") else float(value) if value is not None else defaults[name]
             records.append(record)
         return records
 
@@ -626,6 +638,7 @@ class WeatherService:
             lat, lon, anchor, f"synthetic-{hours}",
         )
         rng = np.random.default_rng(resolved_seed)
+        cloud_rng = np.random.default_rng(resolved_seed ^ 0xC10D)
         forecasts = []
         rainy_day_flags: Dict[int, bool] = {}
         for index in range(max(0, int(hours))):
@@ -644,6 +657,8 @@ class WeatherService:
             if rainy_day_flags[day_index]:
                 base_probability *= 2.0
             rainfall = float(np.clip(rng.exponential(3.0), 0.0, 25.0)) if rng.random() < base_probability else 0.0
+            cloud = float(cloud_rng.uniform(80.0, 100.0) if rainfall > 0.0 else cloud_rng.uniform(10.0, 90.0))
+            reference = clear_sky_shortwave_reference(current, lat, lon)
             forecasts.append({
                 "datetime": format_rfc3339(current),
                 "hour": hour,
@@ -652,6 +667,9 @@ class WeatherService:
                 "temperature_c": float(temperature),
                 "humidity": humidity,
                 "rainfall_mm": rainfall,
+                "cloud_cover_pct": cloud,
+                "shortwave_radiation_wm2": reference * (1 - 0.8 * (cloud / 100) ** 2),
+                "direct_normal_irradiance_wm2": 800.0 * (1 - 0.95 * (cloud / 100) ** 2) if reference > 0 else 0.0,
                 "source": "synthetic",
             })
         return forecasts

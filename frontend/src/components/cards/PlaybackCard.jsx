@@ -15,7 +15,8 @@ export default function PlaybackCard({ frames = [], currentFrameIdx = 0, onFrame
     intervalRef.current = setInterval(() => {
       onFrameSeek?.((prev) => {
         const next = typeof prev === 'number' ? prev : currentFrameIdx
-        return next >= max ? 0 : next + 1
+        // Keep the final hour visible even if rendering delays the stop effect.
+        return next >= max ? max : next + 1
       })
     }, 800)
     return () => clearInterval(intervalRef.current)
@@ -61,7 +62,10 @@ export default function PlaybackCard({ frames = [], currentFrameIdx = 0, onFrame
               <i className="bi bi-skip-backward-fill" />
             </button>
             <button type="button" className={`btn btn-${playing ? 'warning' : 'success'} btn-sm px-3`}
-              onClick={() => setPlaying((p) => !p)}>
+              onClick={() => {
+                if (!playing && currentFrameIdx >= max) onFrameSeek?.(0)
+                setPlaying((p) => !p)
+              }}>
               <i className={`bi bi-${playing ? 'pause-fill' : 'play-fill'} me-1`} />
               {playing ? 'Pause' : 'Play'}
             </button>

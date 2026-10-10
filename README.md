@@ -1,20 +1,119 @@
 # MangoPoint
 
-MangoPoint is a GIS-based pest spread forecasting web application for mango orchards. It combines a FastAPI backend, a React/Vite frontend, cellular and tree-graph simulation modes, weather-driven biological gates, alerting, decision support, and historical validation against BPI Guimaras pest monitoring data.
+MangoPoint is a GIS-based pest spread forecasting web application for mango orchards. It combines a FastAPI backend, a React/Vite frontend, cellular automata (CA) and tree-to-tree graph simulation modes, weather-driven biological gates, alerting, decision support, and historical comparison against BPI Guimaras pest monitoring data.
+
+The pest scope is **fruit-attacking Cecid** and **Oriental Fruit Fly
+(*Bactrocera dorsalis*)**. The current reviewed model is
+`2026.10-source-progression-v17`; its source rules and remaining assumptions are
+documented in the [v17 model review](docs/v17-model-readiness-review.md).
+The React Joyride tutorial described below is a planned upgrade.
 
 ## Current Capabilities
 
-- Pest spread simulation for Cecid Fly and Fruit Fly.
+- Pest spread simulation for fruit-attacking Cecid and Oriental Fruit Fly.
 - Grid and tree-graph simulation modes, including real crown-width/crown-radius handling.
 - Weather-aware biological triggers using Open-Meteo forecast data, manual weather blocks, synthetic fallback weather, and historical weather CSVs for validation.
-- Cecid-specific fixed soil sources, short-lived adult cohorts, and persistent Weed Habitat relay zones with a strict 15 m hourly movement limit.
+- Cecid-specific soil sources, finite short-lived adult cohorts and laying capacity, moisture/light/rain gates, and persistent Weed Habitat relay zones. Local movement has an assumed 15 m hourly limit; outside pressure is a separate directional exposure proxy.
+- Fruit Fly initial adult source pressure is retained separately from new fruit infestation. New fruit damage does not create another adult source within the same forecast.
+- Explicit source-presence scenarios, bagging/treatment factors, and 1, 5 or 9 repeated realizations with separate frequency and one-run views.
 - Multi-orchard API foundation and frontend orchard switching.
 - Alerts for high-risk simulation output and orchard-aware scheduled gate monitoring.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
 - Field observations and evaluation endpoints.
+- Saved simulation History, input templates, Excel exports, and printable reports with recorded model/input assumptions.
 - Historical validation against BPI Guimaras monitoring records, including calibration/testing splits, confidence intervals, and historical weather coverage reporting.
 - Manual field validation protocol for checking current forecasts against later orchard inspections.
+
+## Application Workflow
+
+After signing in, use the workspace's **Setup → Simulate → Results → Verify**
+sequence. The dashboard also provides Live Map, Overview, Crop Impact,
+Surveillance and History views.
+
+1. **Setup:** Select an orchard and inspect its tree statuses, host stages and
+   source assumptions. Choose Live Forecast or Custom Weather. Distinguish
+   temporary scenario edits from edits applied to the saved orchard.
+2. **Simulate:** Select the pest, CA or Tree Graph, duration, repeated-run count,
+   and applicable source, neighbor and treatment settings. Review the inputs,
+   then press **Run Simulation**.
+3. **Results:** Inspect the map, legend, tree details, hourly playback and
+   summaries. Across runs shows simulated infestation frequency; One run and
+   playback show a representative realization. These are modeled outcomes.
+4. **History and reports:** Check that the completed run appears in History.
+   **Load Result** opens the saved output; **Use as Template** restores inputs
+   for a new run. Export Excel or print a report, checking its orchard, model
+   version and final/displayed reporting hour.
+5. **Verify:** Record an actual orchard inspection with the correct tree, pest,
+   date and method. Present, Absent and Not inspected are distinct records;
+   simulated infestation must not be saved as an observed finding.
+
+Use the [66-case manual workflow test plan](docs/manual-workflow-test-plan.md),
+[results sheet](docs/manual-workflow-test-results.csv) and
+[bug log](docs/manual-workflow-bug-log.csv) for the full rehearsal. The starting
+test sheet contains Not run cases; preparing it does not establish a pass.
+
+## Planned Demo and Tutorial: React Joyride
+
+**Status: documentation prepared; implementation has not started.**
+`react-joyride` is not currently a frontend dependency. This documentation step
+does not install the package or change React components, styles or application
+behavior.
+
+The planned tutorial is a guided walkthrough of the existing application for
+farm users and the final-defense demonstration. It will explain the controls
+and interpretation of outputs using short, plain-language tooltips. A visible
+**Start tutorial** entry should allow replay, with Back, Next, Skip/Close and
+progress feedback. A first-use invitation should be dismissible.
+
+| Tutorial segment | What it should explain |
+|---|---|
+| Welcome and navigation | The workspace sequence, dashboard views and how to leave/replay the tutorial. |
+| Orchard and tree inputs | Orchard selection, host stage, tree statuses, source probabilities, zones, and scenario versus saved edits. |
+| Weather | Live versus custom weather, forecast dates, scheduled rain breaks, and Cecid soil/light assumptions. |
+| Simulation controls | Both pests and engines, duration, repeated runs, outside pressure, protection settings and the Run button. |
+| Results and playback | Legends, initial sources versus new infestation, Across runs versus One run, counts and hourly playback. |
+| History and exports | Saved results, templates, seeds/version, Excel and final versus displayed-hour reports. |
+| Field verification | Inspection records, observation methods, and Present/Absent/Not inspected. |
+| Additional tools | Overview, Crop Impact estimates, Surveillance, alerts and Settings where available to the user's role. |
+
+Tutorial behavior requirements:
+
+- Navigation may open the relevant tab/workspace, but tutorial progression
+  must not change orchard records or scenario values, run simulations, save
+  observations, acknowledge alerts, send emails or initiate exports. Those
+  actions require the user's normal controls.
+- Before a result exists, explain how to obtain one and allow the user to
+  continue or replay the result segment later. Never present sample output as
+  a completed forecast for the selected orchard.
+- Open conditional panels before targeting them. Wait for the relevant
+  control to become available; a missing result, unavailable service or
+  role-restricted control must not trap the user in the tour.
+- Keep unsaved edits and displayed results intact. End cleanly on logout,
+  handle orchard changes without pointing at stale content, and leave normal
+  application controls usable after Skip/Close/Finish.
+- Use stable target identifiers, readable tooltips, keyboard-accessible
+  navigation and appropriate positioning in desktop and narrow layouts.
+- Explain weather/source assumptions and estimated outcomes accurately.
+  Tutorial completion is user guidance, not evidence of forecast accuracy.
+
+When implementation is requested, check React 18 compatibility and the selected
+release's API before adding the dependency. Use the official
+[React Joyride getting-started guide](https://react-joyride.com/docs/getting-started),
+[props reference](https://react-joyride.com/docs/props) and
+[conditional-step guidance](https://react-joyride.com/docs/recipes).
+Keep the step definitions and lifecycle handling maintainable rather than
+scattering tutorial logic throughout the dashboard.
+
+Acceptance checks should cover first start, Back/Next, Skip/Close/Finish,
+replay, conditional targets, no-result and saved-result states, orchard
+switching, logout, loading failures, keyboard use and narrow layouts. Confirm
+that starting or advancing the tour changes no saved orchard, observation,
+alert or account records and triggers no automatic simulation/notification
+requests. An optional browser preference may remember dismissal/completion
+for that user and tutorial version while retaining manual replay. Then run
+the frontend tests and production build and rehearse both pests with both
+engines using the manual test plan.
 
 ## Project Layout
 
@@ -99,7 +198,7 @@ python -m pip install -r requirements-api.txt
 copy .env.example .env
 
 cd frontend
-npm install
+npm.cmd install
 cd ..
 
 python -m scripts.check_setup
@@ -210,7 +309,7 @@ connection remains the only synchronization path.
 The API process must remain running for unattended monitoring. Each scan uses
 the orchard centroid, 72 antecedent weather hours, and the configured future
 forecast window. Cecid alerts require the orchard's saved stage to be `fruitlet`
-and a favorable orchard-specific dawn/dusk hour. Synthetic fallback weather is
+and favorable orchard-specific twilight or cloudy-day emergence weather. Synthetic fallback weather is
 shown in the weather UI for testing but cannot create an operational Cecid
 forecast alert. The alert's **Open Simulation Controls** action selects live
 weather and fills the relevant controls; the user must still press **Run
@@ -284,18 +383,29 @@ not stored in Supabase.
 Choose **Live Forecast** or **Custom Weather** for either pest. Custom Weather
 starts with one period covering the entire selected simulation duration, so
 constant weather does not require repeating daily inputs. Temperature, rainfall,
-and wind have compact preset buttons alongside exact numeric inputs; wind
+wind, and cloud cover have preset buttons alongside exact numeric inputs; wind
 direction uses compass letters.
+
+Each custom period also has a **Daylight light condition**: Bright sunshine,
+Intermittent sunshine, or Dim overcast. Label it as an assumed scenario or an
+observed local condition. Cloud percentage alone does not establish dim light.
+Live weather combines cloud cover with direct and total solar-radiation estimates;
+missing sunlight data remains unknown. Tree-canopy shade alone does not enable
+Cecid emergence or movement. The daylight response scales remain provisional.
 
 Use **Add period** or **Edit hours** for changing conditions, then navigate
 periods horizontally. **Repeat first day** copies the first 24-hour pattern
 through the selected duration. Uncovered hours use the existing default weather
 and display a warning; overlapping periods use the later period.
 
-For Cecid Fly, expand **Soil & Cecid test preset** to configure antecedent soil
-rainfall or load the weather-only dawn/dusk test. These controls are hidden for
+For Cecid Fly, expand **Soil & Cecid test preset** to configure antecedent rain,
+select **Moist now** for assumed starting moisture without prior rain, or load
+the weather-only dawn/dusk test. The relative moisture strength decreases over
+time and receives subsequent rain; it is not a measured soil-water percentage.
+The same moisture rule applies to both simulation engines. These controls are hidden for
 Fruit Fly. Existing constant-weather, timeline, and hourly-series history records
-remain supported; this UI does not change either pest's biological rules.
+remain supported. The current biological rules and evidence limits are recorded
+in [the fruit pest revision](docs/fruit-pest-model-revision.md).
 
 ## Cecid Fly Weed Habitat
 
@@ -316,15 +426,42 @@ For Cecid wind controls, values remain in m/s. Wind up to 5 km/h has no
 controlled-movement activity penalty. Above 5 km/h, a provisional soft
 inverse-square curve gradually lowers activity: at 3 m/s (10.8 km/h), the
 activity score is about 0.52 rather than a near-zero hard suppression. Wind
-direction is separate: downwind assistance begins near the 0.9 m/s
-controlled-flight reference reported for another gall midge and reaches a
-capped 35% at 15 km/h. The model never allows movement farther than 15 m in
-one eligible dawn/dusk hour. These coefficients are research assumptions that
+direction is separate: provisional downwind assistance begins near 0.9 m/s
+and reaches a capped 35% at 15 km/h. The model limits movement to 15 m in
+one eligible twilight or cloudy daylight hour. These coefficients are assumptions that
 require target-species BPI/field calibration; the compatibility field
 `wind_survival_score` contains the same value but does not represent measured
 adult mortality.
 
+Both pests support 1, 5, or 9 repeated runs in the simulation controls. Across
+runs shows final infestation frequency; One run and playback retain the first
+reproducible realization. Additional runs hold per-tree stages and known sources
+fixed. History Infected supplies a possible residual source without initially
+infesting fruit, while Suspect supplies a possible current infestation. Their
+adjustable presence chances default to 50% as scenario assumptions, not field
+estimates. Bagging now reduces incoming contributions by 70%. See
+[map/source logic](docs/risk-map-and-neighbor-pressure.md) and
+[Cecid reliability plan](docs/cecid-reliability-plan.md) for the assumptions and
+next validation work.
+
 ## Validation
+
+See the [v16 sensitivity and BPI audit](docs/v16-sensitivity-and-bpi-validation.md)
+for that version's experimental results and accuracy limitations. The
+monthly records support a historical comparison; high category agreement by
+itself does not establish tree-level forecast accuracy.
+
+The [v17 model review](docs/v17-model-readiness-review.md) separates initial Fruit
+Fly adult pressure from new fruit infestation and clarifies outside Cecid exposure.
+Its controlled scenarios were retested; the BPI comparison still needs refreshing.
+
+The [v16 validation defense](docs/v16-validation-defense.md) replayed the
+original 20-case design with both v16 engines and preserves the old results
+for comparison. Run it with:
+
+```bash
+python -m scripts.run_defense_replay --monte-carlo 30 --workers 4
+```
 
 Basic historical validation:
 
@@ -372,12 +509,22 @@ Avoid overclaiming:
 
 ## Development Checks
 
-```bash
-pytest -q
+From the project root, using the configured Python environment:
+
+```powershell
+python -m pytest -q
 python -m py_compile api\services\simulation_service.py validation\weather_scenarios.py scripts\check_setup.py
 cd frontend
-npm run build
+npm.cmd test
+npm.cmd run build
 ```
+
+The [testing methods guide](docs/testing-methods-for-defense.md) distinguishes
+automated implementation checks, controlled simulations and historical
+comparison. The [defense readiness plan](docs/final-defense-readiness-plan.md)
+tracks the remaining workflow rehearsal and version-matched evaluation work.
+Documentation-only edits need link/content checks; the commands above are for
+application changes and do not mean the manual workflow cases have passed.
 
 ## Notes
 

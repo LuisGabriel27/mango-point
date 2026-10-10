@@ -1,7 +1,8 @@
 """
 MangoPoint — Simulation Engine
 ================================
-Phenology- and data-calibrated biological trigger system for pest dispersal.
+Phenology-aware biological trigger system for pest dispersal scenarios.
+Rules are research-informed; hourly coefficients remain uncalibrated assumptions.
 
 The main Cellular Automata engine orchestrates:
     1. Weather ingestion (per-timestep, including rainfall)
@@ -151,7 +152,7 @@ class SimulationEngine:
         - DORMANT: No pest activity
         - FLOWERING: No pest activity (flowers only)
         - FRUITLET: Cecid Fly can activate (post-flowering, young fruitlets)
-        - MATURE: Fruit Fly can activate (ripe fruit)
+        - MATURE: Fruit Fly can activate (green mature through ripening fruit)
     days_since_flowering : int, optional
         Days since flowering ended. Used to compute sugar_index for
         fruit fly attraction. Default is FRUIT_FLY_DEFAULT_DAYS_FLOWERING.
@@ -173,6 +174,8 @@ class SimulationEngine:
         cecid_habitat_network: Optional[CecidHabitatNetwork] = None,
     ):
         self.grid = grid.copy()  # work on a copy to preserve the original
+        self.grid.fruitfly_adult_source_pressure = None
+        self.grid.freeze_fruitfly_sources()
         self.weather = weather
         self.transition_mode = transition_mode
         self.threshold = threshold
@@ -257,10 +260,12 @@ class SimulationEngine:
                         maxlen=CECID_RAIN_HISTORY_HOURS,
                     )
                     replay_components: Dict[str, Dict] = {}
+                    replay_steps = iter(range(-len(cecid_antecedent_weather), 0))
 
                     def antecedent_window_open(entry: Dict) -> bool:
+                        cecid_gate.set_simulation_step(next(replay_steps))
                         replay_history.append(float(entry.get("rainfall_mm", 0.0)))
-                        cecid_gate.set_time_context(entry.get("datetime"))
+                        cecid_gate.set_weather_context(entry)
                         components = cecid_gate.suitability_components(
                             wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
                             rainfall_mm=float(entry.get("rainfall_mm", 0.0)),
@@ -269,7 +274,7 @@ class SimulationEngine:
                             hour=int(entry.get("hour", 0)),
                         )
                         replay_components["current"] = components
-                        return bool(components["hard_open"])
+                        return bool(components["hard_open"] and components["emergence_score"] > 0.0)
 
                     def advance_antecedent_habitat(
                         entry: Dict,
@@ -279,21 +284,23 @@ class SimulationEngine:
                         if self.cecid_habitat_tracker is None:
                             return
                         components = replay_components.get("current", {})
-                        self.cecid_habitat_tracker.step(
+                        contributions = self.cecid_habitat_tracker.step(
                             active_cohorts=active_cohorts,
                             eligible=bool(
                                 components.get("hard_open")
-                                and float(components.get("suitability_score", 0.0)) > 0.0
+                                and float(components.get("movement_score", 0.0)) > 0.0
                             ),
                             wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
                             wind_from_deg=float(entry.get("wind_dir_deg", 0.0)),
                         )
+                        self._consume_habitat_eggs(cecid_gate, contributions, components)
 
                     self.cecid_cohort_model.warm_up(
                         cecid_antecedent_weather,
                         antecedent_window_open,
                         step_observer=advance_antecedent_habitat,
                     )
+                    cecid_gate.set_simulation_step(0)
 
     def _prepare_cecid_sources(self, gate, step: int, weather: Dict) -> None:
         """Advance fixed soil-source cohorts and expose active pressure to the gate."""
@@ -315,7 +322,7 @@ class SimulationEngine:
             timestep=step,
             timestamp=weather.get("datetime"),
             rainfall_mm=weather.get("rainfall_mm", 0.0),
-            emergence_window_open=bool(components["hard_open"]),
+            emergence_window_open=bool(components["hard_open"] and components["emergence_score"] > 0.0),
         )
         gate.set_active_source_pressures(active)
 
@@ -336,7 +343,7 @@ class SimulationEngine:
             orchard_stage=stage_for_gate,
             hour=weather["hour"],
         )
-        eligible = bool(components["hard_open"] and components["suitability_score"] > 0.0)
+        eligible = bool(components["hard_open"] and components["movement_score"] > 0.0)
         contributions = self.cecid_habitat_tracker.step(
             active_cohorts=self.cecid_cohort_model.active_cohorts(),
             eligible=eligible,
@@ -361,7 +368,7 @@ class SimulationEngine:
                 path_efficiency = max(0.0, float(arrival["path_efficiency"]))
                 probability = (
                     gate.base_dispersal_prob
-                    * float(components["suitability_score"])
+                    * float(components["movement_score"])
                     * active_pressure
                     * path_efficiency
                     * source_factor
@@ -374,10 +381,9 @@ class SimulationEngine:
         # Neighbor pressure represents adults arriving from outside the
         # orchard. It is therefore independent of whether one of this
         # orchard's soil-source cohorts has already reached the target. The
-        # local fruitlet/twilight/weather requirements still apply, and this
+        # local fruitlet and twilight/cloudy-day movement requirements apply; this
         # pressure never creates another soil source.
         if eligible:
-            wind_neighbor = self.grid.get_wind_neighbor_factor(weather["wind_dir_deg"])
             for target_row, target_col in np.argwhere(self.grid.susceptible_mask):
                 target_row, target_col = int(target_row), int(target_col)
                 if (
@@ -385,15 +391,14 @@ class SimulationEngine:
                     and int(self.stage_grid[target_row, target_col]) != required_stage
                 ):
                     continue
-                threat = self.grid.get_neighbor_threat(target_row, target_col)
+                threat = self.grid.get_effective_neighbor_threat(target_row, target_col, weather["wind_dir_deg"])
                 if threat <= 0.0:
                     continue
                 probability = (
                     gate.base_dispersal_prob
                     * NEIGHBOR_THREAT_WEIGHT
                     * threat
-                    * wind_neighbor
-                    * float(components["suitability_score"])
+                    * float(components["movement_score"])
                 )
                 probability = max(0.0, min(1.0, probability))
                 if probability <= 0.0:
@@ -407,6 +412,7 @@ class SimulationEngine:
                 neighbor_total += probability
                 external_neighbor_targets += 1
 
+        self._consume_habitat_eggs(gate, contributions, components)
         habitat_diagnostics = dict(self.cecid_habitat_tracker.last_diagnostics)
         if external_neighbor_targets:
             habitat_diagnostics["habitat_limiting_reasons"] = [
@@ -425,12 +431,32 @@ class SimulationEngine:
             "downwind_bearing_deg": (float(weather["wind_dir_deg"]) + 180.0) % 360.0,
             "wind_activity_score": float(components["wind_activity_score"]),
             "wind_survival_score": float(components["wind_survival_score"]),
+            "activity_window": components["activity_window"],
+            "cloud_cover_pct": components["cloud_cover_pct"],
+            **{key: value for key, value in components.items() if key.startswith(("daylight_", "shortwave_", "direct_normal_", "clear_sky_", "canopy_shade_", "light_response_"))},
+            "movement_score": components["movement_score"],
+            "emergence_score": components["emergence_score"],
             "neighbor_contribution": neighbor_total,
             "external_neighbor_contribution": neighbor_total,
             "external_neighbor_exposed_tree_count": external_neighbor_targets,
             **habitat_diagnostics,
+            **self.cecid_cohort_model.lifecycle_diagnostics(),
         })
         return True
+
+    def _consume_habitat_eggs(self, gate, contributions: Dict, components: Dict) -> None:
+        if self.cecid_cohort_model is None:
+            return
+        eligible_targets = {
+            target: arrivals for target, arrivals in contributions.items()
+            if self.grid.state[int(target[0]), int(target[1])] not in (CellState.EMPTY, CellState.DEAD)
+            and (self.stage_grid is None or int(self.stage_grid[int(target[0]), int(target[1])]) == int(gate.REQUIRED_STAGE))
+        }
+        self.cecid_cohort_model.consume_habitat_opportunities(
+            eligible_targets, gate.base_dispersal_prob, float(components.get("movement_score", 0.0)),
+            {source: self.grid.get_source_treatment_factor(*source)
+             for source in self.cecid_cohort_model.source_pressures},
+        )
 
     def _record_cecid_exposure(self) -> None:
         """Accumulate explanation-only exposure metrics before each random draw."""
@@ -502,8 +528,10 @@ class SimulationEngine:
             # With a per-cell stage grid, each gate filters source cells by its own
             # REQUIRED_STAGE so mixed phenology is honoured spatially.
             for gate in self.gates:
-                if hasattr(gate, "set_time_context"):
-                    gate.set_time_context(w.get("datetime"))
+                if isinstance(gate, CecidFlyGate):
+                    gate.set_simulation_step(step)
+                if hasattr(gate, "set_weather_context"):
+                    gate.set_weather_context(w)
                 self._prepare_cecid_sources(gate, step, w)
                 if self._spread_cecid_habitat(gate, step, w):
                     continue
@@ -531,6 +559,13 @@ class SimulationEngine:
                         orchard_stage=self.orchard_stage,
                         sugar_index=self.sugar_index,
                     )
+
+                if isinstance(gate, CecidFlyGate) and self.cecid_cohort_model is not None:
+                    self.cecid_cohort_model.consume_source_opportunities(gate.oviposition_opportunities)
+
+            # Explanation metrics use incoming pressure while trees are still
+            # susceptible, before the stochastic draw can establish infestation.
+            self._record_cecid_exposure()
 
             # — state transition —
             if self.transition_mode == "stochastic":
@@ -597,8 +632,10 @@ class SimulationEngine:
             )
 
             for gate in self.gates:
-                if hasattr(gate, "set_time_context"):
-                    gate.set_time_context(w.get("datetime"))
+                if isinstance(gate, CecidFlyGate):
+                    gate.set_simulation_step(step)
+                if hasattr(gate, "set_weather_context"):
+                    gate.set_weather_context(w)
                 self._prepare_cecid_sources(gate, step, w)
                 if self._spread_cecid_habitat(gate, step, w):
                     continue
@@ -626,6 +663,9 @@ class SimulationEngine:
                         orchard_stage=self.orchard_stage,
                         sugar_index=self.sugar_index,
                     )
+
+                if isinstance(gate, CecidFlyGate) and self.cecid_cohort_model is not None:
+                    self.cecid_cohort_model.consume_source_opportunities(gate.oviposition_opportunities)
 
             # Output-only explanation metrics; this does not alter the draw.
             self._record_cecid_exposure()

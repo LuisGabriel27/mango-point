@@ -8,32 +8,13 @@ import {
 } from '../utils/bundledOrchards'
 import { simplifyLassoCoordinates } from '../utils/zoneSelection'
 import { interpretCecidTree } from '../utils/cecidMapInterpretation'
+import { initialSourceDetails, interpretSimulationTree, resolveTreeStatuses } from '../utils/simulationMapInterpretation'
 import { runWhenMapReady } from '../utils/mapReady'
 import { geometryCenter } from '../utils/mapGeometry'
 import { captureMapSnapshot, waitForMapSnapshot } from '../utils/mapSnapshot'
+import { buildRiskSurface, riskColor, applyRiskSurfaceCanvas } from '../utils/riskSurface'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
-
-const HEATMAP_LAYER = {
-  id: 'risk-heatmap',
-  type: 'heatmap',
-  source: 'risk-heatmap-src',
-  paint: {
-    'heatmap-weight': ['interpolate', ['linear'], ['coalesce', ['get', 'risk'], 0], 0, 0, 1, 1],
-    'heatmap-intensity': 2.5,
-    'heatmap-color': [
-      'interpolate', ['linear'], ['heatmap-density'],
-      0, 'rgba(0,0,0,0)',
-      0.2, '#22c55e',
-      0.4, '#facc15',
-      0.65, '#f97316',
-      0.85, '#ef4444',
-      1.0, '#7f1d1d',
-    ],
-    'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 15, 25, 18, 65, 20, 120],
-    'heatmap-opacity': 0.78,
-  },
-}
 
 const SATELLITE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
@@ -372,20 +353,6 @@ function escapeHtml(value) {
   }[char]))
 }
 
-function riskColor(risk) {
-  if (risk == null || !Number.isFinite(risk)) return null
-  if (risk >= 0.75) return '#b91c1c'
-  if (risk >= 0.5) return '#ef4444'
-  if (risk >= 0.25) return '#f59e0b'
-  if (risk >= 0.1) return '#facc15'
-  return '#22c55e'
-}
-
-function normalizeStatus(value) {
-  return String(value ?? 'healthy').trim().toLowerCase().replace(/\s+/g, '_')
-}
-
-
 function normalizePoints(
   geojson,
   treeOverrides = {},
@@ -411,24 +378,26 @@ function normalizePoints(
 
       const treeId = props.tree_id ?? props.Tree_ID ?? props.fid ?? feature.id ?? 'unknown'
       // props.state comes from simulation output; props.status from base GeoJSON
-      const rawStatus = props.status ?? props.Status ?? props.state ?? 'healthy'
       const treeIdStr = String(treeId)
       const overrideStatus = treeOverrides[treeIdStr]
       const overrideStage = stageOverrides[treeIdStr] ?? null
       const stage = hasStageContext
         ? (overrideStage ?? props.stage ?? props.Stage ?? null)
         : null
-      const status = normalizeStatus(overrideStatus ?? rawStatus)
+      // A saved/manual status is an input for the next run. The result's
+      // state describes what actually happened in the displayed realization.
+      const { inputStatus, status } = resolveTreeStatuses(props, overrideStatus)
       const crown = Number.parseFloat(props.crown_size ?? props.Crown_Width ?? 5)
-      const riskValue = Number(props.risk)
+      const riskValue = props.risk == null || props.risk === '' ? NaN : Number(props.risk)
       const risk = Number.isFinite(riskValue) ? riskValue : null
       const isCecid = pestType === 'cecid'
       const cecid = isCecid
         ? interpretCecidTree({ ...props, stage, state: status }, cecidMapMode)
         : null
-      const displayRisk = cecid?.displayRisk ?? risk
+      const interpretation = cecid ?? interpretSimulationTree({ ...props, state: status }, cecidMapMode)
+      const displayRisk = interpretation.displayRisk
       // Dead/bagged trees always show their status color — never a risk heat color
-      const isStatusColored = overrideStatus != null || status === 'dead' || status === 'bagged'
+      const isStatusColored = status === 'dead' || status === 'bagged' || displayRisk == null
       const color = isCecid && cecid?.eligible === false && !isStatusColored
         ? '#6b7280'
         : isStatusColored
@@ -438,8 +407,10 @@ function normalizePoints(
       return {
         tree_id: treeId,
         status,
+        input_status: inputStatus,
         lon,
         lat,
+        geometry: geom,
         risk,
         display_risk: displayRisk,
         crown: Number.isFinite(crown) ? crown : 5,
@@ -452,6 +423,8 @@ function normalizePoints(
         cecid_source_label: props.cecid_source_label || null,
         is_cecid: isCecid,
         cecid,
+        interpretation,
+        initialSource: initialSourceDetails(props, pestType),
       }
     })
     .filter(Boolean)
@@ -508,12 +481,17 @@ function fitMapToBounds(map, bounds, duration = 450, padding = DEFAULT_FIT_PADDI
 
 function markerPopupHtml(point) {
   const label = String(point.status).replace(/_/g, ' ')
-  const riskLine = point.risk == null ? '' : `<br />Risk: ${(point.risk * 100).toFixed(0)}%`
+  const riskLine = point.display_risk == null ? ''
+    : `<br /><strong>${escapeHtml(point.interpretation.displayRiskLabel)}:</strong> ${(point.display_risk * 100).toFixed(0)}%`
   const stageLine = point.stage == null ? '' : `<br />Stage: ${escapeHtml(String(point.stage))}`
   const sourceLine = point.cecid_source
     ? `<br /><strong>Cecid soil source:</strong> ${escapeHtml(point.cecid_source_label || 'Source anchor')}`
       + `<br />Pressure: ${escapeHtml(point.cecid_source_pressure.toFixed(1))}×`
-      + (point.cecid_source_assumed ? '<br /><em>Assumed fallback source</em>' : '')
+      + (point.cecid_source_assumed ? '<br /><em>Assumed source in one run</em>' : '')
+    : ''
+  const initialSourceLine = point.initialSource
+    ? `<br /><strong>${point.initialSource.assumed ? 'Assumed source in one run' : 'Known current source'}:</strong> ${escapeHtml(point.initialSource.label)}`
+      + `<br /><em>${escapeHtml(point.initialSource.explanation)}</em>`
     : ''
 
   if (point.is_cecid && point.cecid) {
@@ -521,7 +499,10 @@ function markerPopupHtml(point) {
     const eligibility = cecid.eligible === true
       ? 'Eligible fruitlet'
       : cecid.eligible === false ? 'Not eligible' : 'Eligibility unknown'
-    const frequencyLine = cecid.hasEnsemble
+    const mapValueLine = cecid.displayRisk == null || cecid.eligible === false
+      ? ''
+      : `<br /><strong>${escapeHtml(cecid.displayRiskLabel)}:</strong> ${(cecid.displayRisk * 100).toFixed(0)}%`
+    const frequencyLine = cecid.hasEnsemble && cecid.displayMode !== 'likelihood'
       ? `<br /><strong>Repeated-run frequency:</strong> ${(cecid.ensembleFrequency * 100).toFixed(0)}% (${cecid.ensembleCount}/${cecid.ensembleRuns})`
       : ''
     const cumulativeLine = cecid.cumulativeProbability == null
@@ -535,13 +516,16 @@ function markerPopupHtml(point) {
       <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
       <strong>${escapeHtml(cecid.outcomeLabel)}</strong><br />
       Stage: ${escapeHtml(String(point.stage ?? 'unknown'))} · ${escapeHtml(eligibility)}
+      ${mapValueLine}
       ${frequencyLine}
       ${cumulativeLine}
       ${peakLine}<br />
       Exposure hours: ${cecid.exposureHours} (${cecid.localExposureHours} local, ${cecid.externalExposureHours} outside)<br />
       Route: ${escapeHtml(cecid.exposureRouteLabel)}<br />
       <strong>Why this tree?</strong> ${escapeHtml(cecid.explanation)}
+      <br /><em>${escapeHtml(cecid.displayExplanation)}</em>
       ${sourceLine}
+      ${initialSourceLine}
     `
   }
 
@@ -552,6 +536,8 @@ function markerPopupHtml(point) {
     ${riskLine}
     ${stageLine}
     ${sourceLine}
+    ${initialSourceLine}
+    ${point.risk == null ? '' : `<br /><strong>${escapeHtml(point.interpretation.outcomeLabel)}</strong><br /><em>${escapeHtml(point.interpretation.displayExplanation)}</em>`}
   `
 }
 
@@ -576,9 +562,10 @@ function makeTreeMarker(point) {
     el.classList.add('map-tree-marker-ineligible')
   }
 
-  if (point.cecid_source) {
+  if (point.cecid_source || point.initialSource) {
     el.classList.add('map-tree-marker-cecid-source')
-    el.title = `${point.cecid_source_label || 'Cecid soil source'}${point.cecid_source_assumed ? ' (assumed)' : ''}`
+    el.dataset.sourceBadge = point.is_cecid ? 'S' : point.initialSource?.badge || 'S'
+    el.title = `${point.initialSource?.label || point.cecid_source_label || 'Cecid soil source'}${point.initialSource?.assumed || point.cecid_source_assumed ? ' (assumed in one run)' : ''}`
   }
 
   return el
@@ -980,6 +967,7 @@ export default forwardRef(function RiskMap({
   const markersRef = useRef([])
   const mapLoadedRef = useRef(false)
   const overlayPendingRef = useRef(true)
+  const heatmapPendingRef = useRef(true)
   // Tracks whether the orthophoto image is currently being fetched/applied,
   // so the UI can render a spinner. The GWF overlay is ~6 MB and used to
   // appear "broken" while it silently downloaded.
@@ -1001,30 +989,31 @@ export default forwardRef(function RiskMap({
     ),
     [activeGeojson, treeOverrides, stageOverrides, stageZones, pestType, cecidMapMode],
   )
-  const heatmapGeojson = useMemo(() => {
-    if (pestType !== 'cecid' || !geojson?.features?.length) return geojson ?? EMPTY_FC
-    return {
-      ...geojson,
-      features: geojson.features.map((feature) => {
-        const properties = feature.properties || {}
-        const interpreted = interpretCecidTree(properties, cecidMapMode)
-        return {
-          ...feature,
-          properties: {
-            ...properties,
-            risk: interpreted.eligible === false ? 0 : (interpreted.displayRisk ?? 0),
-          },
-        }
-      }),
-    }
-  }, [cecidMapMode, geojson, pestType])
+  const heatmapSurface = useMemo(
+    () => geojson?.features?.length ? buildRiskSurface(geojson, pestType, cecidMapMode, points) : null,
+    [cecidMapMode, geojson, pestType, points],
+  )
+  // Risk/state changes during playback must not restart camera fitting.
+  const pointLocationsKey = JSON.stringify(points.map(({ lon, lat }) => [lon, lat]))
+  const fitPoints = useMemo(
+    () => JSON.parse(pointLocationsKey).map(([lon, lat]) => ({ lon, lat })),
+    [pointLocationsKey],
+  )
+  const reportZoneCoordinatesKey = JSON.stringify(reportMode
+    ? [stageZones, statusZones, managementZones, cecidWeedZones, legacyCecidEmergenceZones]
+      .flatMap((zones) => zones.map((zone) => zone.coordinates))
+    : [])
+  const fitZones = useMemo(
+    () => JSON.parse(reportZoneCoordinatesKey).map((coordinates) => ({ coordinates })),
+    [reportZoneCoordinatesKey],
+  )
 
   useImperativeHandle(ref, () => ({
     async captureImage() {
       const map = mapRef.current
       if (!map || !reportMode) throw new Error('The report map is not ready.')
       await waitForMapSnapshot(map, () => (
-        mapRef.current === map && mapLoadedRef.current && !overlayPendingRef.current
+        mapRef.current === map && mapLoadedRef.current && !overlayPendingRef.current && !heatmapPendingRef.current
       ))
       return captureMapSnapshot(map, points)
     },
@@ -1053,8 +1042,6 @@ export default forwardRef(function RiskMap({
     map.once('load', () => {
       mapLoadedRef.current = true
 
-      map.addSource('risk-heatmap-src', { type: 'geojson', data: EMPTY_FC })
-      map.addLayer(HEATMAP_LAYER)
       ensureStageZoneLayers(map)
       ensureStatusZoneLayers(map)
       ensureManagementZoneLayers(map)
@@ -1123,7 +1110,8 @@ export default forwardRef(function RiskMap({
           source: 'ortho-src',
           paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 },
         }
-        const beforeLayer = map.getLayer('risk-heatmap') ? 'risk-heatmap' : undefined
+        const beforeLayer = map.getLayer('risk-heatmap') ? 'risk-heatmap'
+          : map.getLayer('stage-zones-fill') ? 'stage-zones-fill' : undefined
         if (beforeLayer) map.addLayer(overlayLayer, beforeLayer)
         else map.addLayer(overlayLayer)
       } catch (error) {
@@ -1382,13 +1370,7 @@ export default forwardRef(function RiskMap({
     const fitSelectedOrchard = () => {
       map.resize()
       const contentBounds = reportMode
-        ? reportContentBounds(points, [
-          stageZones,
-          statusZones,
-          managementZones,
-          cecidWeedZones,
-          legacyCecidEmergenceZones,
-        ])
+        ? reportContentBounds(fitPoints, [fitZones])
         : null
       if (fitMapToBounds(map, contentBounds, 0, REPORT_FIT_PADDING)) return
 
@@ -1397,12 +1379,12 @@ export default forwardRef(function RiskMap({
         : null
       if (fitMapToBounds(map, overlayBounds, reportMode ? 0 : 450)) return
 
-      if (points.length === 1) {
-        map.easeTo({ center: [points[0].lon, points[0].lat], zoom: DEFAULT_ZOOM, duration: reportMode ? 0 : 350 })
+      if (fitPoints.length === 1) {
+        map.easeTo({ center: [fitPoints[0].lon, fitPoints[0].lat], zoom: DEFAULT_ZOOM, duration: reportMode ? 0 : 350 })
         return
       }
 
-      fitMapToBounds(map, pointBounds(points), reportMode ? 0 : 450)
+      fitMapToBounds(map, pointBounds(fitPoints), reportMode ? 0 : 450)
     }
 
     const runFitSequence = () => {
@@ -1422,13 +1404,9 @@ export default forwardRef(function RiskMap({
     viewportKey,
     activeOverlay,
     fitToOrthophoto,
-    points,
+    fitPoints,
     reportMode,
-    stageZones,
-    statusZones,
-    managementZones,
-    cecidWeedZones,
-    legacyCecidEmergenceZones,
+    fitZones,
   ])
 
   // ── Heatmap data update ────────────────────────────────────────────────
@@ -1436,15 +1414,16 @@ export default forwardRef(function RiskMap({
     const map = mapRef.current
     if (!map) return undefined
 
-    const data = heatmapGeojson
-
+    heatmapPendingRef.current = true
+    const ready = () => { heatmapPendingRef.current = false }
     const setHeatmapData = () => {
-      const src = map.getSource('risk-heatmap-src')
-      if (src) src.setData(data)
+      map.once('render', ready)
+      applyRiskSurfaceCanvas(map, heatmapSurface)
+      if (!heatmapSurface) ready()
     }
-
-    return runWhenMapReady(map, mapLoadedRef.current, setHeatmapData)
-  }, [heatmapGeojson])
+    const cleanup = runWhenMapReady(map, mapLoadedRef.current, setHeatmapData)
+    return () => { cleanup(); map.off('render', ready) }
+  }, [heatmapSurface])
 
   useEffect(() => {
     const map = mapRef.current

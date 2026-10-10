@@ -1,4 +1,7 @@
+import { interpretSimulationTree } from './simulationMapInterpretation.js'
+
 function finiteOrNull(value) {
+  if (value == null || value === '') return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -20,15 +23,8 @@ export function interpretCecidTree(properties = {}, mode = 'likelihood') {
     ? properties.cecid_eligible
     : null
   const eligible = explicitEligible ?? (stage == null ? null : stage === 'fruitlet')
-  const state = String(properties.state ?? properties.status ?? 'unbagged').toLowerCase()
-  const representativeEstablished = state === 'infested' || state === 'infected'
-  const ensembleRuns = Math.max(0, Math.trunc(finiteOrNull(properties.ensemble_runs) ?? 0))
-  const ensembleCount = Math.max(
-    0,
-    Math.trunc(finiteOrNull(properties.ensemble_infestation_count) ?? 0),
-  )
-  const ensembleFrequency = finiteOrNull(properties.ensemble_infestation_frequency)
-  const hasEnsemble = ensembleRuns > 1 && ensembleFrequency != null
+  const outcome = interpretSimulationTree(properties, mode)
+  const { representativeEstablished, ensembleRuns, ensembleCount, displayMode } = outcome
   const cumulativeProbability = finiteOrNull(
     properties.cumulative_establishment_probability,
   )
@@ -42,15 +38,11 @@ export function interpretCecidTree(properties = {}, mode = 'likelihood') {
     0,
     Math.trunc(finiteOrNull(properties.external_exposure_hours) ?? 0),
   )
-  const representativeRisk = finiteOrNull(properties.risk)
-  const displayRisk = mode === 'likelihood' && hasEnsemble
-    ? ensembleFrequency
-    : representativeRisk
 
   let outcomeLabel = representativeEstablished
     ? 'Fruit infestation established'
     : 'No fruit infestation established in this run'
-  if (mode === 'likelihood' && hasEnsemble) {
+  if (displayMode === 'likelihood') {
     outcomeLabel = ensembleCount > 0
       ? `Established in ${ensembleCount} of ${ensembleRuns} runs`
       : `No establishment in ${ensembleRuns} runs`
@@ -62,19 +54,15 @@ export function interpretCecidTree(properties = {}, mode = 'likelihood') {
   } else if (representativeEstablished) {
     explanation = 'Establishment occurred in the representative stochastic draw.'
   } else if (exposureHours > 0) {
-    explanation = 'Adult pressure reached this tree, but establishment did not occur in the representative draw.'
+    explanation = 'Adult exposure was estimated at this tree, but establishment did not occur in the representative draw. Outside exposure does not identify an actual arrival path.'
   } else {
-    explanation = 'No eligible Cecid adult pressure reached this tree during the simulated windows.'
+    explanation = 'No eligible Cecid adult exposure was estimated at this tree during the simulated windows.'
   }
 
   return {
+    ...outcome,
     eligible,
     stage,
-    representativeEstablished,
-    ensembleRuns,
-    ensembleCount,
-    ensembleFrequency,
-    hasEnsemble,
     cumulativeProbability,
     peakHourlyRisk,
     exposureHours,
@@ -82,9 +70,7 @@ export function interpretCecidTree(properties = {}, mode = 'likelihood') {
     externalExposureHours,
     exposureRoute: properties.exposure_route || 'none',
     exposureRouteLabel: cecidExposureRouteLabel(properties.exposure_route),
-    displayRisk,
     outcomeLabel,
     explanation,
   }
 }
-

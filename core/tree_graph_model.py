@@ -49,7 +49,7 @@ P_ij_eff    effective probability after bagging:
               P_ij_eff = P_ij × (1 − BAG_RESISTANCE)  if tree j is bagged
 risk_j      cumulative infestation risk of tree j (union of independent sources)
               risk_j ← 1 − (1 − risk_j) × (1 − P_ij_eff)
-              (accumulated over all currently infested neighbours i of j)
+              (accumulated over eligible adult-pressure sources i of j)
 
 Key Formulas (plain language)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -75,11 +75,16 @@ Assumptions and Limitations
 - All coordinates are in a local planar projection (metres from SW origin).
   The service layer converts lon/lat using the same m_lat/m_lon constants as
   the grid model, so both modes share the same coordinate system.
-- Bagging reduces the effective spread probability by BAG_RESISTANCE (95 %),
+- Bagging reduces the effective spread probability by BAG_RESISTANCE (70 %),
   identical to the grid model.
 - The biological gate (CecidFlyGate / FruitFlyGate) is shared with the grid
   model: the same weather conditions open and close the activity window.
   Only the spatial spread mechanism differs between modes.
+- Fruit Fly adult pressure is anchored at initial infestation/reservoir
+  locations for the forecast. Newly infested fruit does not create adults.
+  This is a local exposure approximation, not individual adult relocation.
+- Cecid's local movement cap does not constrain the outside exposure proxy;
+  that proxy has no boundary-crossing paths, adult age, or travel-time model.
 
 Thesis Comparison Protocol
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -129,6 +134,7 @@ from enum import IntEnum
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
+from core.neighbor_pressure import combine_neighbor_pressure
 
 from core.config import (
     BAG_RESISTANCE,
@@ -170,7 +176,7 @@ class TreeState(IntEnum):
     """Per-tree state for tree_graph mode.  Mirrors CellState for grid mode."""
     SUSCEPTIBLE = 1   # Unbagged, not yet infested
     BAGGED      = 2   # Bagged fruit — reduced infection risk
-    INFESTED    = 3   # Currently infested (infectious source)
+    INFESTED    = 3   # Infested fruit; adult-source pressure is tracked separately
     DEAD        = 4   # Removed from simulation
 
 
@@ -206,6 +212,12 @@ class TreeNode:
     cecid_source_pressure: float = 0.0
     cecid_source_assumed: bool = False
     cecid_source_label: Optional[str] = None
+    source_status: str = "healthy"
+    initial_source: bool = False
+    initial_source_assumed: bool = False
+    initial_source_label: Optional[str] = None
+    initial_source_origin: Optional[str] = None
+    fruitfly_reservoir_pressure: float = 0.0
 
 
 @dataclass
@@ -658,6 +670,7 @@ class TreeGraphEngine:
         stage_per_tree: Optional[List[OrchardStage]] = None,
         cecid_source_pressures: Optional[Mapping[int, float]] = None,
         cecid_habitat_network: Optional[CecidHabitatNetwork] = None,
+        neighbor_sources: Optional[List[Dict]] = None,
     ) -> None:
         # Deep-copy node states so original graph is preserved
         from collections import deque
@@ -679,6 +692,12 @@ class TreeGraphEngine:
                 cecid_source_pressure=n.cecid_source_pressure,
                 cecid_source_assumed=n.cecid_source_assumed,
                 cecid_source_label=n.cecid_source_label,
+                source_status=n.source_status,
+                initial_source=n.initial_source,
+                initial_source_assumed=n.initial_source_assumed,
+                initial_source_label=n.initial_source_label,
+                initial_source_origin=n.initial_source_origin,
+                fruitfly_reservoir_pressure=n.fruitfly_reservoir_pressure,
             )
             for n in graph.nodes
         ]
@@ -687,13 +706,24 @@ class TreeGraphEngine:
         self.graph.max_dist = graph.max_dist
         # Edges encode only geometry → safe to share (immutable after build)
         self.graph._edges_from = graph._edges_from
+        # Initial infestation/reservoir evidence supplies an adult-pressure
+        # scenario. New fruit infestation does not manufacture adult sources.
+        self.fruitfly_adult_source_pressures = [
+            1.0 if node.state == TreeState.INFESTED else float(node.fruitfly_reservoir_pressure)
+            for node in copied_nodes
+        ]
 
         self.weather = weather
         self.transition_mode = transition_mode
         self.threshold = threshold
 
         from core.biological_rules import CecidFlyGate, FruitFlyGate
-        self.gates = gates or [CecidFlyGate(), FruitFlyGate()]
+        if gates is None:
+            self.gates = ([CecidFlyGate()] if pest_type == "cecid" else
+                          [FruitFlyGate()] if pest_type == "fruitfly" else
+                          [CecidFlyGate(), FruitFlyGate()])
+        else:
+            self.gates = gates
         self.orchard_stage = orchard_stage
 
         # Per-tree stage list (mixed phenology). When provided, each gate
@@ -773,10 +803,12 @@ class TreeGraphEngine:
                     maxlen=CECID_RAIN_HISTORY_HOURS,
                 )
                 replay_components: Dict[str, Dict[str, Any]] = {}
+                replay_steps = iter(range(-len(cecid_antecedent_weather), 0))
 
                 def antecedent_window_open(entry: Dict) -> bool:
+                    cecid_gate.set_simulation_step(next(replay_steps))
                     replay_history.append(float(entry.get("rainfall_mm", 0.0)))
-                    cecid_gate.set_time_context(entry.get("datetime"))
+                    cecid_gate.set_weather_context(entry)
                     components = cecid_gate.suitability_components(
                         wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
                         rainfall_mm=float(entry.get("rainfall_mm", 0.0)),
@@ -785,7 +817,7 @@ class TreeGraphEngine:
                         hour=int(entry.get("hour", 0)),
                     )
                     replay_components["current"] = components
-                    return bool(components["hard_open"])
+                    return bool(components["hard_open"] and components["emergence_score"] > 0.0)
 
                 def advance_antecedent_habitat(
                     entry: Dict,
@@ -795,21 +827,23 @@ class TreeGraphEngine:
                     if self.cecid_habitat_tracker is None:
                         return
                     components = replay_components.get("current", {})
-                    self.cecid_habitat_tracker.step(
+                    contributions = self.cecid_habitat_tracker.step(
                         active_cohorts=active_cohorts,
                         eligible=bool(
                             components.get("hard_open")
-                            and float(components.get("suitability_score", 0.0)) > 0.0
+                            and float(components.get("movement_score", 0.0)) > 0.0
                         ),
                         wind_speed_ms=float(entry.get("wind_speed_ms", 0.0)),
                         wind_from_deg=float(entry.get("wind_dir_deg", 0.0)),
                     )
+                    self._consume_habitat_eggs(cecid_gate, contributions, components)
 
                 self.active_cecid_source_pressures = self.cecid_cohort_model.warm_up(
                     cecid_antecedent_weather,
                     antecedent_window_open,
                     step_observer=advance_antecedent_habitat,
                 )
+                cecid_gate.set_simulation_step(0)
 
         self.lambda0 = lambda0
         self.alpha = alpha
@@ -829,6 +863,19 @@ class TreeGraphEngine:
         self.per_tree_threats: List[float] = compute_per_tree_threats(
             self.graph.nodes, neighbor_threat, neighbor_direction
         )
+        self.neighbor_components = None
+        if neighbor_sources is not None:
+            self.neighbor_components = [
+                (dict(source), np.asarray(compute_per_tree_threats(
+                    self.graph.nodes, source['threat'], source.get('direction'),
+                )))
+                for source in neighbor_sources
+            ]
+            self.per_tree_threats = (
+                list(combine_neighbor_pressure(self.neighbor_components))
+                if self.neighbor_components else [0.0] * len(self.graph.nodes)
+            )
+            self.neighbor_bearing = None
 
         logger.info(
             "TreeGraphEngine init: n_trees=%d, n_edges=%d, mode=%s, "
@@ -887,8 +934,10 @@ class TreeGraphEngine:
             # biological_rules.py), so both modes use identical trigger logic.
             from core.biological_rules import CecidFlyGate, FruitFlyGate
             for gate in self.gates:
-                if hasattr(gate, "set_time_context"):
-                    gate.set_time_context(w.get("datetime"))
+                if isinstance(gate, CecidFlyGate):
+                    gate.set_simulation_step(step)
+                if hasattr(gate, "set_weather_context"):
+                    gate.set_weather_context(w)
                 # When per-tree stages are set, the stage slot of is_open becomes
                 # a no-op (we feed it gate.REQUIRED_STAGE) so only environmental
                 # triggers gate the step; per-tree stage filters source trees.
@@ -909,7 +958,7 @@ class TreeGraphEngine:
                         timestep=step,
                         timestamp=w.get("datetime"),
                         rainfall_mm=current_rain,
-                        emergence_window_open=bool(components["hard_open"]),
+                        emergence_window_open=bool(components["hard_open"] and components["emergence_score"] > 0.0),
                     )
                     if self.cecid_habitat_tracker is not None:
                         self._spread_cecid_habitat(
@@ -932,7 +981,7 @@ class TreeGraphEngine:
                 if isinstance(gate, CecidFlyGate):
                     self._spread_cecid(wind_speed, wind_dir_rad, gate=gate)
                 elif isinstance(gate, FruitFlyGate):
-                    self._spread_fruitfly(wind_dir_rad, temperature)
+                    self._spread_fruitfly(wind_dir_rad, temperature, gate=gate)
                 else:
                     # Fallback for custom gates: geometry-only spread
                     self._accumulate_risks(wind_dir_rad)
@@ -999,7 +1048,7 @@ class TreeGraphEngine:
             orchard_stage=stage_for_gate,
             hour=weather["hour"],
         )
-        eligible = bool(components["hard_open"] and components["suitability_score"] > 0.0)
+        eligible = bool(components["hard_open"] and components["movement_score"] > 0.0)
         contributions = self.cecid_habitat_tracker.step(
             active_cohorts=self.cecid_cohort_model.active_cohorts(),
             eligible=eligible,
@@ -1008,10 +1057,7 @@ class TreeGraphEngine:
         )
 
         required_stage = int(OrchardStage.FRUITLET)
-        wind_neighbor = (
-            wind_neighbor_factor(weather["wind_dir_deg"], self.neighbor_bearing)
-            if self.neighbor_bearing is not None else 1.0
-        )
+        neighbor_threats = self._effective_neighbor_threats(weather["wind_dir_deg"])
         neighbor_total = 0.0
         external_neighbor_targets = 0
         for target_key, arrivals in contributions.items():
@@ -1019,7 +1065,7 @@ class TreeGraphEngine:
             if not 0 <= target_index < len(self.graph.nodes):
                 continue
             destination = self.graph.nodes[target_index]
-            if destination.state in (TreeState.INFESTED, TreeState.DEAD):
+            if destination.state == TreeState.DEAD:
                 continue
             if self.stage_per_tree is not None and self.stage_per_tree[target_index] != required_stage:
                 continue
@@ -1030,9 +1076,11 @@ class TreeGraphEngine:
                 source = self.graph.nodes[source_index]
                 active_pressure = max(0.0, float(arrival["cohort_pressure"]))
                 path_efficiency = max(0.0, float(arrival["path_efficiency"]))
+                if destination.state == TreeState.INFESTED:
+                    continue
                 probability = (
                     gate.base_dispersal_prob
-                    * float(components["suitability_score"])
+                    * float(components["movement_score"])
                     * active_pressure
                     * path_efficiency
                     * source.treatment_source_factor
@@ -1048,7 +1096,7 @@ class TreeGraphEngine:
         # Model optional neighbour pressure as adults arriving from outside
         # the orchard, not as a multiplier that only exists after a local
         # soil cohort reaches a tree. This remains a bounded proxy: it obeys
-        # fruitlet, solar twilight, local suitability, bagging, and treatment.
+        # fruitlet, twilight/cloudy daylight, movement weather, and protection.
         if eligible:
             for target_index, destination in enumerate(self.graph.nodes):
                 if destination.state not in (TreeState.SUSCEPTIBLE, TreeState.BAGGED):
@@ -1059,8 +1107,8 @@ class TreeGraphEngine:
                 ):
                     continue
                 threat = (
-                    self.per_tree_threats[target_index]
-                    if target_index < len(self.per_tree_threats)
+                    neighbor_threats[target_index]
+                    if target_index < len(neighbor_threats)
                     else 0.0
                 )
                 if threat <= 0.0:
@@ -1069,8 +1117,7 @@ class TreeGraphEngine:
                     gate.base_dispersal_prob
                     * NEIGHBOR_THREAT_WEIGHT
                     * threat
-                    * wind_neighbor
-                    * float(components["suitability_score"])
+                    * float(components["movement_score"])
                 )
                 if destination.state == TreeState.BAGGED:
                     probability *= 1.0 - BAG_RESISTANCE
@@ -1085,6 +1132,7 @@ class TreeGraphEngine:
                 neighbor_total += probability
                 external_neighbor_targets += 1
 
+        self._consume_habitat_eggs(gate, contributions, components)
         habitat_diagnostics = dict(self.cecid_habitat_tracker.last_diagnostics)
         if external_neighbor_targets:
             habitat_diagnostics["habitat_limiting_reasons"] = [
@@ -1103,11 +1151,31 @@ class TreeGraphEngine:
             "downwind_bearing_deg": (float(weather["wind_dir_deg"]) + 180.0) % 360.0,
             "wind_activity_score": float(components["wind_activity_score"]),
             "wind_survival_score": float(components["wind_survival_score"]),
+            "activity_window": components["activity_window"],
+            "cloud_cover_pct": components["cloud_cover_pct"],
+            **{key: value for key, value in components.items() if key.startswith(("daylight_", "shortwave_", "direct_normal_", "clear_sky_", "canopy_shade_", "light_response_"))},
+            "movement_score": components["movement_score"],
+            "emergence_score": components["emergence_score"],
             "neighbor_contribution": neighbor_total,
             "external_neighbor_contribution": neighbor_total,
             "external_neighbor_exposed_tree_count": external_neighbor_targets,
             **habitat_diagnostics,
+            **self.cecid_cohort_model.lifecycle_diagnostics(),
         })
+
+    def _consume_habitat_eggs(self, gate, contributions: Dict, components: Dict) -> None:
+        if self.cecid_cohort_model is None:
+            return
+        eligible_targets = {
+            target: arrivals for target, arrivals in contributions.items()
+            if self.graph.nodes[int(target)].state != TreeState.DEAD
+            and (self.stage_per_tree is None or int(self.stage_per_tree[int(target)]) == int(gate.REQUIRED_STAGE))
+        }
+        self.cecid_cohort_model.consume_habitat_opportunities(
+            eligible_targets, gate.base_dispersal_prob, float(components.get("movement_score", 0.0)),
+            {source: self.graph.nodes[source].treatment_source_factor
+             for source in self.cecid_cohort_model.source_pressures},
+        )
 
     # ── internal helpers ─────────────────────────────────────────
     def _record_cecid_exposure(self) -> None:
@@ -1214,11 +1282,13 @@ class TreeGraphEngine:
                     if getattr(gate, "current_datetime", None) is not None
                     else 0
                 ),
-            )["suitability_score"]
+            )["movement_score"]
         else:
             modifier = cecid_spread_modifier(wind_speed_ms, self.rainfall_history)
         required_stage_int = int(OrchardStage.FRUITLET)
 
+        neighbor_threats = self._effective_neighbor_threats(math.degrees(wind_dir_rad))
+        opportunities: Dict[int, float] = {}
         if self.active_cecid_source_pressures is None:
             source_items = [(idx, 1.0) for idx in self.graph.infested_indices()]
         else:
@@ -1240,7 +1310,7 @@ class TreeGraphEngine:
                 if edge.d_ij > CECID_MAX_RANGE_M:
                     continue
                 dst = self.graph.nodes[edge.dst]
-                if dst.state in (TreeState.INFESTED, TreeState.DEAD):
+                if dst.state == TreeState.DEAD:
                     continue
                 if (
                     self.stage_per_tree is not None
@@ -1253,44 +1323,59 @@ class TreeGraphEngine:
                     math.degrees(wind_dir_rad),
                     math.degrees(edge.bearing),
                 )
-                prob = crown_spread_prob(
+                opportunity = crown_spread_prob(
                     edge, wind_dir_rad,
                     lambda0=self.lambda0, alpha=self.alpha,
                     beta=self.beta, wind_bias=0.0, dt=TG_DT,
-                ) * modifier * direction_factor * max(0.0, float(source_pressure))
+                ) * modifier * direction_factor * src.treatment_source_factor
+                opportunities[src_idx] = opportunities.get(src_idx, 0.0) + opportunity
+                if dst.state == TreeState.INFESTED:
+                    continue
+                prob = opportunity * max(0.0, float(source_pressure))
                 dst_threat = (
-                    self.per_tree_threats[edge.dst]
-                    if edge.dst < len(self.per_tree_threats) else 0.0
+                    neighbor_threats[edge.dst]
+                    if edge.dst < len(neighbor_threats) else 0.0
                 )
                 if dst_threat > 0.0:
-                    wind_neighbor = (
-                        wind_neighbor_factor(math.degrees(wind_dir_rad), self.neighbor_bearing)
-                        if self.neighbor_bearing is not None else 1.0
-                    )
                     prob += (
                         dst_threat
                         * NEIGHBOR_THREAT_WEIGHT
-                        * wind_neighbor
                         * modifier
                         * min(1.0, max(0.0, float(source_pressure)))
                         * direction_factor
+                        * src.treatment_source_factor
                     )
 
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE
-                prob *= src.treatment_source_factor
                 prob *= dst.treatment_susceptibility_factor
 
                 prob = max(0.0, min(1.0, prob))
                 dst.risk = 1.0 - (1.0 - dst.risk) * (1.0 - prob)
 
+        if self.cecid_cohort_model is not None:
+            self.cecid_cohort_model.consume_source_opportunities(opportunities)
+
+    def _effective_neighbor_threats(self, wind_dir_deg: float):
+        if self.neighbor_components is not None:
+            return (
+                combine_neighbor_pressure(self.neighbor_components, wind_dir_deg)
+                if self.neighbor_components else np.zeros(len(self.graph.nodes))
+            )
+        factor = (
+            wind_neighbor_factor(wind_dir_deg, self.neighbor_bearing)
+            if self.neighbor_bearing is not None else 1.0
+        )
+        return np.asarray(self.per_tree_threats) * factor
+
     def _spread_fruitfly(
         self,
         wind_dir_rad: float,
         temperature_c: float,
+        gate=None,
     ) -> None:
         """
-        Accumulate Fruit Fly spread with biological modifiers.
+        Accumulate Fruit Fly exposure from frozen initial adult pressure.
 
         Applies fruitfly_spread_modifier() (temperature + sugar index) as a
         multiplicative factor, then adds a per-tree neighbor threat boost
@@ -1303,19 +1388,25 @@ class TreeGraphEngine:
         Contributions combine via union-of-independent-probabilities on node.risk.
         """
         modifier = fruitfly_spread_modifier(temperature_c, self.sugar_index)
-
-        # Orchard-wide wind-neighbor amplification scalar
-        wind_dir_deg = math.degrees(wind_dir_rad)
-        w_nbr: float = (
-            wind_neighbor_factor(wind_dir_deg, self.neighbor_bearing)
-            if self.neighbor_bearing is not None
-            else 1.0
+        activity_score = (
+            float(gate.activity_components(gate.current_hour, temperature_c)["activity_score"])
+            if gate is not None else 1.0
         )
+        if gate is not None:
+            modifier = float(gate.activity_components(gate.current_hour, temperature_c)["temperature_score"]) * (0.5 + self.sugar_index)
+
+        # Each external source retains its own wind bearing at each tree.
+        wind_dir_deg = math.degrees(wind_dir_rad)
+        neighbor_threats = self._effective_neighbor_threats(wind_dir_deg)
 
         required_stage_int = int(OrchardStage.MATURE)
 
-        for src_idx in self.graph.infested_indices():
+        source_indices = [node.index for node in self.graph.nodes
+                          if node.state != TreeState.DEAD
+                          and self.fruitfly_adult_source_pressures[node.index] > 0.0]
+        for src_idx in source_indices:
             src = self.graph.nodes[src_idx]
+            source_pressure = self.fruitfly_adult_source_pressures[src_idx]
             # Per-tree phenology: only MATURE trees can emit Fruit Fly dispersal.
             if (
                 self.stage_per_tree is not None
@@ -1341,13 +1432,15 @@ class TreeGraphEngine:
 
                 # Additive neighbor threat boost (same formula as grid model)
                 dst_threat = (
-                    self.per_tree_threats[edge.dst]
-                    if edge.dst < len(self.per_tree_threats)
+                    neighbor_threats[edge.dst]
+                    if edge.dst < len(neighbor_threats)
                     else 0.0
                 )
                 if dst_threat > 0.0:
-                    prob += dst_threat * NEIGHBOR_THREAT_WEIGHT * w_nbr
+                    prob += dst_threat * NEIGHBOR_THREAT_WEIGHT
 
+                prob *= source_pressure
+                prob *= activity_score
                 if dst.state == TreeState.BAGGED:
                     prob *= 1.0 - BAG_RESISTANCE
                 prob *= dst.treatment_susceptibility_factor

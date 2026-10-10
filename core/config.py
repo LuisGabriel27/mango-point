@@ -4,7 +4,8 @@ MangoPoint — Configuration & Constants
 Central configuration for the Cellular Automata simulation engine.
 All tuneable parameters live here so the rest of the codebase stays clean.
 
-Phenology-calibrated biological trigger system grounded in 2022-2025 orchard records.
+Phenology-based rules informed by research, expert observations and orchard records.
+Hourly lifecycle and activity coefficients remain uncalibrated assumptions.
 Historical data shows:
   - Fruit fly (CPTD) peaks: May-July, higher in unmanaged orchards
   - Cecid fly emergence: episodic, March-June (dry-to-wet transition)
@@ -16,7 +17,7 @@ import numpy as np
 # Increment this whenever a change can alter fixed-seed simulation output.
 # Saved runs expose the value so a historical result is not mistaken for a
 # replay of a newer biological/spatial model.
-SIMULATION_MODEL_VERSION = "2026.10-cecid-map-interpretation-v7"
+SIMULATION_MODEL_VERSION = "2026.10-source-progression-v17"
 
 # ─────────────────────────────────────────────
 # Cell States
@@ -26,11 +27,11 @@ class CellState(IntEnum):
     EMPTY           = 0   # No tree in this cell
     UNBAGGED        = 1   # Tree present, fruit not bagged  (susceptible)
     BAGGED          = 2   # Tree present, fruit bagged      (resistant barrier)
-    INFESTED        = 3   # Tree already infested            (infectious source)
+    INFESTED        = 3   # Infested fruit; adult-source pressure is tracked separately
     # Advanced Tree Management states (non-destructive extension)
     DEAD            = 4   # Tree permanently removed from simulation logic
-    HISTORY_INFECTED = 5  # Previously infected, more prone to future infestation
-    SUSPECT         = 6   # Near external infected area, flagged for monitoring
+    HISTORY_INFECTED = 5  # Past infection; susceptible, with possible independent reservoir evidence
+    SUSPECT         = 6   # Possible current infection; source presence is sampled per realization
 
 
 # ─────────────────────────────────────────────
@@ -47,7 +48,7 @@ class OrchardStage(IntEnum):
     DORMANT   = 0   # Vegetative rest period, no flowering or fruit
     FLOWERING = 1   # Active flowering, no fruit yet
     FRUITLET  = 2   # Post-flowering, young fruitlets forming (Cecid Fly vulnerable)
-    MATURE    = 3   # Fruit maturing/ripening (Fruit Fly attractive)
+    MATURE    = 3   # Green mature through ripening fruit (Fruit Fly host stage)
 
 
 # ─────────────────────────────────────────────
@@ -70,14 +71,14 @@ N_TIMESTEPS          = FORECAST_HOURS // TIMESTEP_HOURS
 # Biological Thresholds
 # ─────────────────────────────────────────────
 
-# —— Cecid Fly (Mango Gall Midge) ——
+# —— Cecid Fly (Procontarinia frugivora; mango fruit only) ——
 # Biological calibration from 2022-2025 data: episodic emergence in March-June
 CECID_WIND_THRESHOLD_MS    = 3.0      # legacy override name; wind is now a soft score
 CECID_BASE_DISPERSAL_PROB  = 0.12     # base per-neighbour probability at 1-cell distance
 CECID_DISTANCE_DECAY       = 0.6      # multiplicative decay per additional cell distance
 CECID_MAX_RANGE_CELLS      = 3        # maximum dispersal range in cells
 
-# Rainfall-triggered emergence parameters (larvae emerge from soil after rain).
+# Rainfall-based soil-moisture proxy for adult emergence from soil pupae.
 # The rainfall value is a wetness sensitivity scale, not a hard gate.
 CECID_RAINFALL_THRESHOLD_MM  = 5.0
 CECID_RAIN_HISTORY_HOURS     = 72
@@ -91,9 +92,22 @@ CECID_SOIL_WETNESS_HALF_LIFE_HOURS = 48.0
 CECID_FAVORABLE_THRESHOLD = 0.25
 CECID_DRY_RAIN_MAX_MM = 0.1
 CECID_DRYING_ZERO_MM = 1.0
-CECID_SOURCE_WETTING_RAIN_MM = 0.1
+CECID_SOURCE_WETTING_RAIN_MM = 0.1  # Legacy compatibility; no source-arming gate.
 CECID_ADULT_HALF_LIFE_HOURS = 24.0
-CECID_ADULT_MAX_AGE_HOURS = 72
+CECID_ADULT_MAX_AGE_HOURS = 48  # Expert-based scenario maximum, not a universal measured maximum.
+# Normalized egg capacity, not a claimed egg count. Eight full opportunity
+# hours exhaust a cohort; partial opportunities use a proportionate fraction.
+# The depletion rate and cloud curve require field calibration.
+CECID_EGG_CAPACITY_HOURS = 8.0
+CECID_CLOUD_DAY_ACTIVITY_MAX = 0.6
+# Provisional light-response scales, not measured Cecid activity thresholds.
+# Cloud fraction alone never opens daytime activity. Radiation must also
+# indicate diminished sunlight, or a custom daylight condition must be supplied.
+CECID_DAY_CLOUD_MIN_PCT = 50.0
+CECID_DAY_CLOUD_FULL_PCT = 80.0
+CECID_LIGHT_DIM_RATIO = 0.25
+CECID_LIGHT_BRIGHT_RATIO = 0.80
+CECID_LIGHT_DNI_REFERENCE_WM2 = 800.0
 CECID_WEED_RELAY_SPACING_M = 10.0
 CECID_WEED_RELAY_EFFICIENCY = {
     "sparse": 0.60,
@@ -101,16 +115,16 @@ CECID_WEED_RELAY_EFFICIENCY = {
     "dense": 1.00,
 }
 # Adult pressure may pause on a mango tree and continue at a later eligible
-# dawn/dusk hour. This tracks the same adult cohort; it does not make the tree
+# twilight or cloudy daylight hour. This tracks the same adult cohort; it does not make the tree
 # a new soil source or create a second generation. The cohort's 24-hour
 # half-life already accounts for survival, so resting adds no second mortality
 # penalty of its own.
 CECID_TREE_RESTING_EFFICIENCY = 1.0
 # Wind coefficients are transparent research assumptions, not measured
-# thresholds for P. mangivora. The soft activity curve deliberately avoids
+# thresholds for P. frugivora. The soft activity curve deliberately avoids
 # interpreting an ordinary breeze as adult mortality. The directional ramp
-# starts near the 0.9 m/s controlled-flight reference reported for Hessian fly
-# and is capped without increasing Cecid's 15 m movement-per-hour limit.
+# is provisional and capped without increasing the 15 m movement-per-hour
+# limit. It is not a fruit-Cecid-specific measured flight threshold.
 CECID_GENTLE_WIND_MIN_KMH = 3.2
 CECID_GENTLE_WIND_MAX_KMH = 5.0
 CECID_WIND_DIRECTION_FULL_KMH = 15.0
@@ -129,15 +143,19 @@ DAWN_END    = 7
 DUSK_START  = 17
 DUSK_END    = 19
 
-# —— Fruit Fly (Bactrocera spp.) ——
+# —— Fruit Fly (Bactrocera dorsalis) ——
 # Biological calibration from 2022-2025 data: peaks May-July with fruit maturity
-FRUIT_FLY_TEMP_THRESHOLD_C   = 25.0   # °C – gate closes below this
+FRUIT_FLY_TEMP_THRESHOLD_C   = 25.0   # °C – reference for the provisional continuous activity curve
 FRUIT_FLY_BASE_DISPERSAL_PROB = 0.08  # base per-neighbour probability
 FRUIT_FLY_WIND_BOOST         = 0.15   # added probability for downwind cells
 FRUIT_FLY_DISTANCE_DECAY     = 0.5
 FRUIT_FLY_MAX_RANGE_CELLS    = 4
-FRUIT_FLY_DAY_START          = 8      # active window start
-FRUIT_FLY_DAY_END            = 17     # active window end
+FRUIT_FLY_DAY_START          = 6      # fallback sunrise when no dated timestamp is supplied
+FRUIT_FLY_DAY_END            = 18     # fallback sunset
+FRUIT_FLY_TWILIGHT_ACTIVITY  = 0.5
+# A small scenario allowance for dark-period movement; not measured orchard
+# oviposition and not an assumption of equal activity throughout 24 hours.
+FRUIT_FLY_NIGHT_ACTIVITY     = 0.02
 
 # Sugar index parameters (fruit attractiveness increases with ripeness)
 FRUIT_FLY_SUGAR_INDEX_START      = 0.3    # initial sugar index when entering MATURE stage
@@ -163,7 +181,7 @@ DIRECTION_BEARING_MAP = {
 # ─────────────────────────────────────────────
 # Bagging Effectiveness
 # ─────────────────────────────────────────────
-BAG_RESISTANCE = 0.95   # 95 % reduction in infestation probability
+BAG_RESISTANCE = 0.70   # Scenario assumption: 70 % reduction in incoming infestation probability
 
 
 # ─────────────────────────────────────────────

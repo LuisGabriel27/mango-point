@@ -15,7 +15,7 @@ import {
 } from './historyPeriod.js'
 
 test('frontend simulation model version matches the backend release', () => {
-  assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-cecid-map-interpretation-v7')
+  assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-source-scope-v13')
 })
 
 test('generated simulation seed is copied into a replayable request', () => {

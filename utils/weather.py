@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 
 from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
+from utils.daylight import DAYLIGHT_WEATHER_FIELDS, nonnegative_finite
+from utils.solar import clear_sky_shortwave_reference
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,11 @@ class WeatherTimeSeries:
         # Ensure rainfall_mm column exists (default to 0 if not provided)
         if "rainfall_mm" not in self.df.columns:
             self.df["rainfall_mm"] = 0.0
+        if "cloud_cover_pct" not in self.df.columns:
+            self.df["cloud_cover_pct"] = np.nan
+        for key in DAYLIGHT_WEATHER_FIELDS:
+            if key not in self.df.columns:
+                self.df[key] = None
         self.source = source
         self._records = [
             {
@@ -62,7 +69,15 @@ class WeatherTimeSeries:
                 "wind_dir_deg": float(row.wind_dir_deg),
                 "temperature_c": float(row.temperature_c),
                 "rainfall_mm": float(row.rainfall_mm),
+                "cloud_cover_pct": (
+                    float(np.clip(row.cloud_cover_pct, 0.0, 100.0))
+                    if pd.notna(row.cloud_cover_pct) else None
+                ),
                 "datetime": row.datetime,
+                "shortwave_radiation_wm2": nonnegative_finite(row.shortwave_radiation_wm2),
+                "direct_normal_irradiance_wm2": nonnegative_finite(row.direct_normal_irradiance_wm2),
+                "daylight_condition": row.daylight_condition if pd.notna(row.daylight_condition) else None,
+                "daylight_condition_basis": row.daylight_condition_basis if pd.notna(row.daylight_condition_basis) else None,
             }
             for row in self.df.itertuples(index=False)
         ]
@@ -112,7 +127,7 @@ class WeatherTimeSeries:
         params = {
             "latitude":       lat,
             "longitude":      lon,
-            "hourly":         "temperature_2m,wind_speed_10m,wind_direction_10m,precipitation",
+            "hourly":         "temperature_2m,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,shortwave_radiation_instant,direct_normal_irradiance_instant",
             "wind_speed_unit": "ms",
             "timezone":       "Asia/Manila",
             "forecast_hours": min(int(hours), 168),
@@ -136,6 +151,7 @@ class WeatherTimeSeries:
         winds     = hourly.get("wind_speed_10m", [])
         dirs      = hourly.get("wind_direction_10m", [])
         precip    = hourly.get("precipitation", [])
+        clouds    = hourly.get("cloud_cover", [])
 
         if not times_raw:
             raise RuntimeError("Open-Meteo returned empty hourly data")
@@ -160,6 +176,14 @@ class WeatherTimeSeries:
             "wind_dir_deg":   np.array([dirs[i] for i in selected_indices], dtype=float),
             "temperature_c":  np.array([temps[i] for i in selected_indices], dtype=float),
             "rainfall_mm":    np.array([precip[i] if precip else 0.0 for i in selected_indices], dtype=float),
+            "cloud_cover_pct": [clouds[i] if i < len(clouds) else np.nan for i in selected_indices],
+            **{
+                name: [hourly.get(api_name, [])[i] if i < len(hourly.get(api_name, [])) else None for i in selected_indices]
+                for name, api_name in (
+                    ("shortwave_radiation_wm2", "shortwave_radiation_instant"),
+                    ("direct_normal_irradiance_wm2", "direct_normal_irradiance_instant"),
+                )
+            },
         })
 
         logger.info(
@@ -253,6 +277,8 @@ class WeatherTimeSeries:
                 rainfall[i] = rng.exponential(3.0)  # mean 3mm when it rains
         
         rainfall = np.clip(rainfall, 0, 25.0)  # cap at 25mm/hour
+        clouds = np.random.default_rng(seed ^ 0xC10D).uniform(10.0, 90.0, size=hours)
+        clouds[rainfall > 0.0] = np.maximum(80.0, clouds[rainfall > 0.0])
 
         df = pd.DataFrame({
             "datetime":       times,
@@ -260,6 +286,9 @@ class WeatherTimeSeries:
             "wind_dir_deg":   wind_dir,
             "temperature_c":  temp,
             "rainfall_mm":    rainfall,
+            "cloud_cover_pct": clouds,
+            "shortwave_radiation_wm2": [clear_sky_shortwave_reference(t, DEFAULT_LAT, DEFAULT_LON) * (1 - 0.8 * (cloud / 100) ** 2) for t, cloud in zip(times, clouds)],
+            "direct_normal_irradiance_wm2": [800.0 * (1 - 0.95 * (cloud / 100) ** 2) if clear_sky_shortwave_reference(t, DEFAULT_LAT, DEFAULT_LON) > 0 else 0.0 for t, cloud in zip(times, clouds)],
         })
         return cls(df, source="synthetic")
 

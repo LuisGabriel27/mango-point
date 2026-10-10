@@ -44,3 +44,8 @@ test('falls back to stored habitat diagnostics when top-level gates are absent',
   assert.equal(summary.orchardTreeCount, 15)
   assert.equal(summary.reachableTreeCount, 8)
 })
+
+test('Cecid summary reads the generic repeated-run summary', () => {
+  const generic = { runs: 9, minimum: 1, median: 3, maximum: 6 }
+  assert.equal(summarizeCecidResult({ metadata: { uncertainty_summary: generic } }).uncertainty, generic)
+})

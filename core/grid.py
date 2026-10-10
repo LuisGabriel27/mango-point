@@ -30,6 +30,7 @@ from core.config import (
     WIND_NEIGHBOR_BOOST,
     DIRECTION_BEARING_MAP,
 )
+from core.neighbor_pressure import combine_neighbor_pressure
 
 
 class OrchardGrid:
@@ -59,6 +60,15 @@ class OrchardGrid:
         self.cecid_source_pressure: np.ndarray = np.zeros((rows, cols), dtype=np.float64)
         self.cecid_source_assumed: np.ndarray = np.zeros((rows, cols), dtype=bool)
         self.cecid_source_label: np.ndarray = np.full((rows, cols), "", dtype=object)
+        self.source_status: np.ndarray = np.full((rows, cols), "healthy", dtype=object)
+        self.initial_source: np.ndarray = np.zeros((rows, cols), dtype=bool)
+        self.initial_source_assumed: np.ndarray = np.zeros((rows, cols), dtype=bool)
+        self.initial_source_label: np.ndarray = np.full((rows, cols), "", dtype=object)
+        self.initial_source_origin: np.ndarray = np.full((rows, cols), "", dtype=object)
+        self.fruitfly_reservoir_pressure: np.ndarray = np.zeros((rows, cols), dtype=np.float64)
+        # Frozen adult-pressure scenario for one forecast. Newly infested fruit
+        # must not create additional adult sources during the same run.
+        self.fruitfly_adult_source_pressure: Optional[np.ndarray] = None
 
         # Neighbor threat layer  [0.0 … 1.0]
         # Represents external orchard pressure from adjacent unmanaged areas
@@ -77,11 +87,26 @@ class OrchardGrid:
         # Used by get_wind_neighbor_factor() to amplify threat when wind
         # blows FROM that direction.
         self.neighbor_bearing: Optional[float] = None
+        self.neighbor_components = []
+        self._neighbor_wind_cache = None
 
     # ── factory helpers ─────────────────────────────────────────
     @classmethod
     def from_shape(cls, rows: int, cols: int, **kw) -> "OrchardGrid":
         return cls(rows, cols, **kw)
+
+    def freeze_fruitfly_sources(self) -> np.ndarray:
+        """Capture initial adult-pressure assumptions, independently of damage.
+
+        Initial infestation is used as a source scenario, not proof that fruit
+        damage has already produced adults. Reservoir pressure keeps its
+        supplied value even if that tree becomes infested later in the run.
+        """
+        if self.fruitfly_adult_source_pressure is None:
+            self.fruitfly_adult_source_pressure = np.where(
+                self.infested_mask, 1.0, self.fruitfly_reservoir_pressure,
+            ).astype(float, copy=True)
+        return self.fruitfly_adult_source_pressure
 
     # ── state mutators ──────────────────────────────────────────
     def plant_trees(
@@ -96,13 +121,15 @@ class OrchardGrid:
         self.state[row, col] = state
 
     def bag_trees(self, mask: np.ndarray) -> None:
-        """Bag all UNBAGGED trees where mask is True."""
-        can_bag = (self.state == CellState.UNBAGGED) & mask
+        """Bag unbagged susceptible trees, including history/monitoring flags."""
+        can_bag = self.unbagged_mask & mask
         self.state[can_bag] = CellState.BAGGED
 
     def infest(self, row: int, col: int) -> None:
         """Mark a single cell as infested (initial infection seed)."""
-        if self.state[row, col] in (CellState.UNBAGGED, CellState.BAGGED):
+        if self.state[row, col] in (
+            CellState.UNBAGGED, CellState.BAGGED, CellState.HISTORY_INFECTED, CellState.SUSPECT,
+        ):
             self.state[row, col] = CellState.INFESTED
 
     def seed_infestation(self, positions: List[Tuple[int, int]]) -> None:
@@ -121,12 +148,19 @@ class OrchardGrid:
 
         BAGGED trees are included here because bagging lowers infestation
         probability but does not make infection impossible.
+        History and monitoring flags carry ordinary unbagged susceptibility.
+        Independently sampled source hypotheses do not increase susceptibility.
         """
-        return (self.state == CellState.UNBAGGED) | (self.state == CellState.BAGGED)
+        return self.unbagged_mask | self.bagged_mask
 
     @property
     def unbagged_mask(self) -> np.ndarray:
-        return self.state == CellState.UNBAGGED
+        """Unbagged susceptible trees, including informational status flags."""
+        return (
+            (self.state == CellState.UNBAGGED)
+            | (self.state == CellState.HISTORY_INFECTED)
+            | (self.state == CellState.SUSPECT)
+        )
 
     @property
     def bagged_mask(self) -> np.ndarray:
@@ -139,7 +173,7 @@ class OrchardGrid:
 
     @property
     def history_infected_mask(self) -> np.ndarray:
-        """Trees previously infected (stored for future biology)."""
+        """Previously infected trees; history adds no susceptibility multiplier."""
         return self.state == CellState.HISTORY_INFECTED
 
     @property
@@ -169,6 +203,9 @@ class OrchardGrid:
     def set_neighbor_threat_uniform(self, threat: float) -> None:
         """Set uniform neighbor threat across all cells."""
         self.neighbor_threat[:] = np.clip(threat, 0.0, 1.0)
+        self.neighbor_components = []
+        self._neighbor_wind_cache = None
+        self.neighbor_bearing = None
 
     def set_neighbor_threat_from_mask(
         self,
@@ -214,12 +251,13 @@ class OrchardGrid:
             Maximum threat level [0, 1] applied to cells on the nearest edge.
         """
         bearing_deg = DIRECTION_BEARING_MAP.get(direction.upper(), 0.0)
+        self.neighbor_components = []
+        self._neighbor_wind_cache = None
         bearing_rad = math.radians(bearing_deg)
 
         # Grid-coordinate unit vector toward the neighbour.
-        # Rows increase southward, cols increase eastward.
-        # North bearing → u_row = -1 (row decreases); East → u_col = +1.
-        u_row = -math.cos(bearing_rad)
+        # GIS rows increase latitude (northward); columns increase longitude.
+        u_row = math.cos(bearing_rad)
         u_col = math.sin(bearing_rad)
 
         center_r = (self.rows - 1) / 2.0
@@ -237,6 +275,30 @@ class OrchardGrid:
             )
         else:
             self.neighbor_threat = np.full_like(self.risk, float(threat))
+
+    def set_neighbor_sources(self, sources) -> None:
+        """Keep a separate spatial gradient for each external orchard."""
+        components = []
+        for source in sources:
+            if source.get('direction'):
+                self.set_neighbor_threat_directional(source['direction'], source['threat'])
+            else:
+                self.set_neighbor_threat_uniform(source['threat'])
+            components.append((dict(source), self.neighbor_threat.copy()))
+        self.neighbor_components = components
+        self._neighbor_wind_cache = None
+        self.neighbor_bearing = None
+        self.neighbor_threat = (
+            combine_neighbor_pressure(components) if components else np.zeros_like(self.risk)
+        )
+
+    def get_effective_neighbor_threat(self, row: int, col: int, wind_dir_deg: float) -> float:
+        """Apply each source's wind factor before combining its local contribution."""
+        if self.neighbor_components:
+            if self._neighbor_wind_cache is None or self._neighbor_wind_cache[0] != wind_dir_deg:
+                self._neighbor_wind_cache = (wind_dir_deg, combine_neighbor_pressure(self.neighbor_components, wind_dir_deg))
+            return float(self._neighbor_wind_cache[1][row, col])
+        return self.get_neighbor_threat(row, col) * self.get_wind_neighbor_factor(wind_dir_deg)
 
     def get_wind_neighbor_factor(self, wind_dir_deg: float) -> float:
         """
@@ -367,11 +429,22 @@ class OrchardGrid:
         g.cecid_source_pressure = self.cecid_source_pressure.copy()
         g.cecid_source_assumed = self.cecid_source_assumed.copy()
         g.cecid_source_label = self.cecid_source_label.copy()
+        g.source_status = self.source_status.copy()
+        g.initial_source = self.initial_source.copy()
+        g.initial_source_assumed = self.initial_source_assumed.copy()
+        g.initial_source_label = self.initial_source_label.copy()
+        g.initial_source_origin = self.initial_source_origin.copy()
+        g.fruitfly_reservoir_pressure = self.fruitfly_reservoir_pressure.copy()
+        g.fruitfly_adult_source_pressure = (
+            None if self.fruitfly_adult_source_pressure is None
+            else self.fruitfly_adult_source_pressure.copy()
+        )
         g.neighbor_threat = self.neighbor_threat.copy()
         g.tree_ids = self.tree_ids.copy()
         g.origin_lon = self.origin_lon
         g.origin_lat = self.origin_lat
         g.neighbor_bearing = self.neighbor_bearing
+        g.neighbor_components = [(dict(source), pressure.copy()) for source, pressure in self.neighbor_components]
         return g
 
     # ── repr ────────────────────────────────────────────────────

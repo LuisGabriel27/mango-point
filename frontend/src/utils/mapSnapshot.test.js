@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { captureMapSnapshot, waitForMapSnapshot } from './mapSnapshot.js'
+import { captureMapSnapshot, drawSnapshotMarkers, waitForMapSnapshot } from './mapSnapshot.js'
 
 test('map export composites HTML tree markers over the WebGL imagery at the correct pixel ratio', () => {
   const calls = []
@@ -20,6 +20,20 @@ test('map export composites HTML tree markers over the WebGL imagery at the corr
   assert.ok(calls.some(([method, x, y, radius]) => method === 'arc' && x === 100 && y === 200 && radius === 7))
   assert.ok(calls.some(([method, text]) => method === 'fillText' && text === 'S'))
   assert.equal(snapshot.attribution, 'Tiles © Esri')
+})
+
+test('report includes active Fruit Fly reservoir and infection source badges', () => {
+  const labels = []
+  const context = new Proxy({}, {
+    get: (_target, method) => (...args) => { if (method === 'fillText') labels.push(args[0]) },
+    set: () => true,
+  })
+  drawSnapshotMarkers(context, [
+    { lon: 122, lat: 10, color: '#22c55e', initialSource: { badge: 'R', assumed: true } },
+    { lon: 122, lat: 10, color: '#b91c1c', initialSource: { badge: 'S', assumed: false } },
+    { lon: 122, lat: 10, color: '#22c55e', initialSource: null },
+  ], () => ({ x: 100, y: 200 }))
+  assert.deepEqual(labels, ['R', 'S'])
 })
 
 test('capture waits for imagery and map rendering, and reports a timeout instead of exporting early', async () => {

@@ -315,8 +315,9 @@ def test_neighbor_pressure_is_external_but_still_requires_valid_weather_and_gate
     assert no_cohort_diag["neighbor_contribution"] > 0.0
     assert no_cohort_diag["external_neighbor_exposed_tree_count"] == 1
     assert no_cohort_diag["habitat_limiting_reasons"] == []
-    assert dry_soil == 0.0
-    assert dry_soil_diag["neighbor_contribution"] == 0.0
+    # Outside adults need movement weather, not local wet soil for emergence.
+    assert dry_soil == pytest.approx(no_cohort)
+    assert dry_soil_diag["neighbor_contribution"] > 0.0
     assert midday == 0.0
     assert wrong_stage == 0.0
     assert baseline_diag["reachable_tree_count"] == 1
@@ -593,9 +594,10 @@ async def test_bundled_orchard_weather_preset_spreads_and_replays_with_same_seed
 
     assert first.metadata.initial_infected_count == 0
     assert 1 <= first.metadata.cecid_assumed_source_count <= 3
-    # Model v4 regression: the bundled preset produces useful spread from the
-    # deterministic assumed soil sources without inflating the source count.
-    assert first.n_infested_final == 51
+    # Finite adult supply still spreads and replays without manufacturing
+    # replacement cohorts every time the preset repeats a rain episode.
+    assert first.n_infested_final > 0
+    assert len(first.metadata.cecid_cohort_events) <= first.metadata.cecid_assumed_source_count
     assert first.metadata.n_newly_infested == first.n_infested_final
     assert replay.n_infested_final == first.n_infested_final
     assert replay.metadata.cecid_sources == first.metadata.cecid_sources

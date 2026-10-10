@@ -30,7 +30,7 @@ async function componentExports(relativePath) {
   new Function('require', 'module', 'exports', result.outputFiles[0].text)(componentRequire, module, module.exports)
   return module.exports
 }
-const { default: WeatherCard, CustomWeatherEditor } = await componentExports('./WeatherCard.jsx')
+const { default: WeatherCard, CustomWeatherEditor, DaylightConditionField } = await componentExports('./WeatherCard.jsx')
 const { default: OverviewTab } = await componentExports('../tabs/OverviewTab.jsx')
 const timeline = createConstantWeatherTimeline({ temperature_c: 27, rainfall_mm: 0, wind_speed_ms: 1 }, 48)
 
@@ -79,6 +79,19 @@ test('an empty saved schedule is visibly incomplete rather than showing unsaved 
   assert.match(html, /No weather periods configured/)
 })
 
+test('soil controls expose moist now as a labeled scenario rather than invented rainfall', () => {
+  const html = renderToStaticMarkup(React.createElement(CustomWeatherEditor, {
+    timeline: { ...timeline, manual_soil_context: { preset: 'moist', initial_moisture_score: 0.8 } },
+    hours: 48, pestType: 'cecid', onChange() {},
+  }))
+  assert.match(html, /Moist now/)
+  assert.match(html, /Moist at Hour 0/)
+  assert.match(html, /Moisture strength/)
+  assert.match(html, /value="80"/)
+  assert.match(html, /without adding earlier rain/)
+  assert.match(html, /not a measured soil-water percentage/)
+})
+
 test('Overview emphasizes infestation and no longer labels the maximum score as critical risk', () => {
   const html = renderToStaticMarkup(React.createElement(OverviewTab, {
     totalTrees: 194, simData: { n_infested_final: 39, peak_risk: 1, hours: 168 },
@@ -87,4 +100,28 @@ test('Overview emphasizes infestation and no longer labels the maximum score as 
   assert.match(html, /20\.1%/)
   assert.match(html, /39 of 194 trees/)
   assert.doesNotMatch(html, /Peak risk score|Critical/)
+})
+
+test('custom daylight controls separate outdoor light and evidence from cloud cover and canopy shade', () => {
+  const html = renderToStaticMarkup(React.createElement(DaylightConditionField, {
+    block: { cloud_cover_pct: 100, daylight_condition: 'bright_sunshine', daylight_condition_basis: 'observed' }, onChange() {},
+  }))
+  assert.match(html, /Daylight light condition/)
+  assert.match(html, /Bright sunshine/)
+  assert.match(html, /Intermittent sunshine/)
+  assert.match(html, /Dim overcast/)
+  assert.match(html, /value="bright_sunshine" selected=""/)
+  assert.match(html, /value="observed" selected=""/)
+  assert.match(html, /Assumed scenario/)
+  assert.match(html, /Tree-canopy shade alone does not enable Cecid emergence or movement/)
+})
+
+test('live weather displays zero radiation and leaves missing sunlight unavailable', () => {
+  const render = (current) => renderToStaticMarkup(React.createElement(WeatherCard, {
+    weather: { current: { temperature_c: 28, humidity: 70, wind_speed_ms: 1, source: 'open-meteo', ...current } }, embedded: true,
+  }))
+  const zero = render({ shortwave_radiation_wm2: 0, direct_normal_irradiance_wm2: 0 })
+  assert.match(zero, /Solar: 0 W\/m²/)
+  assert.match(zero, /Direct sunlight: 0 W\/m²/)
+  assert.match(render({}), /Solar: Unavailable/)
 })

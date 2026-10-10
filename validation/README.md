@@ -4,6 +4,34 @@ Historical validation tools for comparing MangoPoint predictions against BPI Gui
 
 ## Command Line
 
+The v16 sensitivity and full-month BPI audit is documented in
+[the audit report](../docs/v16-sensitivity-and-bpi-validation.md). It includes
+both engines, simple baselines, and earlier-year outbreak checks, and explicitly
+accounts for the limitations of the legacy calendar-filtered comparison.
+
+```bash
+python -m scripts.run_revision_audit --seeds 30 --monte-carlo 10 --windows 4 --workers 4
+```
+
+The original enhanced defense design has a separate two-engine replay:
+
+```bash
+python -m scripts.run_defense_replay --monte-carlo 30 --workers 4
+```
+
+See the [updated defense report](../docs/v16-validation-defense.md). This replay
+retains the original 20 selected cases, historical windows, assumed stages,
+composite scoring, previous-month BPI carryover, and calibration/testing split.
+It uses the saved graph seed-tree IDs, records all run settings and input hashes,
+and exports raw scores, score contributions, calibration curves, simple
+baselines, and old/current results. The old export does not specify every
+execution setting, so this is a documented methodology replay, not a bit-for-bit
+reproduction. Both engines now use 30 realizations per window by default.
+New output directories follow the current model revision, such as
+`outputs/validation_defense_v17/`. Retained v16 metrics remain v16 evidence;
+the [v17 review](../docs/v17-model-readiness-review.md) has not rerun BPI yet.
+The broad full-month audit and old defense outputs remain separate.
+
 ```bash
 cd mango-point
 
@@ -43,6 +71,8 @@ report.export_all("outputs/validation")
 | `validation/historical_data.py` | BPI data loading and risk classification |
 | `validation/weather_scenarios.py` | Historical weather generation |
 | `validation/validation_runner.py` | Batch validation orchestration |
+| `validation/revision_audit.py` | Controlled sensitivity, full-month BPI comparison, baseline checks |
+| `validation/defense_replay.py` | Two-engine replay of the original enhanced defense with old/current comparison |
 | `validation/metrics.py` | Classification and regression metrics |
 | `validation/reports.py` | Legacy validation exports |
 | `validation/simulation_aggregator.py` | BPI-style aggregate metrics from simulation output |
@@ -60,6 +90,14 @@ Expected weather CSV columns:
 - `wind_speed_ms`
 - `wind_dir_deg`
 - `rainfall_mm` (optional, defaults to 0)
+
+Optional v16 daylight fields are retained when supplied: `cloud_cover_pct`,
+`shortwave_radiation_wm2`, `direct_normal_irradiance_wm2`, `daylight_condition`,
+and `daylight_condition_basis`. The numeric radiation fields must represent
+the indicated time; the loader also accepts the API's `_instant` aliases.
+Ordinary preceding-hour-average radiation columns are not substituted. Zero
+is retained and missing/invalid readings stay unknown. The bundled archive
+does not include these daylight fields.
 
 If a weather CSV is supplied but a case month does not have enough hourly rows for the requested duration, that case falls back to the seasonal synthetic profile and records the fallback reason in CSV/JSON output.
 

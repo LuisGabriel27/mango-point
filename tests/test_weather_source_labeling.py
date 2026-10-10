@@ -115,6 +115,9 @@ async def test_forecast_bundle_requests_exact_anchored_window(monkeypatch):
                 "wind_speed_10m": [1.5] * len(times),
                 "wind_direction_10m": [90.0] * len(times),
                 "precipitation": values,
+                "cloud_cover": [100.0] * len(times),
+                "shortwave_radiation_instant": [100.0] * len(times),
+                "direct_normal_irradiance_instant": values,
             }}
 
     class FakeClient:
@@ -141,10 +144,15 @@ async def test_forecast_bundle_requests_exact_anchored_window(monkeypatch):
     assert captured["timezone"] == "Asia/Manila"
     assert captured["latitude"] == 10.61
     assert captured["longitude"] == 122.59
+    assert "shortwave_radiation_instant" in captured["hourly"].split(",")
+    assert "direct_normal_irradiance_instant" in captured["hourly"].split(",")
     assert len(bundle["antecedent"]) == 72
     assert len(bundle["forecast"]) == 48
     assert bundle["forecast"][0]["datetime"] == "2026-04-01T14:00:00+08:00"
     assert bundle["provenance"]["coordinates"] == {"lat": 10.61, "lon": 122.59}
+    assert bundle["forecast"][0]["shortwave_radiation_wm2"] == 100
+    assert bundle["forecast"][0]["direct_normal_irradiance_wm2"] == 0
+    assert bundle["antecedent"][0]["shortwave_radiation_wm2"] == 100
 
 
 @pytest.mark.asyncio

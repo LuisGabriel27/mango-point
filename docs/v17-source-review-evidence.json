@@ -1,0 +1,248 @@
+{
+  "model_version": "2026.10-source-progression-v17",
+  "generated_utc": "2026-10-10T07:33:40.048949+00:00",
+  "scope": "Final-defense readiness item 1: source progression, outside Cecid representation, output interpretation",
+  "python_verification": {
+    "cases": 797,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "new_cases": 12,
+    "report": "outputs/source-review-v17/python-tests.xml",
+    "log": "outputs/source-review-v17/python-tests.log"
+  },
+  "frontend_verification": {
+    "cases": 143,
+    "failures": 0,
+    "command": "npm.cmd test",
+    "evidence": "Observed tool execution; no full frontend log file was saved"
+  },
+  "production_build": {
+    "command": "npm.cmd run build",
+    "exit_code": 0,
+    "version": "vite 6.4.2",
+    "browser_rehearsal_done": false
+  },
+  "controlled_runs": {
+    "scenarios": 50,
+    "engines": [
+      "grid",
+      "tree_graph"
+    ],
+    "seeds": [
+      1000,
+      1001,
+      1002,
+      1003,
+      1004,
+      1005,
+      1006,
+      1007,
+      1008,
+      1009,
+      1010,
+      1011,
+      1012,
+      1013,
+      1014,
+      1015,
+      1016,
+      1017,
+      1018,
+      1019,
+      1020,
+      1021,
+      1022,
+      1023,
+      1024,
+      1025,
+      1026,
+      1027,
+      1028,
+      1029
+    ],
+    "hours": 48,
+    "realizations": 3000,
+    "cecid_realizations_identical_to_v16": 2160,
+    "fruitfly_realizations": 840,
+    "separate_daylight_probes_identical_to_v16": 117,
+    "paired_keys_identical": true,
+    "no_source_fruitfly_new_infestation": 0,
+    "baseline_means": [
+      {
+        "pest": "cecid",
+        "mode": "grid",
+        "scenario": "baseline",
+        "runs": 30,
+        "mean_new_affected_v16": 3.8333333333333335,
+        "mean_new_affected_v17": 3.8333333333333335,
+        "change": 0.0
+      },
+      {
+        "pest": "cecid",
+        "mode": "tree_graph",
+        "scenario": "baseline",
+        "runs": 30,
+        "mean_new_affected_v16": 4.166666666666667,
+        "mean_new_affected_v17": 4.166666666666667,
+        "change": 0.0
+      },
+      {
+        "pest": "fruitfly",
+        "mode": "grid",
+        "scenario": "baseline",
+        "runs": 30,
+        "mean_new_affected_v16": 46.3,
+        "mean_new_affected_v17": 19.1,
+        "change": -27.2
+      },
+      {
+        "pest": "fruitfly",
+        "mode": "tree_graph",
+        "scenario": "baseline",
+        "runs": 30,
+        "mean_new_affected_v16": 41.333333333333336,
+        "mean_new_affected_v17": 11.066666666666666,
+        "change": -30.26666666666667
+      }
+    ]
+  },
+  "export_check": {
+    "retained_v16_inputs_export_as_v16": true,
+    "smoke_output": "outputs/source-review-v17/export-smoke",
+    "new_default_outputs": [
+      "outputs/revision-v17-audit",
+      "outputs/validation_defense_v17"
+    ]
+  },
+  "bpi_rerun_for_v17_done": false,
+  "field_accuracy_established": false,
+  "outside_cecid_boundary_cohorts_implemented": false,
+  "input_hashes": [
+    {
+      "path": "data\\guimaras_pest_data_2022_2025.csv",
+      "sha256": "d9e4a389dbe62932aad6e05989a58f6901f87e639744b2324bf7b1e6208812a0"
+    },
+    {
+      "path": "data\\hourly_weather.csv",
+      "sha256": "c746503929c95fd8b75a5f2db6c03d47c25f7670e535c23b71367ef211254d83"
+    },
+    {
+      "path": "data\\trees.geojson",
+      "sha256": "115f196f772c4584142e46cf1a00ae80bce3cdfce4c5d246c8ae33ac2e76f040"
+    }
+  ],
+  "final_file_hashes": [
+    {
+      "path": "core/config.py",
+      "sha256": "453b7e0650ea6471d3ab60aeb7d34bc7c5b4ac0fc5a9ab38a59ad03b995664ab"
+    },
+    {
+      "path": "core/grid.py",
+      "sha256": "3a73b35928b179a9891594c39f5ee4d525a0470295329dd3475b0b0814d570d6"
+    },
+    {
+      "path": "core/biological_rules.py",
+      "sha256": "7385593ae6870ea27174a18799b7b53ace63055ab4abc8554d173a4279d3a1e7"
+    },
+    {
+      "path": "core/simulation_engine.py",
+      "sha256": "122cb390fd6696bd37766430897966fdff0efc69c4cd7bc27d7aa06e8b4e71ff"
+    },
+    {
+      "path": "core/tree_graph_model.py",
+      "sha256": "4831eda1716a760db1b03d28483274a898efda2c5b05b1a4dc3a70fef31661d2"
+    },
+    {
+      "path": "core/model_interpretation.py",
+      "sha256": "5ce953d369714454a0ccd30e15ea34f0bc0870b06ee6248aea1a4913890876fb"
+    },
+    {
+      "path": "api/models/schemas.py",
+      "sha256": "649822131f8ee85cc8f94c63819fa25b32a81bff2fee750fe6e6f4251fd8c9a9"
+    },
+    {
+      "path": "api/services/simulation_service.py",
+      "sha256": "53329b5fc7875a4d864bc0e323504ccdb0a0d9148123c4287ec04a0e6ac9c639"
+    },
+    {
+      "path": "scripts/run_revision_audit.py",
+      "sha256": "4bc59d17bf8b60011e85978e2d9b89dfcb277502d885a225697f5ca7eb4ee31c"
+    },
+    {
+      "path": "scripts/run_defense_replay.py",
+      "sha256": "70450f113a01c0c649e85f914bae2ef3d7aa46cf28545680e81d56ddcfaeb189"
+    },
+    {
+      "path": "validation/revision_audit.py",
+      "sha256": "8f89d5c4e3fdf582fc8af9d1bd40052bb8b100c1890b35c57920ad2a7a2b23c8"
+    },
+    {
+      "path": "validation/defense_replay.py",
+      "sha256": "ff6f84867ad808fdd6fecee6503264a3a89e529342976e892e7e31b9d52f6cac"
+    },
+    {
+      "path": "tests/test_source_progression_review.py",
+      "sha256": "e2b717a49c6047fdda895fbb468b6a5a26359dd8dcd181d9614ae936eb774c86"
+    },
+    {
+      "path": "frontend/src/utils/simulationReport.js",
+      "sha256": "a28107ce3a1f887784caad01a3037c94af4b7e9e37929ccf7994cdca038b9222"
+    },
+    {
+      "path": "frontend/src/utils/simulationReportTemplate.js",
+      "sha256": "c6532f39576710c72e2c98b64a1811a27e341b62f04b8abab73bea710bbd76a4"
+    },
+    {
+      "path": "frontend/src/utils/simulationReport.test.js",
+      "sha256": "50e336ef7b140a89ed5ff5c57f88e999409ac1e9473c292d4273fe22f9aa9edd"
+    },
+    {
+      "path": "frontend/src/components/cards/SimulationCard.jsx",
+      "sha256": "62d672588fae1a3115522beac287f794708ff5ec07cc0850bbce5a271a5f919c"
+    },
+    {
+      "path": "frontend/src/utils/cecidMapInterpretation.js",
+      "sha256": "fc9adf62a22f569f36966d9fac4a9e3c739920f6652780291edba651c0de6a89"
+    },
+    {
+      "path": "outputs/source-review-v17/sensitivity_runs.csv",
+      "sha256": "5466bd441421712718afe58739972cfec682b6d11465bac44885b21a13d5a24f"
+    },
+    {
+      "path": "outputs/source-review-v17/sensitivity_summary.csv",
+      "sha256": "206c7711be31eacab02cc22b72aad7f6db7d102df5331e8bdfd9d079bf3f6397"
+    },
+    {
+      "path": "outputs/source-review-v17/sensitivity_design.json",
+      "sha256": "8fb14c239b91b6a773c597800d3e5d61be3af53884091be7f52d2ef483ef7d61"
+    },
+    {
+      "path": "outputs/source-review-v17/daylight_response_sensitivity.csv",
+      "sha256": "deea6a2ec196b1d238e4679ec00d927ab91c4f11d9c9350c3ffb8a5695d7a1b0"
+    },
+    {
+      "path": "outputs/source-review-v17/python-tests.xml",
+      "sha256": "1aeae174352b6410404d8482bfad6ffd0bd279dca4c8aa4d3ac55b2e818c8f53"
+    },
+    {
+      "path": "outputs/source-review-v17/sensitivity.png",
+      "sha256": "486fdd3a619117f97d9eb7258b2624e95f63397bb156776fccba89d7612c9cee"
+    },
+    {
+      "path": "docs/v17-sensitivity-summary.csv",
+      "sha256": "2aa0788c733c5aad5cac35c26fc903d5a891203ea91a2d607ae8e410c401cef6"
+    },
+    {
+      "path": "docs/v17-source-review-comparison.csv",
+      "sha256": "19c18acb926912186e581a32da033e2e12cf7d3feec0171c917d6247078d6154"
+    }
+  ],
+  "hash_note": "Hashes record the final snapshot. Documentation and versioned export formatting were finalized after the full suite/simulation runs; 37 focused source/audit/replay checks, CLI checks and a retained-version export smoke check supplement those runs. No biological coefficients were tuned.",
+  "final_focused_verification": {
+    "cases": 37,
+    "failures": 0,
+    "included_in_full_suite_count": true,
+    "command": "python -m pytest -q tests/test_revision_audit.py tests/test_defense_replay.py tests/test_source_progression_review.py"
+  }
+}

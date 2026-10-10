@@ -7,10 +7,13 @@ import CropImpactTab from '../components/tabs/CropImpactTab'
 import SurveillanceTab from '../components/tabs/SurveillanceTab'
 import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
 import SimulationReportModal from '../components/SimulationReportModal'
+import TreeStatusSelect from '../components/TreeStatusSelect'
+import { isUncertainSourceStatus, sourcePresenceOverrides, sourceProbability } from '../utils/sourcePresence.js'
 import api from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
 import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
 import { summarizeCecidResult } from '../utils/cecidResultSummary'
+import { selectableTreeStatus, simulationEnsembleRuns } from '../utils/simulationMapInterpretation'
 import { calculateSimulationEconomicImpact } from '../utils/economicImpact'
 import { createDefaultWeatherTimeline, restoreCustomWeatherTimeline } from '../utils/weatherSchedule'
 import {
@@ -24,6 +27,7 @@ import {
 import {
   normalizeStageZones,
   normalizeStatusZones,
+  mergeStoredStatusZones,
   stageZonePayload,
   statusZonePayload,
 } from '../utils/orchardTreeZones'
@@ -125,7 +129,7 @@ const PHENOLOGY_STAGE_OPTIONS = [
   { label: 'Dormant', value: 'dormant' },
   { label: 'Flowering', value: 'flowering' },
   { label: 'Fruitlet', value: 'fruitlet' },
-  { label: 'Mature', value: 'mature' },
+  { label: 'Green mature / ripening', value: 'mature' },
 ]
 
 const STATUS_ZONE_OPTIONS = [
@@ -174,7 +178,8 @@ function treePointsFromGeojson(geojson) {
       const props = feature.properties || {}
       const treeId = props.tree_id ?? props.Tree_ID ?? props.fid ?? feature.id
       if (treeId == null) return null
-      return { tree_id: String(treeId), lon: center[0], lat: center[1] }
+      return { tree_id: String(treeId), lon: center[0], lat: center[1],
+        status: selectableTreeStatus(props.status ?? props.Status ?? 'healthy') }
     })
     .filter(Boolean)
 }
@@ -374,6 +379,7 @@ export default function DashboardPage() {
   const [simData, setSimData] = useState(null)
   const [reportRequest, setReportRequest] = useState(null)
   const [treeOverrides, setTreeOverrides] = useState({})
+  const [treeSourceOverrides, setTreeSourceOverrides] = useState({})
   const [treeStageOverrides, setTreeStageOverrides] = useState({})
   const [phenologyZones, setPhenologyZones] = useState([])
   const [stageZoneDrawing, setStageZoneDrawing] = useState(false)
@@ -390,6 +396,7 @@ export default function DashboardPage() {
   // Status zone drawing (bulk status change)
   const [statusZoneDrawing, setStatusZoneDrawing] = useState(false)
   const [statusZoneStatus, setStatusZoneStatus] = useState('infected')
+  const [statusZoneSourceProbability, setStatusZoneSourceProbability] = useState(null)
   const [statusZoneDraft, setStatusZoneDraft] = useState([])
   const [statusZones, setStatusZones] = useState([])
   const [treeEditScope, setTreeEditScope] = useState('scenario')
@@ -476,6 +483,10 @@ export default function DashboardPage() {
     () => treePointsFromGeojson(orchardGeojson),
     [orchardGeojson],
   )
+  const resolvedTreeSourceProbabilities = useMemo(
+    () => sourcePresenceOverrides(statusZones, orchardTreePoints, treeOverrides, treeSourceOverrides),
+    [statusZones, orchardTreePoints, treeOverrides, treeSourceOverrides],
+  )
   const orchardWeatherCoordinates = useMemo(() => {
     const recordLat = Number(selectedOrchardRecord?.centroid_lat)
     const recordLon = Number(selectedOrchardRecord?.centroid_lon)
@@ -537,13 +548,11 @@ export default function DashboardPage() {
       ...(orchardChanged ? [] : current.filter((zone) => zone.scope !== 'orchard')),
       ...savedStageZones,
     ])
-    setStatusZones((current) => [
-      ...(orchardChanged ? [] : current.filter((zone) => zone.scope !== 'orchard')),
-      ...savedStatusZones,
-    ])
+    setStatusZones((current) => mergeStoredStatusZones(current, savedStatusZones, orchardChanged))
     if (orchardChanged) {
       setTreeStageOverrides({})
       setTreeOverrides({})
+      setTreeSourceOverrides({})
       setZoneHistory([])
     }
     treeZoneOrchardIdRef.current = selectedOrchardId
@@ -608,19 +617,17 @@ export default function DashboardPage() {
     [cecidZoneDraft, orchardTreePoints],
   )
 
-  // Cecid defaults to a repeated-run likelihood map. Playback remains the
+  // Repeated runs default to the across-runs map. Playback remains the
   // exact representative realization and never changes the model result.
   const currentFrame = playbackFrames.length > 0 ? (playbackFrames[currentFrameIdx] ?? null) : null
-  const cecidEnsembleRuns = Number(
-    simData?.metadata?.cecid_uncertainty_summary?.runs ?? 0,
-  )
+  const cecidEnsembleRuns = simulationEnsembleRuns(simData)
   const cecidTreeLikelihoodAvailable = Boolean(
     simData?.risk_geojson?.features?.some((feature) => (
       Number(feature?.properties?.ensemble_runs) > 1
+      && feature?.properties?.ensemble_infestation_frequency != null
     )),
   )
-  const cecidLikelihoodAvailable = simData?.pest_type === 'cecid'
-    && cecidEnsembleRuns > 1
+  const cecidLikelihoodAvailable = cecidEnsembleRuns > 1
     && cecidTreeLikelihoodAvailable
   const mapGeojson = cecidLikelihoodAvailable && cecidMapMode === 'likelihood'
     ? simData?.risk_geojson ?? null
@@ -911,6 +918,7 @@ export default function DashboardPage() {
     selectOrchardId(uploaded.orchard_id)
     setSimData(null)
     setTreeOverrides({})
+    setTreeSourceOverrides({})
     setTreeStageOverrides({})
     setPhenologyZones([])
     setStageZoneDrawing(false)
@@ -938,6 +946,7 @@ export default function DashboardPage() {
     selectOrchardId(orchardId)
     setSimData(null)
     setTreeOverrides({})
+    setTreeSourceOverrides({})
     setTreeStageOverrides({})
     setPhenologyZones([])
     setStageZoneDrawing(false)
@@ -1003,7 +1012,9 @@ export default function DashboardPage() {
         bypass_cache: Boolean(bypassCache),
       })
       setWeather(res.data)
+      return res.data?.current?.source !== 'synthetic'
     } catch (_) { /* ignore */ }
+    return false
   }, [orchardWeatherCoordinates.lat, orchardWeatherCoordinates.lon])
 
   const fetchMonitoring = useCallback(async () => {
@@ -1056,8 +1067,8 @@ export default function DashboardPage() {
     const frames = Array.isArray(data.time_series) ? data.time_series : []
     setPlaybackFrames(frames)
     setCurrentFrameIdx(options.startAtLastFrame && frames.length ? frames.length - 1 : 0)
-    const ensembleRuns = Number(data?.metadata?.cecid_uncertainty_summary?.runs ?? 0)
-    setCecidMapMode(data?.pest_type === 'cecid' && ensembleRuns > 1
+    const ensembleRuns = simulationEnsembleRuns(data)
+    setCecidMapMode(ensembleRuns > 1
       ? 'likelihood'
       : 'representative')
     fetchAlerts()
@@ -1067,8 +1078,8 @@ export default function DashboardPage() {
 
   const handleFrameSeek = useCallback((frameIndex) => {
     setCurrentFrameIdx(frameIndex)
-    if (simData?.pest_type === 'cecid') setCecidMapMode('representative')
-  }, [simData?.pest_type])
+    setCecidMapMode('representative')
+  }, [])
 
   const handleCecidMapModeChange = useCallback((mode) => {
     setCecidMapMode(mode)
@@ -1098,6 +1109,8 @@ export default function DashboardPage() {
     const dashboardState = parseMaybeJson(safeParams.dashboard_state, {})
     const savedStageOverrides = parseMaybeJson(safeParams.tree_stage_overrides, {})
     const savedStatusOverrides = parseMaybeJson(safeParams.tree_overrides, {})
+    const savedSourceOverrides = parseMaybeJson(dashboardState.tree_source_probability_overrides
+      ?? safeParams.tree_source_probability_overrides, {})
     const savedZones = normalizeStageZones(
       dashboardState.phenology_zones ?? safeParams.phenology_zones,
     )
@@ -1122,6 +1135,7 @@ export default function DashboardPage() {
       setTreeStageOverrides(savedStageOverrides)
       setStatusZones(restoredStatusZones)
       setTreeOverrides(savedStatusOverrides)
+      setTreeSourceOverrides(savedSourceOverrides)
       setStatusZoneDraft([])
       setStatusZoneDrawing(false)
       setStageZoneDraft([])
@@ -1148,6 +1162,7 @@ export default function DashboardPage() {
       setTreeStageOverrides({})
       setStatusZones([])
       setTreeOverrides({})
+      setTreeSourceOverrides({})
       setManagementZones([])
       setCecidWeedZones([])
       setLegacyCecidEmergenceZones([])
@@ -1212,8 +1227,10 @@ export default function DashboardPage() {
     setSelectedTree(treeData)
   }, [])
 
-  const applyTreeStatus = useCallback((treeId, status) => {
+  const applyTreeStatus = useCallback((treeId, status, probability = null) => {
     setTreeOverrides((prev) => ({ ...prev, [String(treeId)]: status }))
+    setTreeSourceOverrides((prev) => ({ ...prev, [String(treeId)]:
+      isUncertainSourceStatus(status) ? sourceProbability(probability) : null }))
     setSelectedTree(null)
   }, [])
 
@@ -1221,9 +1238,9 @@ export default function DashboardPage() {
     if (!selectedTree?.tree_id) return
     setObservationPrefill({
       treeIds: [String(selectedTree.tree_id)],
-      forecastRisk: selectedTree.risk == null ? null : Number(selectedTree.risk),
-      forecastLeadHours: Number.isFinite(Number(currentFrame?.hour ?? currentFrame?.timestep))
-        ? Number(currentFrame?.hour ?? currentFrame?.timestep)
+      forecastRisk: selectedTree.display_risk == null ? null : Number(selectedTree.display_risk),
+      forecastLeadHours: Number.isFinite(Number(displayedFrame?.hour ?? displayedFrame?.timestep))
+        ? Number(displayedFrame?.hour ?? displayedFrame?.timestep)
         : null,
       lon: Number.isFinite(Number(selectedTree.lon)) ? Number(selectedTree.lon) : null,
       lat: Number.isFinite(Number(selectedTree.lat)) ? Number(selectedTree.lat) : null,
@@ -1234,7 +1251,7 @@ export default function DashboardPage() {
       setSidebarMobileOpen(true)
     }
     setSelectedTree(null)
-  }, [currentFrame, selectedTree])
+  }, [displayedFrame, selectedTree])
 
   const handleStageZoneStart = useCallback(() => {
     setTreeEditSaveState('idle')
@@ -1336,6 +1353,8 @@ export default function DashboardPage() {
     const newZone = {
       id: `status-zone-${Date.now()}`,
       status: statusZoneStatus,
+      ...(isUncertainSourceStatus(statusZoneStatus) && sourceProbability(statusZoneSourceProbability) != null
+        ? { source_probability: sourceProbability(statusZoneSourceProbability) } : {}),
       coordinates: statusZoneDraft,
       tree_count: targetIds.length,
       scope: treeEditScope,
@@ -1345,6 +1364,11 @@ export default function DashboardPage() {
     setTreeOverrides((prev) => {
       const next = { ...prev }
       for (const id of targetIds) next[id] = statusZoneStatus
+      return next
+    })
+    setTreeSourceOverrides((prev) => {
+      const next = { ...prev }
+      for (const id of targetIds) delete next[id]
       return next
     })
     setStatusZoneDraft([])
@@ -1362,6 +1386,7 @@ export default function DashboardPage() {
     statusZones,
     statusZoneDraft,
     statusZoneStatus,
+    statusZoneSourceProbability,
     treeEditScope,
   ])
 
@@ -1410,6 +1435,7 @@ export default function DashboardPage() {
     }
     setStatusZones(nextZones)
     setTreeOverrides(nextOverrides)
+    setTreeSourceOverrides({})
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
     setZoneHistory((current) => current.filter((entry) => (
@@ -1453,6 +1479,7 @@ export default function DashboardPage() {
     ])]
     setStatusZones([])
     setTreeOverrides({})
+    setTreeSourceOverrides({})
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
     setZoneHistory((current) => current.filter((entry) => entry.type !== 'status'))
@@ -1701,6 +1728,7 @@ export default function DashboardPage() {
     setStageZoneDrawing(false)
     setStatusZones([])
     setTreeOverrides({})
+    setTreeSourceOverrides({})
     setStatusZoneDraft([])
     setStatusZoneDrawing(false)
     if (savedStageZones.length || persistedStageIds.length) {
@@ -1784,6 +1812,8 @@ export default function DashboardPage() {
                   statusZones={statusZones}
                   statusZoneDrawing={statusZoneDrawing}
                   statusZoneStatus={statusZoneStatus}
+                  statusZoneSourceProbability={statusZoneSourceProbability}
+                  onStatusZoneSourceProbabilityChange={setStatusZoneSourceProbability}
                   statusZoneDraft={statusZoneDraft}
                   statusZoneSelectedCount={statusZoneSelectedCount}
                   statusOptions={STATUS_ZONE_OPTIONS}
@@ -1934,6 +1964,8 @@ export default function DashboardPage() {
           orchardGeojson={orchardGeojson}
           treeOverrides={treeOverrides}
           statusZones={statusZones}
+          treeSourceProbabilityOverrides={resolvedTreeSourceProbabilities}
+          individualSourceProbabilityOverrides={treeSourceOverrides}
           treeStageOverrides={treeStageOverrides}
           phenologyZones={phenologyZones}
           managementZones={managementZones}
@@ -1988,12 +2020,48 @@ export default function DashboardPage() {
                 <div className="mb-4">
                   <p className="mb-1"><strong>Tree #{selectedTree.tree_id}</strong></p>
                   <p className="text-muted small mb-1">
-                    Current status: {(selectedTree.status ?? 'healthy').replace(/_/g, ' ')}
+                    {selectedTree.risk == null ? 'Current status' : 'Status in one run'}: {selectableTreeStatus(selectedTree.status).replace(/_/g, ' ')}
                   </p>
-                  {selectedTree.risk != null && (
+                  {selectedTree.input_status !== selectedTree.status && (
+                    <p className="text-muted small mb-1">Scenario status: {selectableTreeStatus(selectedTree.input_status).replace(/_/g, ' ')}</p>
+                  )}
+                  {selectedTree.display_risk != null && selectedTree.cecid?.eligible !== false && (
                     <p className="text-muted small mb-0">
-                      Risk: {(selectedTree.risk * 100).toFixed(0)}%
+                      <strong>{selectedTree.interpretation?.displayRiskLabel ?? 'Risk'}: {(selectedTree.display_risk * 100).toFixed(0)}%</strong>
                     </p>
+                  )}
+                  {!selectedTree.is_cecid && selectedTree.risk != null && selectedTree.interpretation && (
+                    <>
+                      <p className="text-muted small mb-1">{selectedTree.interpretation.outcomeLabel}</p>
+                      <p className="text-muted small mb-0">{selectedTree.interpretation.displayExplanation}</p>
+                    </>
+                  )}
+                  {selectedTree.initialSource && (
+                    <div className="border rounded p-2 mt-2 small">
+                      <strong>{selectedTree.initialSource.assumed ? 'Assumed source in one run' : 'Known current source'}:</strong>{' '}
+                      {selectedTree.initialSource.label}
+                      <p className="text-muted mb-0">{selectedTree.initialSource.explanation}</p>
+                    </div>
+                  )}
+                  {selectedTree.cecid && (
+                    <>
+                      <p className="text-muted small mb-1">{selectedTree.cecid.outcomeLabel}</p>
+                      <p className="text-muted small mb-0">
+                        {selectedTree.cecid.eligible === false
+                          ? 'This tree is outside the eligible fruitlet stage and contributes no Cecid heat.'
+                          : selectedTree.cecid.displayExplanation}
+                      </p>
+                      <div className="border rounded p-2 mt-2 small">
+                        <p className="mb-1"><strong>Modeled exposure in one run:</strong> {selectedTree.cecid.exposureRouteLabel}</p>
+                        <p className="text-muted mb-0">
+                          Local exposure: {selectedTree.cecid.localExposureHours} h · Outside-neighbor exposure: {selectedTree.cecid.externalExposureHours} h
+                        </p>
+                        <p className="text-muted mb-0">Exposure identifies the pressure received, not the exact source of the infestation.</p>
+                        {selectedTree.cecid_source && (
+                          <p className="mb-0 mt-1"><strong>Soil source (S):</strong> {selectedTree.cecid_source_label || 'Source anchor'}{selectedTree.cecid_source_assumed ? ' (assumed)' : ''}</p>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
                 <button
@@ -2010,8 +2078,10 @@ export default function DashboardPage() {
                   <strong className="text-primary">Override Status</strong>
                 </div>
                 <TreeStatusSelect
-                  defaultValue={selectedTree.status ?? 'healthy'}
-                  onApply={(status) => applyTreeStatus(selectedTree.tree_id, status)}
+                  key={selectedTree.tree_id}
+                  defaultValue={selectableTreeStatus(selectedTree.input_status ?? selectedTree.status)}
+                  defaultSourceProbability={resolvedTreeSourceProbabilities[String(selectedTree.tree_id)] ?? null}
+                  onApply={(status, probability) => applyTreeStatus(selectedTree.tree_id, status, probability)}
                   onCancel={() => setSelectedTree(null)}
                 />
               </div>
@@ -2020,54 +2090,5 @@ export default function DashboardPage() {
         </div>
       )}
     </div>
-  )
-}
-
-function TreeStatusSelect({ defaultValue, onApply, onCancel }) {
-  const [value, setValue] = useState(defaultValue)
-
-  const OPTIONS = [
-    { label: 'Healthy', value: 'healthy' },
-    { label: 'Infected', value: 'infected' },
-    { label: 'Bagged (reduced risk)', value: 'bagged' },
-    { label: 'Dead (removed)', value: 'dead' },
-    { label: 'History Infected', value: 'history_infected' },
-    { label: 'Suspect (monitoring)', value: 'suspect' },
-  ]
-
-  return (
-    <>
-      <select
-        className="form-select mb-3 border-primary"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        style={{ fontSize: '.95rem' }}
-      >
-        {OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      <div className="card bg-light border-0 mb-3">
-        <div className="card-body py-2 px-3">
-          <div className="d-flex align-items-center">
-            <i className="bi bi-info-circle-fill me-2 text-info" />
-            <span className="small">Status changes take effect on the next simulation run.</span>
-          </div>
-          <div className="d-flex align-items-center mt-2">
-            <i className="bi bi-shield-check me-2 text-success" />
-            <span className="small">
-              <strong>Bagged</strong> trees have reduced infection risk;{' '}
-              <strong>Dead</strong> trees are immune to pest spread.
-            </span>
-          </div>
-        </div>
-      </div>
-      <div className="modal-footer bg-light border-top p-2 d-flex gap-2">
-        <button type="button" className="btn btn-outline-secondary px-4" onClick={onCancel}>
-          <i className="bi bi-x-lg me-1" />Cancel
-        </button>
-        <button type="button" className="btn btn-success px-4 ms-2" onClick={() => onApply(value)}>
-          <i className="bi bi-check-lg me-1" />Apply Changes
-        </button>
-      </div>
-    </>
   )
 }

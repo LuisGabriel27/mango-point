@@ -1,0 +1,67 @@
+{
+  "model_version": "2026.10-daylight-light-v16",
+  "hours": 48,
+  "monthly_windows": 4,
+  "runs_per_window_per_engine": 30,
+  "realizations": 4800,
+  "seed": 42,
+  "workers": 4,
+  "grid_cells": 400,
+  "grid_cell_size_m": 5.0,
+  "graph_trees": 194,
+  "graph_max_distance_m": 20,
+  "cecid_habitat_relay": false,
+  "carryover": {
+    "cecid": 0.65,
+    "fruitfly": 0.1
+  },
+  "train_years": [
+    2022,
+    2023,
+    2024
+  ],
+  "test_years": [
+    2025
+  ],
+  "score": "legacy composite with final affected-frequency field for both engines",
+  "legacy_reproduction_limit": "Old export omits realization counts, RNG seed, graph cutoff and tree-risk implementation. Replay declares these explicitly; not a bit-for-bit reproduction.",
+  "initial_conditions": "fresh assumed sources per window, all unbagged, initial rain history zero, no adult antecedent replay, no treatment or external neighbor pressure",
+  "missing_historical_fields": [
+    "cloud cover",
+    "instant GHI",
+    "instant DNI",
+    "measured fruit stage",
+    "source locations",
+    "treatment",
+    "bagging",
+    "neighbor pressure"
+  ],
+  "input_sha256": {
+    "docs\\v16-defense-legacy-reference.csv": "ebc1c3cafb80512c7d00ec7faa9e22c6be39d5bf2ce59ca2f04a022e96c376ee",
+    "data\\hourly_weather.csv": "c746503929c95fd8b75a5f2db6c03d47c25f7670e535c23b71367ef211254d83",
+    "data\\trees.geojson": "115f196f772c4584142e46cf1a00ae80bce3cdfce4c5d246c8ae33ac2e76f040",
+    "data\\guimaras_pest_data_2022_2025.csv": "d9e4a389dbe62932aad6e05989a58f6901f87e639744b2324bf7b1e6208812a0"
+  },
+  "core_sha256": {
+    "core\\config.py": "c8b0a3a27464b0862b239b2087e779f115d768f0b36d3ff9b4ca712c4247d28b",
+    "core\\biological_rules.py": "a7b193a6fde0d06e08fca5582930191329994dd90a55c0c74555daf09e102a0f",
+    "core\\simulation_engine.py": "1fb1eb4b876ae65305e0d3160c2275463156e9ef1896a9a5d1453912b71de1e8",
+    "core\\tree_graph_model.py": "c1d0a566d2f1ab737e7e3d4b0281a509bb3784fe3e7d4b58c38367a83dbf19a0",
+    "core\\cecid_habitat.py": "6cbe19912b6813428d199ff449dc5fbe916556fc6bcef0bd1875816476f9522c",
+    "utils\\daylight.py": "861de0977fd71b37cc58fa0f0d569b4ed2c938eeec78de7dedae656ffc8a9b1b",
+    "validation\\validation_runner.py": "2550c48e6a464e50c54146b1052d4f0e5688574fccedbd99a92598be81e885d2",
+    "validation\\calibration.py": "c1eb6908f4a6868c2109e41e7121e1b1d821588a0b892bd63fee8f81106f080f"
+  },
+  "started_utc": "2026-10-10T02:30:53.617334+00:00",
+  "completed_utc": "2026-10-10T02:38:16.480648+00:00",
+  "python_version": "3.11.9",
+  "numpy_version": "2.4.2",
+  "pandas_version": "3.0.1",
+  "completed_case_engine_pairs": 40,
+  "completed_weather_windows": 160,
+  "implementation_finalization_note": "Report exports and stricter failure checks were finalized after the simulations; recorded model, scoring and calibration source hashes remained unchanged.",
+  "finalized_replay_source_sha256": {
+    "validation\\defense_replay.py": "aa7eb082e223c06ae472a9ed20d8e14c7f4dbd6623106020687a57e110c7da0d",
+    "scripts\\run_defense_replay.py": "e1e5e6199236ae2d1d1d89b35304d1a33a683957a36a50d73337b847a56e36ae"
+  }
+}

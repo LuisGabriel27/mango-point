@@ -3,6 +3,62 @@ import RiskMap from './RiskMap'
 import { buildSimulationReport, reportFilename, reportPercent, simulationReportHtml } from '../utils/simulationReport'
 import { formatPhp } from '../utils/economicImpact'
 
+const RECORD_FIELDS = [
+  { name: 'reference', label: 'Report reference', maxLength: 120 },
+  { name: 'preparedBy', label: 'Prepared by', maxLength: 160 },
+  { name: 'organization', label: 'Organization / office', maxLength: 200 },
+  { name: 'reviewedBy', label: 'Reviewed by', maxLength: 160 },
+]
+const NOTE_FIELDS = [
+  { name: 'fieldNotes', label: 'Field notes', maxLength: 3000 },
+  { name: 'plannedActions', label: 'Planned actions / follow-up', maxLength: 3000 },
+]
+const EMPTY_RECORD_DETAILS = {
+  reference: '', preparedBy: '', organization: '', reviewedBy: '', fieldNotes: '', plannedActions: '',
+}
+
+export function ReportRecordFields({ recordDetails, onChange, disabled = false }) {
+  const update = (name, maxLength) => (event) => {
+    const nextValue = event.target.value.slice(0, maxLength)
+    onChange((current) => ({ ...current, [name]: nextValue }))
+  }
+  return <>
+    <div className="simulation-report-fields">
+      {RECORD_FIELDS.map(({ name, label, maxLength }) => (
+        <label key={name} className="simulation-report-field" htmlFor={`report-${name}`}>
+          <span>{label}</span>
+          <input id={`report-${name}`} name={name} type="text" className="form-control form-control-sm"
+            maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
+            onChange={update(name, maxLength)} />
+        </label>
+      ))}
+    </div>
+    <div className="simulation-report-note-fields">
+      {NOTE_FIELDS.map(({ name, label, maxLength }) => (
+        <label key={name} className="simulation-report-field" htmlFor={`report-${name}`}>
+          <span>{label}</span>
+          <textarea id={`report-${name}`} name={name} className="form-control form-control-sm" rows={3}
+            maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
+            onChange={update(name, maxLength)} />
+        </label>
+      ))}
+    </div>
+  </>
+}
+
+export function handleReportTabKey(event, dialog, activeElement) {
+  if (event.key !== 'Tab') return
+  const controls = [...dialog.querySelectorAll('button:not([disabled]), select:not([disabled]), input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), [href]')]
+    .filter((element) => element.offsetParent !== null)
+  const first = controls[0], last = controls.at(-1)
+  if (!first) { event.preventDefault(); return }
+  if (event.shiftKey && (activeElement === first || activeElement === dialog)) {
+    event.preventDefault(); last.focus()
+  } else if (!event.shiftKey && activeElement === last) {
+    event.preventDefault(); first.focus()
+  }
+}
+
 async function loadReportLogo() {
   try {
     const response = await fetch('/brand/mangopoint-logo-v2.png')
@@ -21,14 +77,15 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
   const [selection, setSelection] = useState('final')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [recordDetails, setRecordDetails] = useState(EMPTY_RECORD_DETAILS)
   const dialogRef = useRef(null)
   const mapRef = useRef(null)
   const activeRef = useRef(true)
   const logoRef = useRef(null)
   const prepared = useMemo(() => {
-    try { return { report: buildSimulationReport(run, { orchard, selection, displayed }) } }
+    try { return { report: buildSimulationReport(run, { orchard, selection, displayed, recordDetails }) } }
     catch (failure) { return { error: failure.message } }
-  }, [run, orchard, selection, displayed])
+  }, [run, orchard, selection, displayed, recordDetails])
   const report = prepared.report
 
   useEffect(() => {
@@ -40,16 +97,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
     dialogRef.current?.focus()
     const handleKeys = (event) => {
       if (event.key === 'Escape') onClose()
-      if (event.key !== 'Tab') return
-      const controls = [...dialogRef.current.querySelectorAll('button:not([disabled]), select:not([disabled]), [href]')]
-        .filter((element) => element.offsetParent !== null)
-      const first = controls[0], last = controls.at(-1)
-      if (!first) { event.preventDefault(); return }
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
-        event.preventDefault(); last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault(); first.focus()
-      }
+      handleReportTabKey(event, dialogRef.current, document.activeElement)
     }
     document.addEventListener('keydown', handleKeys)
     return () => {
@@ -110,7 +158,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
     <div className="orchard-modal-backdrop simulation-report-backdrop">
       <section ref={dialogRef} className="orchard-modal-dialog simulation-report-dialog" role="dialog" aria-modal="true" aria-labelledby="simulation-report-title" tabIndex={-1}>
         <header className="orchard-modal-header">
-          <div><h2 id="simulation-report-title" className="orchard-modal-title">Print simulation report</h2><div className="small text-muted">{report?.orchardName || orchard?.name}</div></div>
+          <div><h2 id="simulation-report-title" className="orchard-modal-title">Prepare simulation report</h2><div className="small text-muted">{report?.orchardName || orchard?.name}</div></div>
           <button type="button" className="btn btn-sm btn-light" aria-label="Close report" onClick={onClose}><i className="bi bi-x-lg" /></button>
         </header>
         <div className="simulation-report-body">
@@ -124,8 +172,20 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
               </label>
               <span className="small text-muted">{report.pestLabel} · {report.hours} h simulation</span>
             </div>
-            <p className="small mb-2">Includes the map, legend, zones, results and simulation settings. Choose <strong>Save as PDF</strong> in the print dialog, or download a report you can open offline.</p>
-            <div className="simulation-report-map">
+            <p className="simulation-report-intro">An A4 portrait record of the orchard map, modeled results, source assumptions and simulation settings. Add the record details below, then choose <strong>Save as PDF</strong> in the print dialog.</p>
+            <section className="simulation-report-record" aria-labelledby="simulation-report-record-title">
+              <div className="simulation-report-section-heading">
+                <h3 id="simulation-report-record-title">Record details</h3>
+                <span>Optional · included in this export</span>
+              </div>
+              <ReportRecordFields recordDetails={recordDetails} onChange={setRecordDetails} disabled={busy} />
+            </section>
+            <section className="simulation-report-preview" aria-labelledby="simulation-report-preview-title">
+              <div className="simulation-report-section-heading">
+                <h3 id="simulation-report-preview-title">Map and results</h3>
+                <span>{report.label}</span>
+              </div>
+              <div className="simulation-report-map">
               <RiskMap
                 key={`${report.runId}:${selection}`}
                 ref={mapRef}
@@ -143,19 +203,22 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
                 pestType={report.pest}
                 cecidMapMode={report.mapMode}
               />
-            </div>
-            <div className="small mt-2"><strong>{report.label}</strong> · {report.mapDescription} · Maximum map risk: {reportPercent(report.peak)} · Infested {report.unit}: {report.infested ?? 'Not recorded'}</div>
+              </div>
+            <div className="small mt-2"><strong>{report.label}</strong> · {report.mapDescription} · Maximum map {report.mapMode === 'likelihood' ? 'frequency' : 'risk'}: {reportPercent(report.peak)} · Infested {report.unit}{report.mapMode === 'likelihood' ? ' in one run' : ''}: {report.infested ?? 'Not recorded'}</div>
+            {Number(report.uncertainty?.runs) > 1 && <p className="small text-muted mb-0">{report.uncertainty.runs} runs: {report.uncertainty.minimum}–{report.uncertainty.maximum} infested {report.unit}, median {report.uncertainty.median}. Tree states and source badges describe one run; across-runs shading shows infestation frequency.</p>}
             {report.economic && (
-              <div className="alert alert-success py-2 mt-2 mb-0 small">
-                <strong>Potential savings with recommendations: {formatPhp(report.economic.estimated_savings)}</strong>
-                <span className="d-block">Projected loss {formatPhp(report.economic.projected_loss)} · remaining loss {formatPhp(report.economic.remaining_loss)} · assumes {reportPercent(report.economic.recommendation_effectiveness)} of damage is prevented.</span>
+              <div className="simulation-report-planning-estimate">
+                <strong>Economic planning estimate</strong>
+                <span>Damage exposure: {formatPhp(report.economic.projected_loss)} · modeled loss avoided: {formatPhp(report.economic.estimated_savings)} · remaining exposure: {formatPhp(report.economic.remaining_loss)}.</span>
+                <span>Assumes {reportPercent(report.economic.recommendation_effectiveness)} of damage is prevented. Treatment and labor costs are excluded; actual outcomes depend on field conditions.</span>
               </div>
             )}
+            </section>
           </>}
           {(error || prepared.error) && <div className="alert alert-danger mt-2 mb-0" role="alert">{error || prepared.error}</div>}
         </div>
         <footer className="simulation-report-actions">
-          <span className="small text-muted me-auto" role="status">{busy ? 'Preparing the map and report…' : 'A4 landscape · includes space for manager’s notes'}</span>
+          <span className="small text-muted me-auto" role="status">{busy ? 'Preparing the map and report…' : 'A4 portrait · orchard simulation record'}</span>
           <button type="button" className="btn btn-outline-success" disabled={!report || busy} onClick={() => exportReport('download')}>Download offline report</button>
           <button type="button" className="btn btn-success" disabled={!report || busy} onClick={() => exportReport('print')}><i className="bi bi-printer me-1" />Print / Save PDF</button>
         </footer>

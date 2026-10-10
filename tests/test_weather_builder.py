@@ -548,7 +548,7 @@ class TestCecidSuitabilityRedesign:
         assert heavy_rain["status"] == "limited"
         assert heavy_rain["drying_score"] == 0.0
         assert midday["status"] == "closed"
-        assert "outside solar dawn/dusk window" in midday["hard_reasons"]
+        assert "outside solar dawn/dusk or supported dim/cloudy daylight activity" in midday["hard_reasons"]
         assert wrong_stage["status"] == "closed"
         assert "fruitlet stage required" in wrong_stage["hard_reasons"]
 

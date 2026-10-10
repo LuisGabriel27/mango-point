@@ -32,12 +32,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
 
 
-def _cecid_uncertainty_seed(master_seed: int, realization_index: int) -> int:
+def _uncertainty_seed(master_seed: int, realization_index: int) -> int:
     """Derive replay-stable seeds without relying on Python's salted hash."""
     value = int(master_seed) & 0x7FFFFFFF
     for _ in range(max(0, int(realization_index))):
         value = (1103515245 * value + 12345) & 0x7FFFFFFF
     return value
+
+
+def _cecid_uncertainty_seed(master_seed: int, realization_index: int) -> int:
+    """Compatibility alias for saved Cecid scenarios and existing integrations."""
+    return _uncertainty_seed(master_seed, realization_index)
 
 
 def _linear_percentile(values: List[int], fraction: float) -> float:
@@ -51,7 +56,7 @@ def _linear_percentile(values: List[int], fraction: float) -> float:
     return float(ordered[lower] * (1.0 - weight) + ordered[upper] * weight)
 
 
-def _summarize_cecid_uncertainty_samples(
+def _summarize_uncertainty_samples(
     samples: List[Dict[str, Any]],
     map_seed: int,
 ) -> Dict[str, Any]:
@@ -60,13 +65,31 @@ def _summarize_cecid_uncertainty_samples(
     assumed_sources = [
         int(sample.get("assumed_source_count") or 0) for sample in samples
     ]
+    active_sources = [
+        int(sample.get("active_source_count") or 0) for sample in samples
+    ]
+    known_sources = [int(sample.get("known_source_count") or 0) for sample in samples]
+    presence_candidates = [
+        int(sample.get("uncertain_source_candidate_count") or 0) for sample in samples
+    ]
     tree_counts: Dict[str, int] = {}
     for sample in samples:
+        for tree_id in sample.get("tree_ids") or []:
+            tree_counts.setdefault(str(tree_id), 0)
         for tree_id in set(sample.get("infested_tree_ids") or []):
             key = str(tree_id)
             tree_counts[key] = tree_counts.get(key, 0) + 1
     run_count = len(samples)
-    has_assumed_sources = any(value > 0 for value in assumed_sources)
+    has_assumed_placement = any(
+        int(sample.get("assumed_placement_source_count", sample.get("assumed_source_count")) or 0) > 0
+        for sample in samples
+    )
+    has_presence_uncertainty = any(value > 0 for value in presence_candidates)
+    components = ["stochastic_establishment"]
+    if has_presence_uncertainty:
+        components.insert(0, "uncertain_source_presence")
+    if has_assumed_placement:
+        components.insert(0, "assumed_source_placement")
     return {
         "runs": len(samples),
         "map_seed": int(map_seed),
@@ -78,11 +101,27 @@ def _summarize_cecid_uncertainty_samples(
         "maximum": max(counts, default=0),
         "assumed_source_count_min": min(assumed_sources, default=0),
         "assumed_source_count_max": max(assumed_sources, default=0),
+        "active_source_count_min": min(active_sources, default=0),
+        "active_source_count_max": max(active_sources, default=0),
+        "known_source_count_min": min(known_sources, default=0),
+        "known_source_count_max": max(known_sources, default=0),
+        "uncertain_source_candidate_count": max(presence_candidates, default=0),
         "uncertainty_type": (
-            "assumed_source_placement_and_stochastic_establishment"
-            if has_assumed_sources
-            else "stochastic_establishment"
+            "source_presence_and_stochastic_establishment"
+            if has_presence_uncertainty else (
+                "assumed_source_placement_and_stochastic_establishment"
+                if has_assumed_placement else "stochastic_establishment"
+            )
         ),
+        "uncertainty_components": components,
+        "source_locations_varied": len({
+            tuple(sorted(set(str(tree_id) for tree_id in (sample.get("source_tree_ids") or []))))
+            for sample in samples
+        }) > 1,
+        "source_placement_modes": sorted({
+            str(sample["source_placement_mode"])
+            for sample in samples if sample.get("source_placement_mode")
+        }),
         "samples": samples,
         "tree_infestation_counts": dict(sorted(tree_counts.items())),
         "tree_infestation_frequencies": {
@@ -90,13 +129,98 @@ def _summarize_cecid_uncertainty_samples(
             for tree_id, count in sorted(tree_counts.items())
         } if run_count else {},
         "interpretation": (
-            "Scenario range from deterministic realizations of the same inputs; "
-            "it is not a calibrated confidence interval."
+            "Conditional infestation frequency and scenario range across replay-stable "
+            "realizations with weather, geometry, treatments, and per-tree stages held "
+            "fixed. It is not a calibrated confidence interval or field probability."
         ),
     }
 
 
-async def _attach_cecid_uncertainty_summary(
+def _summarize_cecid_uncertainty_samples(
+    samples: List[Dict[str, Any]],
+    map_seed: int,
+) -> Dict[str, Any]:
+    """Compatibility alias; the summary now applies to either pest."""
+    return _summarize_uncertainty_samples(samples, map_seed)
+
+
+def _requested_uncertainty_runs(request: SimulationRequest) -> int:
+    """An explicit generic setting wins over the legacy Cecid-only field."""
+    if request.uncertainty_runs is not None:
+        return int(request.uncertainty_runs)
+    if request.pest_type.value == "cecid":
+        return int(request.cecid_uncertainty_runs)
+    return 1
+
+
+def _uncertainty_sample(response: SimulationResponse) -> Dict[str, Any]:
+    """Use declared source records, including inactive uncertainty candidates."""
+    metadata = response.metadata
+    strategy = str(metadata.initial_seed_strategy or "")
+    sources = metadata.initial_sources
+    if sources is not None:
+        active = [source for source in sources if source.get("active", True)]
+        assumed = [source for source in active if source.get("assumed", False)]
+        uncertain = [
+            source for source in sources
+            if source.get("assumed", False)
+            and 0.0 < float(source.get("probability", 1.0)) < 1.0
+        ]
+        source_count = len(active)
+        assumed_count = len(assumed)
+        fallback_count = sum(source.get("origin") == "assumed_fallback" for source in assumed)
+        source_ids = [str(source["tree_id"]) for source in active if source.get("tree_id") is not None]
+    elif response.pest_type.value == "cecid":
+        active = metadata.cecid_sources or []
+        source_count = int(metadata.cecid_source_count)
+        assumed_count = int(metadata.cecid_assumed_source_count)
+        fallback_count = assumed_count
+        uncertain = []
+        source_ids = [str(source["tree_id"]) for source in active if source.get("tree_id") is not None]
+    else:
+        # Older Fruit Fly results predate source records. Automatic placement is
+        # assumed; imported/manual active infection is observed/fixed.
+        source_count = int(metadata.initial_infected_count or metadata.initial_seed_count)
+        assumed_count = source_count if strategy == "random_susceptible" or strategy.startswith("neighbor_edge") else 0
+        fallback_count = assumed_count
+        uncertain = []
+        source_ids = [str(tree_id) for tree_id in (metadata.initial_seed_tree_ids or [])]
+    if fallback_count and "neighbor_edge" in strategy:
+        placement_mode = "fixed_assumed_neighbor_edge_locations"
+        placement_count = 0
+    elif fallback_count:
+        placement_mode = "random_fallback_locations"
+        placement_count = fallback_count
+    else:
+        placement_mode = "recorded_source_locations"
+        placement_count = 0
+    infested_ids = sorted({
+        str(properties["tree_id"])
+        for feature in (response.risk_geojson or {}).get("features", [])
+        if (properties := feature.get("properties") or {}).get("tree_id") is not None
+        and str(properties.get("state", "")).lower() == "infested"
+    })
+    return {
+        "seed": int(response.random_seed),
+        "n_infested_final": int(response.n_infested_final),
+        "source_count": source_count,
+        "active_source_count": source_count,
+        "known_source_count": source_count - assumed_count,
+        "assumed_source_count": assumed_count,
+        "assumed_placement_source_count": placement_count,
+        "source_placement_mode": placement_mode,
+        "uncertain_source_candidate_count": len(uncertain),
+        "source_tree_ids": sorted(set(source_ids)),
+        "tree_ids": sorted({
+            str(properties["tree_id"])
+            for feature in (response.risk_geojson or {}).get("features", [])
+            if (properties := feature.get("properties") or {}).get("tree_id") is not None
+        }),
+        "infested_tree_ids": infested_ids,
+    }
+
+
+async def _attach_uncertainty_summary(
     result: SimulationResponse,
     request: SimulationRequest,
     weather_data: Optional[List[Dict[str, Any]]],
@@ -104,39 +228,30 @@ async def _attach_cecid_uncertainty_summary(
     weather_provenance: Optional[Dict[str, Any]],
     orchard_coordinates: Dict[str, float],
 ) -> None:
-    """Run additional, unpersisted Cecid realizations for an honest range."""
-    requested_runs = int(getattr(request, "cecid_uncertainty_runs", 1) or 1)
-    if request.pest_type.value != "cecid" or requested_runs <= 1:
+    """Repeat either pest under the same resolved scenario, retaining one playback."""
+    requested_runs = _requested_uncertainty_runs(request)
+    if requested_runs <= 1:
         return
 
-    def sample_from(response: SimulationResponse) -> Dict[str, Any]:
-        sources = response.metadata.cecid_sources or []
-        infested_tree_ids = []
-        for feature in (response.risk_geojson or {}).get("features", []):
-            properties = feature.get("properties") or {}
-            tree_id = properties.get("tree_id")
-            if tree_id is not None and str(properties.get("state", "")).lower() == "infested":
-                infested_tree_ids.append(str(tree_id))
-        return {
-            "seed": int(response.random_seed),
-            "n_infested_final": int(response.n_infested_final),
-            "source_count": int(response.metadata.cecid_source_count),
-            "assumed_source_count": int(response.metadata.cecid_assumed_source_count),
-            "source_tree_ids": [
-                str(source.get("tree_id"))
-                for source in sources
-                if source.get("tree_id") is not None
-            ],
-            "infested_tree_ids": sorted(set(infested_tree_ids)),
-        }
+    # Quadrant assignments deliberately contain a seeded stage mix. Changing
+    # this mix in replicas would confound source/outcome uncertainty with a
+    # different orchard. Pin only stages, never the sampled infection states.
+    fixed_stages = dict(request.tree_stage_overrides or {})
+    for feature in (result.risk_geojson or {}).get("features", []):
+        properties = feature.get("properties") or {}
+        tree_id, stage = properties.get("tree_id"), properties.get("stage")
+        if tree_id is not None and stage in {"dormant", "flowering", "fruitlet", "mature"}:
+            fixed_stages[str(tree_id)] = stage
 
-    samples = [sample_from(result)]
+    samples = [_uncertainty_sample(result)]
     for index in range(1, requested_runs):
-        replica_seed = _cecid_uncertainty_seed(result.random_seed, index)
+        replica_seed = _uncertainty_seed(result.random_seed, index)
         replica_request = request.model_copy(update={
             "random_seed": replica_seed,
+            "uncertainty_runs": 1,
             "cecid_uncertainty_runs": 1,
             "include_time_series": False,
+            "tree_stage_overrides": fixed_stages or None,
         })
         replica = await simulation_service.run_simulation(
             request=replica_request,
@@ -145,13 +260,18 @@ async def _attach_cecid_uncertainty_summary(
             weather_provenance=weather_provenance,
             orchard_coordinates=orchard_coordinates,
         )
-        samples.append(sample_from(replica))
+        samples.append(_uncertainty_sample(replica))
 
-    summary = _summarize_cecid_uncertainty_samples(
+    summary = _summarize_uncertainty_samples(
         samples,
         map_seed=result.random_seed,
     )
-    result.metadata.cecid_uncertainty_summary = summary
+    summary["pest_type"] = request.pest_type.value
+    summary["representative_playback_only"] = True
+    summary["fixed_tree_stage_count"] = len(fixed_stages)
+    result.metadata.uncertainty_summary = summary
+    if request.pest_type.value == "cecid":
+        result.metadata.cecid_uncertainty_summary = summary
 
     frequencies = summary["tree_infestation_frequencies"]
     counts_by_tree = summary["tree_infestation_counts"]
@@ -176,6 +296,22 @@ async def _attach_cecid_uncertainty_summary(
         annotate_geojson(snapshot.risk_geojson)
     for timestep in result.timesteps:
         annotate_geojson(timestep.geojson)
+
+
+async def _attach_cecid_uncertainty_summary(
+    result: SimulationResponse,
+    request: SimulationRequest,
+    weather_data: Optional[List[Dict[str, Any]]],
+    weather_context: Optional[List[Dict[str, Any]]],
+    weather_provenance: Optional[Dict[str, Any]],
+    orchard_coordinates: Dict[str, float],
+) -> None:
+    """Compatibility entry point for Cecid-only callers."""
+    if request.pest_type.value == "cecid":
+        await _attach_uncertainty_summary(
+            result, request, weather_data, weather_context,
+            weather_provenance, orchard_coordinates,
+        )
 
 
 def _orchard_id_from_geojson(
@@ -498,6 +634,7 @@ def _kv_rows(data: Dict[str, Any]) -> List[List[Any]]:
 def _run_summary_row(run: SimulationRun) -> Dict[str, Any]:
     metadata = run.result_metadata or {}
     request_payload = run.request_payload or {}
+    uncertainty = metadata.get("uncertainty_summary") or metadata.get("cecid_uncertainty_summary") or {}
     pest_value = run.pest_type.value if hasattr(run.pest_type, "value") else run.pest_type
     return {
         "run_id": run.run_id,
@@ -515,10 +652,18 @@ def _run_summary_row(run: SimulationRun) -> Dict[str, Any]:
         "weather_source": run.weather_source,
         "orchard_stage": metadata.get("orchard_stage") or request_payload.get("orchard_stage"),
         "days_since_flowering": metadata.get("days_since_flowering") or request_payload.get("days_since_flowering"),
-        "neighbor_threat": metadata.get("neighbor_threat") or request_payload.get("neighbor_threat"),
-        "neighbor_direction": metadata.get("neighbor_direction") or request_payload.get("neighbor_direction"),
+        "neighbor_threat": metadata.get("neighbor_threat", request_payload.get("neighbor_threat")),
+        "neighbor_direction": metadata.get("neighbor_direction", request_payload.get("neighbor_direction")),
+        "neighbor_sources": metadata.get("neighbor_sources") if metadata.get("neighbor_sources") is not None else request_payload.get("neighbor_sources"),
         "initial_seed_strategy": metadata.get("initial_seed_strategy"),
         "initial_seed_count": metadata.get("initial_seed_count"),
+        "uncertainty_runs": uncertainty.get("runs", 1),
+        "uncertainty_type": uncertainty.get("uncertainty_type"),
+        "infested_across_runs_minimum": uncertainty.get("minimum"),
+        "infested_across_runs_median": uncertainty.get("median"),
+        "infested_across_runs_maximum": uncertainty.get("maximum"),
+        "history_source_probability": request_payload.get("history_source_probability"),
+        "suspect_source_probability": request_payload.get("suspect_source_probability"),
         "treatment_summary": metadata.get("treatment_summary"),
         "time_series_frames": len(run.time_series or []),
     }
@@ -586,6 +731,7 @@ async def run_simulation(
             build_manual_antecedent_weather,
             build_weather_series,
             compute_gate_diagnostics,
+            resolve_initial_soil_moisture,
         )
 
         manual_series = build_weather_series(request)
@@ -623,7 +769,7 @@ async def run_simulation(
             weather_provenance=weather_provenance,
             orchard_coordinates={"lat": lat, "lon": lon},
         )
-        await _attach_cecid_uncertainty_summary(
+        await _attach_uncertainty_summary(
             result=result,
             request=request,
             weather_data=weather_data,
@@ -643,6 +789,7 @@ async def run_simulation(
                     float(entry.get("rainfall_mm", 0.0)) for entry in weather_context
                 ],
                 cecid_rainfall_threshold_mm=request.cecid_rainfall_threshold_mm,
+                cecid_initial_soil_moisture_score=resolve_initial_soil_moisture(request),
                 fruit_fly_temp_threshold_c=request.fruit_fly_temp_threshold_c,
                 latitude=lat,
                 longitude=lon,
@@ -1167,8 +1314,11 @@ async def export_simulation_runs(
         "run_id", "started_at", "completed_at", "orchard_id", "pest_type",
         "simulation_mode", "hours", "status", "peak_risk", "peak_risk_percent",
         "cells_at_risk", "n_infested_final", "weather_source", "orchard_stage",
-        "days_since_flowering", "neighbor_threat", "neighbor_direction",
+        "days_since_flowering", "neighbor_threat", "neighbor_direction", "neighbor_sources",
         "initial_seed_strategy", "initial_seed_count", "treatment_summary",
+        "uncertainty_runs", "uncertainty_type", "infested_across_runs_minimum",
+        "infested_across_runs_median", "infested_across_runs_maximum",
+        "history_source_probability", "suspect_source_probability",
         "time_series_frames",
     ]
     filter_rows = [
@@ -1249,6 +1399,8 @@ async def export_simulation_run(
     feature_rows = [[
         "index", "tree_id", "risk", "state", "stage", "row", "col",
         "lon", "lat", "geometry_type",
+        "ensemble_infestation_frequency", "ensemble_infestation_count", "ensemble_runs",
+        "initial_source", "initial_source_assumed", "initial_source_origin", "initial_source_label",
     ]]
     for idx, feature in enumerate(risk_features[:10000], start=1):
         props = feature.get("properties") or {}
@@ -1264,9 +1416,16 @@ async def export_simulation_run(
             centroid[0] if centroid else None,
             centroid[1] if centroid else None,
             (feature.get("geometry") or {}).get("type"),
+            props.get("ensemble_infestation_frequency"),
+            props.get("ensemble_infestation_count"),
+            props.get("ensemble_runs"),
+            props.get("initial_source"),
+            props.get("initial_source_assumed"),
+            props.get("initial_source_origin"),
+            props.get("initial_source_label"),
         ])
     if len(feature_rows) == 1:
-        feature_rows.append(["No final risk features saved", None, None, None, None, None, None, None, None, None])
+        feature_rows.append(["No final risk features saved"] + [None] * (len(feature_rows[0]) - 1))
 
     filename = f"mangopoint_simulation_{run.run_id}.xlsx"
     return _xlsx_response(

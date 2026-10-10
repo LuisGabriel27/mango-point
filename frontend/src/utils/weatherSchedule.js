@@ -1,8 +1,11 @@
+import { DAYLIGHT_WEATHER_FIELDS, daylightLightComponents, normalizeDaylightWeather } from './daylightLight.js'
+
 export const WEATHER_DEFAULTS = {
   temperature_c: 30,
   wind_speed_ms: 2,
   wind_dir_deg: 90,
   rainfall_mm: 0,
+  cloud_cover_pct: 0,
 }
 
 // Canonical frontend mirror of core/config.py + core/cecid_habitat.py.
@@ -19,6 +22,7 @@ export const CECID_WEATHER_SPEC = Object.freeze({
   wind_direction_max_assist: 0.35,
   calm_wind_max_ms: 3,
   favorable_threshold: 0.25,
+  cloud_day_activity_max: 0.6,
 })
 
 export function cecidWindActivity(windSpeedMs) {
@@ -81,6 +85,11 @@ function clone(value) {
 }
 
 export const WEATHER_VALUE_PRESETS = {
+  cloud_cover_pct: [
+    { label: 'Clear', value: 0 },
+    { label: 'Partly cloudy', value: 50 },
+    { label: 'Overcast', value: 100 },
+  ],
   temperature_c: [
     { label: 'Cool', value: 22 },
     { label: 'Warm', value: 27 },
@@ -122,7 +131,7 @@ export function createConstantWeatherTimeline(weather = {}, hours = 48, startDat
 }
 
 export function createDefaultWeatherTimeline() {
-  return { ...createConstantWeatherTimeline(), enabled: false }
+  return { ...createConstantWeatherTimeline({ daylight_condition: 'bright_sunshine', daylight_condition_basis: 'assumed' }), enabled: false }
 }
 
 export function customWeatherBlocks(timeline, hours = 48) {
@@ -180,6 +189,9 @@ export function customWeatherRequestFields(timeline, hours, pestType) {
 
 export function restoreCustomWeatherTimeline(params = {}) {
   const saved = params.dashboard_state?.weather_timeline ?? params.weather_timeline
+  const soilContext = params.cecid_initial_soil_moisture_score != null
+    ? { preset: 'moist', initial_moisture_score: Math.max(0, Math.min(1, finiteNumber(params.cecid_initial_soil_moisture_score, 1))) }
+    : params.manual_soil_context || saved?.manual_soil_context || { preset: 'dry' }
   const hours = Math.max(1, Math.min(168, Number(params.hours) || 48))
   if (params.manual_weather_series?.length) {
     let previous = { ...WEATHER_DEFAULTS }
@@ -192,7 +204,7 @@ export function restoreCustomWeatherTimeline(params = {}) {
         ...Object.fromEntries(Object.entries(entry).filter(([, value]) => value != null)),
       })
       const last = blocks.at(-1)
-      if (last && Object.keys(WEATHER_DEFAULTS).every((key) => last[key] === previous[key])) {
+      if (last && [...Object.keys(WEATHER_DEFAULTS), ...DAYLIGHT_WEATHER_FIELDS].every((key) => last[key] === previous[key])) {
         last.end_hour = hour + 1
       } else {
         blocks.push({ ...previous, start_hour: hour, end_hour: hour + 1 })
@@ -202,7 +214,7 @@ export function restoreCustomWeatherTimeline(params = {}) {
       ...createConstantWeatherTimeline({}, hours), ...saved,
       enabled: true, mode: 'advanced', coverage_mode: 'scheduled', advanced_blocks: blocks,
       start_datetime: params.manual_weather_start || saved?.start_datetime || '',
-      manual_soil_context: params.manual_soil_context || saved?.manual_soil_context || { preset: 'dry' },
+      manual_soil_context: soilContext,
     }
   }
   if (saved?.enabled || params.manual_weather_blocks?.length) {
@@ -220,13 +232,13 @@ export function restoreCustomWeatherTimeline(params = {}) {
         ? buildGuidedBlocks(saved.guided_phases || DEFAULT_GUIDED_PHASES, 168)
         : saved?.advanced_blocks || []),
       start_datetime: params.manual_weather_start || saved?.start_datetime || '',
-      manual_soil_context: params.manual_soil_context || saved?.manual_soil_context || { preset: 'dry' },
+      manual_soil_context: soilContext,
     }
   }
   if (params.manual_weather) {
     return {
       ...createConstantWeatherTimeline(params.manual_weather, hours, params.manual_weather_start),
-      manual_soil_context: params.manual_soil_context || { preset: 'dry' },
+      manual_soil_context: soilContext,
     }
   }
   return null
@@ -292,10 +304,16 @@ function finiteNumber(value, fallback) {
 
 function normalizeWeatherValues(value = {}) {
   return {
+    ...normalizeDaylightWeather(value),
     temperature_c: finiteNumber(value.temperature_c, WEATHER_DEFAULTS.temperature_c),
     wind_speed_ms: Math.max(0, finiteNumber(value.wind_speed_ms, WEATHER_DEFAULTS.wind_speed_ms)),
     wind_dir_deg: ((finiteNumber(value.wind_dir_deg ?? value.wind_direction_deg, WEATHER_DEFAULTS.wind_dir_deg) % 360) + 360) % 360,
     rainfall_mm: Math.max(0, finiteNumber(value.rainfall_mm, WEATHER_DEFAULTS.rainfall_mm)),
+    // Preserve omitted cloud cover in saved requests. Manual weather defaults
+    // to clear conditions on the backend; an edited cloud value stays explicit.
+    ...(value.cloud_cover_pct != null ? {
+      cloud_cover_pct: Math.max(0, Math.min(100, finiteNumber(value.cloud_cover_pct, 0))),
+    } : {}),
   }
 }
 
@@ -407,12 +425,11 @@ export function buildSoilRainContext(context = null, explicitPrefix = null, hist
 }
 
 function guimarasDateAt(startDatetime, hourIndex) {
-  const match = String(startDatetime || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})(?::(\d{2}))?/)
-  if (!match) return null
-  const [, year, month, day, hour, minute = '0'] = match
-  return new Date(Date.UTC(
-    Number(year), Number(month) - 1, Number(day), Number(hour) - 8 + hourIndex, Number(minute),
-  ))
+  const text = String(startDatetime || '')
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(text)) return null
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}+08:00`
+  const value = new Date(zoned)
+  return Number.isNaN(value.getTime()) ? null : new Date(value.getTime() + hourIndex * 3600000)
 }
 
 function normalizeDegrees(value) {
@@ -478,7 +495,13 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
     72,
   )
   let maxRain24h = 0
-  let maxWetness = soilWetness(rainHistory)
+  const directMoisture = options.cecid_initial_soil_moisture_score
+  const initialMoisture = directMoisture != null
+    ? Math.max(0, Math.min(1, finiteNumber(directMoisture, 1)))
+    : options.manual_soil_context?.preset === 'moist'
+      ? Math.max(0, Math.min(1, finiteNumber(options.manual_soil_context.initial_moisture_score, 1)))
+      : null
+  let maxWetness = initialMoisture != null ? initialMoisture * threshold : soilWetness(rainHistory)
   let hasDryCrepuscularWindow = false
   let hasCalmCrepuscularWindow = false
   let hasCalmHour = false
@@ -512,7 +535,10 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
     if (rainHistory.length > 72) rainHistory.shift()
     const rain24h = rainHistory.slice(-24).reduce((sum, value) => sum + value, 0)
     maxRain24h = Math.max(maxRain24h, rain24h)
-    const wetness = soilWetness(rainHistory)
+    const wetness = initialMoisture != null
+      ? initialMoisture * threshold * 2 ** (-index / CECID_WEATHER_SPEC.soil_wetness_half_life_hours)
+        + soilWetness(rainHistory.slice(-(index + 1)))
+      : soilWetness(rainHistory)
     maxWetness = Math.max(maxWetness, wetness)
     const moistureScore = Math.min(1, wetness / Math.max(threshold, Number.EPSILON))
     const dryingScore = entry.rainfall_mm <= CECID_WEATHER_SPEC.drying_full_score_rain_mm
@@ -522,7 +548,6 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
         : (CECID_WEATHER_SPEC.drying_zero_score_rain_mm - entry.rainfall_mm)
           / (CECID_WEATHER_SPEC.drying_zero_score_rain_mm - CECID_WEATHER_SPEC.drying_full_score_rain_mm)
     const windScore = cecidWindActivity(entry.wind_speed_ms)
-    const suitability = moistureScore * dryingScore * windScore
 
     const currentDate = guimarasDateAt(startDatetime, index)
     const solar = solarTimesForGuimaras(
@@ -533,7 +558,17 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
     const crepuscular = solar
       ? Math.min(Math.abs(currentDate - solar.sunrise), Math.abs(currentDate - solar.sunset)) <= 3600000
       : (entry.hour_of_day >= 5 && entry.hour_of_day < 7) || (entry.hour_of_day >= 17 && entry.hour_of_day < 19)
-    const status = !crepuscular
+    const daylight = solar
+      ? currentDate >= solar.sunrise && currentDate < solar.sunset
+      : entry.hour_of_day >= 6 && entry.hour_of_day < 18
+    const light = daylightLightComponents(entry, currentDate,
+      finiteNumber(options.latitude, 10.585), finiteNumber(options.longitude, 122.58))
+    const activityScore = crepuscular ? 1 : daylight
+      ? CECID_WEATHER_SPEC.cloud_day_activity_max * light.daylight_light_score : 0
+    const movementScore = dryingScore * windScore * activityScore
+    const emergenceScore = moistureScore * dryingScore * activityScore
+    const suitability = emergenceScore * windScore
+    const status = activityScore <= 0
       ? 'closed'
       : suitability >= CECID_WEATHER_SPEC.favorable_threshold ? 'favorable' : 'limited'
     if (status === 'favorable') favorableHours += 1
@@ -552,11 +587,23 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
       status,
       suitability_score: suitability,
       soil_wetness_mm: wetness,
+      soil_moisture_basis: initialMoisture != null
+        ? 'assumed Hour 0 moisture plus forecast rain' : 'antecedent rainfall proxy',
+      initial_soil_moisture_score: initialMoisture,
       moisture_score: moistureScore,
       drying_score: dryingScore,
       wind_score: windScore,
       wind_activity_score: windScore,
       wind_direction_assist: cecidWindDirectionAssist(entry.wind_speed_ms),
+      activity_score: activityScore,
+      activity_window: crepuscular ? 'twilight' : activityScore > 0 ? 'cloudy_day' : null,
+      movement_score: movementScore,
+      emergence_score: emergenceScore,
+      cloud_cover_pct: entry.cloud_cover_pct,
+      ...light,
+      score_scope: 'soil emergence weather suitability; adult supply not evaluated',
+      emergence_available: activityScore > 0 && emergenceScore > 0,
+      movement_available: activityScore > 0 && movementScore > 0,
     })
   }
 
@@ -578,6 +625,8 @@ export function summarizeWeatherBlocks(blocks = [], hours = 48, startDatetime = 
 
 function parseLocalHour(value) {
   if (typeof value !== 'string') return 0
+  const dated = guimarasDateAt(value, 0)
+  if (dated) return new Date(dated.getTime() + 8 * 3600000).getUTCHours()
   const match = value.match(/T(\d{2})/) || value.match(/^(\d{1,2})/)
   const hour = match ? Number(match[1]) : 0
   return Number.isFinite(hour) ? Math.max(0, Math.min(23, hour)) : 0

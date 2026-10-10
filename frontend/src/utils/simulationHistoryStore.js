@@ -7,7 +7,7 @@ const DEFAULT_ORCHARD_ID = 'default-orchard'
 
 // Keep in sync with core/config.py. It identifies changes that can alter a
 // fixed-seed simulation result, not ordinary UI/API changes.
-export const CURRENT_SIMULATION_MODEL_VERSION = '2026.10-cecid-map-interpretation-v7'
+export const CURRENT_SIMULATION_MODEL_VERSION = '2026.10-source-scope-v13'
 
 let dbPromise = null
 
@@ -216,7 +216,7 @@ export function normalizeSimulationRunForHistory(run) {
       ?? 'grid'
     ),
     hours: run?.hours ?? requestPayload.hours,
-    started_at: run?.started_at ?? history.started_at ?? metadata.started_at ?? now,
+    started_at: run?.started_at ?? history.started_at ?? metadata.started_at ?? null,
     completed_at: run?.completed_at ?? history.completed_at ?? metadata.completed_at,
     duration_seconds: run?.duration_seconds ?? history.duration_seconds,
     status: run?.status ?? history.status ?? 'completed',

@@ -6,7 +6,7 @@ Request and response schemas for the API endpoints.
 
 from datetime import datetime
 import re
-from typing import Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 from core.config import (
@@ -39,13 +39,13 @@ class OrchardStageEnum(str, Enum):
     Phenological growth stages of mango orchard.
     
     Based on 2022-2025 historical data analysis:
-    - Cecid Fly (Gall Midge): Only active during FRUITLET stage
-    - Fruit Fly (Bactrocera): Only active during MATURE stage
+    - Fruit-attacking Cecid Fly (P. frugivora): FRUITLET hosts
+    - Fruit Fly (B. dorsalis): MATURE hosts include green mature through ripening
     """
     DORMANT = "dormant"      # Vegetative rest period, no flowering or fruit
     FLOWERING = "flowering"  # Active flowering, no fruit yet
     FRUITLET = "fruitlet"    # Post-flowering, young fruitlets forming (Cecid Fly vulnerable)
-    MATURE = "mature"        # Fruit maturing/ripening (Fruit Fly attractive)
+    MATURE = "mature"        # Green mature through ripening fruit
 
 
 class SimulationModeEnum(str, Enum):
@@ -187,6 +187,10 @@ class OrchardStatusZone(BaseModel):
         pattern="^(healthy|infected|bagged|dead|history_infected|suspect)$",
     )
     coordinates: List[List[float]] = Field(..., min_length=3)
+    source_probability: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="History/Suspect source-presence assumption; omitted uses the scenario default.",
+    )
 
     @field_validator("coordinates")
     @classmethod
@@ -451,7 +455,19 @@ class TreatmentApplication(BaseModel):
 # ═══════════════════════════════════════════════
 #  Manual Weather Override Schemas
 # ═══════════════════════════════════════════════
-class ManualWeather(BaseModel):
+class DaylightWeatherFields(BaseModel):
+    """Instant radiation estimates or an explicit local daylight scenario.
+
+    Observed means a user-reported light condition, not sensor verification.
+    Tree/canopy shade is deliberately not an activity-enabling condition.
+    """
+    shortwave_radiation_wm2: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="Instant total horizontal solar radiation (W/m²); unknown when omitted.")
+    direct_normal_irradiance_wm2: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="Instant direct normal solar irradiance (W/m²); unknown when omitted.")
+    daylight_condition: Optional[Literal["bright_sunshine", "intermittent_sunshine", "dim_overcast"]] = Field(None, description="Explicit daylight-light condition; overrides radiation inference, never enables darkness or replaces soil/host/rain checks.")
+    daylight_condition_basis: Optional[Literal["assumed", "observed"]] = Field(None, description="User's assumed scenario or locally observed daylight condition; defaults to assumed when a condition is supplied.")
+
+
+class ManualWeather(DaylightWeatherFields):
     """
     Constant weather override (legacy ``manual_weather`` payload).
 
@@ -467,15 +483,17 @@ class ManualWeather(BaseModel):
                                                        "0 means wind coming from north; 90 means from east. "
                                                        "Values equal to 360 are normalized to 0 downstream.")
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall (mm/h). Must be ≥ 0.")
+    cloud_cover_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0, description="Cloud cover percentage.")
 
 
-class ManualWeatherEntry(BaseModel):
+class ManualWeatherEntry(DaylightWeatherFields):
     """A single hour of weather for manual_weather_series. All fields optional;
     missing keys inherit from the previous hour (defaults for hour 0)."""
     temperature_c: Optional[float] = Field(default=None, description="Air temperature in °C.")
     wind_speed_ms: Optional[float] = Field(default=None, ge=0.0, description="Wind speed in m/s.")
     wind_dir_deg:  Optional[float] = Field(default=None, ge=0.0, le=360.0, description="Meteorological wind-from direction (0=N/from north, 90=E/from east).")
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0, description="Rainfall in mm for this hour.")
+    cloud_cover_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0, description="Cloud cover percentage.")
 
 
 class QuadrantStages(BaseModel):
@@ -496,7 +514,7 @@ class QuadrantStages(BaseModel):
     se: OrchardStageEnum = Field(..., description="Dominant stage for the SE quadrant.")
 
 
-class ManualWeatherBlock(BaseModel):
+class ManualWeatherBlock(DaylightWeatherFields):
     """
     A contiguous block of hours sharing the same weather profile.
 
@@ -515,6 +533,7 @@ class ManualWeatherBlock(BaseModel):
         description="Meteorological wind-from direction (0=N/from north, 90=E/from east).",
     )
     rainfall_mm:   Optional[float] = Field(default=None, ge=0.0)
+    cloud_cover_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
 
     @field_validator("end_hour")
     @classmethod
@@ -526,12 +545,17 @@ class ManualWeatherBlock(BaseModel):
 
 
 class ManualSoilContext(BaseModel):
-    """Compact antecedent-rain selector for a manual Cecid scenario."""
+    """Antecedent rain or an assumed soil-moisture state at Hour 0."""
 
     preset: str = Field(
         default="dry",
-        pattern="^(dry|recently_wet|custom)$",
-        description="Dry, the documented recently-wet preset, or a custom rain event.",
+        pattern="^(dry|moist|recently_wet|custom)$",
+        description="Dry, moist at Hour 0 without assumed rain, recently wet, or custom rain.",
+    )
+    initial_moisture_score: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="Relative Hour 0 moisture for the moist preset; 1 is the selected "
+                    "model sensitivity scale, not measured soil-water content or humidity.",
     )
     total_rain_mm: float = Field(default=8.0, ge=0.0, le=500.0)
     event_duration_hours: int = Field(default=4, ge=1, le=72)
@@ -567,6 +591,19 @@ class CecidEmergenceZone(BaseModel):
 # ═══════════════════════════════════════════════
 #  Simulation Schemas
 # ═══════════════════════════════════════════════
+class NeighborSource(BaseModel):
+    """One outside orchard, with its own direction and pressure."""
+
+    direction: Optional[Literal['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']] = None
+    threat: float = Field(ge=0.0, le=1.0)
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator('direction', mode='before')
+    @classmethod
+    def normalize_direction(cls, value):
+        return str(value).strip().upper() if value is not None else None
+
+
 class SimulationRequest(BaseModel):
     """Request schema for POST /run-simulation."""
     pest_type: PestTypeEnum = Field(..., description="Type of pest to simulate")
@@ -627,13 +664,26 @@ class SimulationRequest(BaseModel):
         description="External pest pressure from neighboring unmanaged orchards (0-1). "
                     "Historical data shows unmanaged orchards have ~2x higher CPTD values."
     )
-    neighbor_direction: Optional[str] = Field(
+    neighbor_direction: Optional[Literal['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']] = Field(
         default=None,
         description="Compass direction of the neighbouring orchard. "
                     "One of: N, NE, E, SE, S, SW, W, NW. "
                     "When set, threat is applied as a gradient on the cells nearest that edge; "
                     "wind blowing FROM this direction further amplifies the threat. "
                     "If None, threat is distributed uniformly (original behaviour).",
+    )
+
+    @field_validator('neighbor_direction', mode='before')
+    @classmethod
+    def normalize_neighbor_direction(cls, value):
+        return str(value).strip().upper() if value is not None else None
+
+    neighbor_sources: Optional[List[NeighborSource]] = Field(
+        default=None,
+        max_length=16,
+        description="Neighboring orchards with individual directions and threat levels. "
+                    "Replaces neighbor_threat/neighbor_direction when supplied; [] disables pressure. "
+                    "Local pressures add up to a maximum of 1 before individual wind adjustment.",
     )
     tree_overrides: Optional[Dict[str, str]] = Field(
         default=None,
@@ -773,6 +823,39 @@ class SimulationRequest(BaseModel):
         description="Suitability score required for a favorable Cecid diagnostic/alert. "
                     "Defaults to 0.25; it does not turn the soft weather factors into hard gates.",
     )
+    uncertainty_runs: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=9,
+        description="Number of replay-stable realizations for either pest. Holds weather, "
+                    "geometry, treatments, and representative per-tree stages fixed while "
+                    "varying uncertain sources and stochastic establishment. When supplied, "
+                    "takes precedence over the legacy cecid_uncertainty_runs setting.",
+    )
+    cecid_initial_soil_moisture_score: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Optional relative soil-moisture assumption at forecast Hour 0, "
+                    "for live or custom Cecid scenarios. Replaces the antecedent rain "
+                    "estimate for moisture, decays and receives subsequent rain; "
+                    "does not replenish insects. Not a measured volumetric percentage.",
+    )
+    history_source_probability: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Scenario assumption for whether each History Infected location retains "
+                    "an active local soil/reservoir source in a realization. The default 0.5 "
+                    "represents unresolved presence; it is not a calibrated field probability.",
+    )
+    suspect_source_probability: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Scenario assumption for whether each Suspect tree is currently an active "
+                    "infestation source in a realization. The default 0.5 represents unresolved "
+                    "presence; it is not a calibrated field probability.",
+    )
+    tree_source_probability_overrides: Optional[Dict[str, Annotated[float, Field(ge=0.0, le=1.0)]]] = Field(
+        default=None,
+        description="Per-tree source-presence assumptions for History Infected and Suspect. "
+                    "Override scenario defaults. Confirmed infected sources remain certain.",
+    )
     cecid_uncertainty_runs: int = Field(
         default=1,
         ge=1,
@@ -783,8 +866,9 @@ class SimulationRequest(BaseModel):
     )
     fruit_fly_temp_threshold_c: Optional[float] = Field(
         default=None, ge=15.0, le=40.0,
-        description="Override fruit fly gate temperature threshold (°C). "
-                    f"Default: {FRUIT_FLY_TEMP_THRESHOLD_C}.",
+        description="Optional experimental hard temperature cutoff (°C). "
+                    "When omitted, temperature changes activity continuously, "
+                    f"using {FRUIT_FLY_TEMP_THRESHOLD_C} °C as the reference.",
     )
     fruit_fly_base_dispersal_prob: Optional[float] = Field(
         default=None, ge=0.01, le=0.50,
@@ -819,8 +903,9 @@ class SimulationRequest(BaseModel):
     )
     manual_soil_context: Optional[ManualSoilContext] = Field(
         default=None,
-        description="Compact 72-hour antecedent soil-rain context for manual Cecid scenarios. "
-                    "manual_weather_prefix_rain takes precedence when both are supplied.",
+        description="Antecedent rain or assumed Hour 0 moisture for manual Cecid scenarios. "
+                    "manual_weather_prefix_rain takes precedence for antecedent rain only; "
+                    "an explicit Hour 0 moisture assumption is resolved separately.",
     )
     impact_assumptions: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -876,7 +961,7 @@ class TimeSeriesSnapshot(BaseModel):
     risk_geojson: Dict[str, Any]
     n_infested: int
     n_new: int
-    weather: Dict[str, float]
+    weather: Dict[str, Any]  # Numeric weather plus optional light condition/provenance.
 
 
 class TimestepEntry(BaseModel):
@@ -888,6 +973,7 @@ class TimestepEntry(BaseModel):
 class SimulationMetadata(BaseModel):
     """Metadata for simulation run."""
     model_version: str = SIMULATION_MODEL_VERSION
+    model_interpretation: Optional[Dict[str, str]] = None
     run_id: str
     pest_type: str
     hours: int
@@ -903,6 +989,7 @@ class SimulationMetadata(BaseModel):
     days_since_flowering: int
     sugar_index: float
     neighbor_threat: float
+    neighbor_sources: Optional[List[NeighborSource]] = None
 
     # Mode selector — present in every response for explicit A/B comparison
     simulation_mode: str = "grid"
@@ -913,6 +1000,9 @@ class SimulationMetadata(BaseModel):
     n_newly_infested: int = 0
     initial_seed_cells: Optional[List[Dict[str, int]]] = None
     initial_seed_tree_ids: Optional[List[str]] = None
+    initial_sources: Optional[List[Dict[str, Any]]] = None
+    source_uncertainty_assumptions: Optional[Dict[str, Any]] = None
+    uncertainty_summary: Optional[Dict[str, Any]] = None
     treatment_summary: Optional[Dict[str, Any]] = None
 
     # tree_graph-specific parameters (None when mode = grid)
@@ -991,12 +1081,13 @@ class SimulationResponse(BaseModel):
 # ═══════════════════════════════════════════════
 #  Weather Schemas
 # ═══════════════════════════════════════════════
-class WeatherData(BaseModel):
+class WeatherData(DaylightWeatherFields):
     """Current weather data."""
     wind_speed_ms: float = Field(..., description="Wind speed in m/s")
     wind_direction_deg: float = Field(..., description="Meteorological wind-from direction in degrees (0=N/from north, 90=E/from east)")
     temperature_c: float = Field(..., description="Temperature in Celsius")
     humidity: Optional[float] = Field(None, description="Relative humidity percentage")
+    cloud_cover_pct: Optional[float] = Field(None, ge=0.0, le=100.0, description="Cloud cover percentage")
     datetime: str = Field(..., description="Observation timestamp")
     source: str = Field(default="open-meteo", description="Data source")
 

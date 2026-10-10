@@ -1,4 +1,5 @@
 import { treeIdsInPolygon } from './zoneSelection.js'
+import { isUncertainSourceStatus, sourceProbability } from './sourcePresence.js'
 
 export const ZONE_TYPE_OPTIONS = [
   { value: 'stage', label: 'Stage' },
@@ -35,9 +36,12 @@ export function buildZoneInventory({
     .map((zone, index) => {
       const typeLabel = ZONE_TYPE_OPTIONS.find((option) => option.value === type).label
       const label = zone.label || (legacy ? `Legacy emergence ${index + 1}` : `${typeLabel} zone ${index + 1}`)
-      const detail = type === 'stage' ? optionLabel(stageOptions, zone.stage)
+      let detail = type === 'stage' ? optionLabel(stageOptions, zone.stage)
         : type === 'status' ? optionLabel(statusOptions, zone.status)
           : legacy ? 'Historical replay' : ''
+      if (type === 'status' && isUncertainSourceStatus(zone.status) && sourceProbability(zone.source_probability) != null) {
+        detail += ` · ${Math.round(zone.source_probability * 100)}% source presence`
+      }
       const color = type === 'stage' ? STAGE_COLORS[zone.stage] || '#0f5132'
         : type === 'status' ? STATUS_COLORS[zone.status] || '#f59e0b'
           : type === 'management' ? zone.color || '#2563eb'

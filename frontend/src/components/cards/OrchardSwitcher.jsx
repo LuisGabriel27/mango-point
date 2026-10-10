@@ -197,13 +197,13 @@ export default function OrchardSwitcher({
               { value: 'dormant', label: 'Dormant' },
               { value: 'flowering', label: 'Flowering' },
               { value: 'fruitlet', label: 'Fruitlet' },
-              { value: 'mature', label: 'Mature fruit' },
+              { value: 'mature', label: 'Green mature / ripening' },
             ]}
             disabled={stageSaving}
             small
           />
           <small className="d-block text-muted mt-1">
-            Cecid live alerts require Fruitlet; Fruit Fly live alerts require Mature fruit.
+            Cecid live alerts require Fruitlets; Fruit Fly live alerts require green mature through ripening fruit.
           </small>
         </>
       )}

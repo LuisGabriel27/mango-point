@@ -1,4 +1,6 @@
 import { calculateSimulationEconomicImpact, formatPhp } from '../../utils/economicImpact'
+import { neighborPressureSummary, restoreNeighborSources } from '../../utils/neighborSources'
+import { simulationUncertaintySummary } from '../../utils/simulationMapInterpretation'
 
 function KpiCard({ iconName, iconColor, title, value, detail }) {
   return (
@@ -28,6 +30,8 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
   const pricePhp = Number(impact.farmgate_price_php_per_kg ?? 60)
   const baseDamage = Number(impact.damage_base ?? 30) / 100
   const economic = calculateSimulationEconomicImpact(simData ?? {})
+  const uncertainty = simulationUncertaintySummary(simData)
+  const acrossRuns = Number(uncertainty?.runs) > 1
 
   // Simulation data takes priority over monitoring DB data
   const infestedFinal = simData?.n_infested_final ?? null
@@ -75,9 +79,14 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
 
   return (
     <div className="row g-3 p-3">
+      {acrossRuns && <div className="col-12"><div className="alert alert-info py-2 mb-0 small">
+        <strong>{uncertainty.runs}-run scenario range:</strong> {uncertainty.minimum}–{uncertainty.maximum} infested trees;
+        median {uncertainty.median}. The totals below describe one representative run.
+        Across runs on the map shows infestation frequency; the scenario range is not a calibrated confidence interval.
+      </div></div>}
       <KpiCard
         iconName="virus" iconColor="text-danger"
-        title="Infestation rate"
+        title={acrossRuns ? 'Infestation rate in one run' : 'Infestation rate'}
         value={infestRate}
         detail={
           <div className="mt-2">
@@ -92,7 +101,7 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
       />
       <KpiCard
         iconName="tree-fill" iconColor="text-danger"
-        title="Infested trees"
+        title={acrossRuns ? 'Infested trees in one run' : 'Infested trees'}
         value={infestedTrees}
         detail={
           <small className="text-muted">
@@ -146,7 +155,7 @@ export default function OverviewTab({ monitoringData, simData, totalTrees: total
                 <span><i className="bi bi-grid me-1" /><strong>Cells at risk:</strong> {simData.cells_at_risk ?? '—'}</span>
                 <span><i className="bi bi-flower1 me-1 text-success" /><strong>Stage:</strong> {simData.metadata?.orchard_stage ?? '—'}</span>
                 {simData.metadata?.neighbor_threat > 0 && (
-                  <span><i className="bi bi-exclamation-triangle me-1 text-warning" /><strong>Neighbor pressure:</strong> {simData.metadata.neighbor_threat}</span>
+                  <span><i className="bi bi-exclamation-triangle me-1 text-warning" /><strong>Neighbor pressure:</strong> {neighborPressureSummary(restoreNeighborSources(simData.metadata))}</span>
                 )}
               </div>
             </div>

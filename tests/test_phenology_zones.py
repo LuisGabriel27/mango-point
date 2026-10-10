@@ -150,6 +150,16 @@ class TestAssignStagesForGrid:
                                              "sw": "mature",    "se": "dormant"}, seed=123)
         np.testing.assert_array_equal(a, b)
 
+    @pytest.mark.parametrize('rows,cols', [(3, 3), (4, 6), (5, 4)])
+    def test_grid_quadrants_agree_with_geographic_point_quadrants(self, rows, cols):
+        quadrants = {'nw': 'flowering', 'ne': 'fruitlet', 'sw': 'dormant', 'se': 'mature'}
+        pure = (1.0, 0.0, 0.0)
+        grid = assign_stages_for_grid(rows, cols, quadrants, mix=pure)
+        # Same positions expressed as longitude (column) and latitude (row).
+        points = [(float(col), float(row)) for row in range(rows) for col in range(cols)]
+        point_stages = assign_stages_for_points(points, quadrants, mix=pure)
+        np.testing.assert_array_equal(grid.ravel(), [int(stage) for stage in point_stages])
+
 
 class TestAssignStagesForPoints:
 

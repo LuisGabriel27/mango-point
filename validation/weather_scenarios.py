@@ -237,8 +237,7 @@ class HistoricalWeatherGenerator:
         aliases: tuple[str, ...],
     ) -> Optional[str]:
         """Find a CSV column by normalized alias."""
-        normalized_aliases = {cls._normalize_column_name(alias) for alias in aliases}
-        for alias in normalized_aliases:
+        for alias in (cls._normalize_column_name(alias) for alias in aliases):
             if alias in columns_by_key:
                 return columns_by_key[alias]
         return None
@@ -317,6 +316,32 @@ class HistoricalWeatherGenerator:
 
         if humidity_col:
             df["humidity_pct"] = pd.to_numeric(raw[humidity_col], errors="coerce")
+
+        # Preserve dated light evidence when an enriched archive supplies it.
+        # Ordinary API radiation columns are preceding-hour averages and must
+        # not be silently interpreted as instant estimates for v16.
+        optional_aliases = {
+            "cloud_cover_pct": ("cloud_cover_pct", "cloud_cover"),
+            "shortwave_radiation_wm2": ("shortwave_radiation_wm2", "shortwave_radiation_instant"),
+            "direct_normal_irradiance_wm2": ("direct_normal_irradiance_wm2", "direct_normal_irradiance_instant"),
+        }
+        for target, aliases in optional_aliases.items():
+            column = self._find_column(columns_by_key, aliases)
+            if column is None:
+                continue
+            values = pd.to_numeric(raw[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            values = values.where(values >= 0)
+            if target == "cloud_cover_pct":
+                values = values.where(values <= 100)
+            df[target] = values
+        from utils.daylight import DAYLIGHT_CONDITION_SCORES
+        for target, allowed in [
+            ("daylight_condition", DAYLIGHT_CONDITION_SCORES),
+            ("daylight_condition_basis", ("assumed", "observed")),
+        ]:
+            column = self._find_column(columns_by_key, (target,))
+            if column is not None:
+                df[target] = raw[column].where(raw[column].isin(allowed), None)
 
         df = df.dropna(
             subset=["datetime", "temperature_c", "wind_speed_ms", "wind_dir_deg"]

@@ -41,8 +41,14 @@ export default function MpSelect({ value, onChange, options = [], className = ''
             <li
               key={o.value}
               className={`mp-select-option${o.value === value ? ' selected' : ''}`}
-              onMouseDown={() => { setOpen(false) }}
-              onClick={() => handleSelect(o.value)}
+              onClick={(event) => {
+                // Selectors are often rendered inside a <label>. Prevent the
+                // label's default activation from clicking the trigger again
+                // after this option closes the menu.
+                event.preventDefault()
+                event.stopPropagation()
+                handleSelect(o.value)
+              }}
             >
               {o.value === value && <i className="bi bi-check2 mp-select-check" />}
               {o.label}

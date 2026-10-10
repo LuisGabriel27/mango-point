@@ -140,31 +140,35 @@ def _node(index, x):
     )
 
 
-def test_cohorts_emit_once_decay_and_expire_after_72_hours():
+def test_cohorts_emit_once_decay_and_expire_at_48_hours():
     model = CecidSourceCohortModel({"soil-a": 1.0}, antecedent_rainfall=[8.0])
     active = model.step(0, "2026-04-01T18:00:00+08:00", 0.0, True)
     assert active["soil-a"] == pytest.approx(1.0)
     assert len(model.events) == 1
 
-    # A second eligible hour does not emit again without another wetting event.
+    # The configured soil batch emits only once.
     model.step(1, "2026-04-01T19:00:00+08:00", 0.0, True)
     assert len(model.events) == 1
     for hour in range(2, 25):
         active = model.step(hour, None, 0.0, False)
     assert active["soil-a"] == pytest.approx(0.5, rel=1e-6)
 
-    for hour in range(25, 73):
+    for hour in range(25, 48):
         active = model.step(hour, None, 0.0, False)
+    assert active["soil-a"] > 0.0
+    active = model.step(48, None, 0.0, False)
     assert "soil-a" not in active
+    assert model.lifecycle_diagnostics()["expired_cohort_count"] == 1
 
 
-def test_new_rain_rearms_source_for_one_later_cohort():
+def test_new_rain_does_not_replenish_the_finite_soil_batch():
     model = CecidSourceCohortModel({0: 1.0}, antecedent_rainfall=[8.0])
     model.step(0, None, 0.0, True)
     model.step(1, None, 0.5, False)
     model.step(2, None, 0.0, True)
     model.step(3, None, 0.0, True)
-    assert len(model.events) == 2
+    assert len(model.events) == 1
+    assert model.lifecycle_diagnostics()["remaining_soil_batches"] == 0
 
 
 def test_antecedent_replay_preserves_cohort_and_prevents_duplicate_emergence():

@@ -114,7 +114,7 @@ app = FastAPI(
 ## MangoPoint Pest Risk Simulation API
 
 A GIS-based spatiotemporal simulation system for predicting the spread of 
-Cecid Fly (Mango Gall Midge) and Fruit Fly (Bactrocera spp.) in mango orchards.
+Cecid Fly (Procontarinia frugivora, mango fruitlets) and Fruit Fly (Bactrocera dorsalis).
 
 ### Features
 
@@ -125,8 +125,8 @@ Cecid Fly (Mango Gall Midge) and Fruit Fly (Bactrocera spp.) in mango orchards.
 
 ### Pest Types
 
-- `cecid`: Mango Gall Midge - crepuscular, wind-sensitive
-- `fruitfly`: Bactrocera spp. - warm daytime, wind-direction biased
+- `cecid`: Fruit-attacking mango midge - twilight and cloudy daylight, finite adult cohorts
+- `fruitfly`: Bactrocera dorsalis - strongest in daylight, green mature through ripening fruit
     """,
     docs_url="/docs",
     redoc_url="/redoc",

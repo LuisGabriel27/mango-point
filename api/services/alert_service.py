@@ -769,13 +769,16 @@ class AlertService:
                 str(orchard_id),
                 str(pest),
                 str(first_at or first_entry.get("step"))[:10],
-                str(first_entry.get("twilight_window") or "activity"),
+                str(first_entry.get("activity_window") or first_entry.get("twilight_window") or "activity"),
                 source,
             ))
             forecast_context: Dict[str, Any] = {
                 "first_favorable_at": first_at,
                 "first_window_last_hour_at": last_at,
                 "twilight_window": first_entry.get("twilight_window"),
+                "activity_window": first_entry.get("activity_window") or first_entry.get("twilight_window"),
+                "cloud_cover_pct": first_entry.get("cloud_cover_pct"),
+                **{key: value for key, value in first_entry.items() if key.startswith(("daylight_", "shortwave_", "direct_normal_", "clear_sky_", "canopy_shade_", "light_response_"))},
                 "favorable_hours": count,
                 "first_window_hours": len(first_window_entries),
                 "limited_hours": sum(
@@ -808,7 +811,7 @@ class AlertService:
             }
             summary = (
                 f"{pest_label} live forecast loaded: first favorable "
-                f"{str(first_entry.get('twilight_window') or 'activity')} window "
+                f"{str(first_entry.get('activity_window') or first_entry.get('twilight_window') or 'activity').replace('_', ' ')} window "
                 f"{first_window}, peak suitability {peak_score:.0%}. "
                 "No spatial simulation has run yet; review the controls and press "
                 "Run Simulation."
@@ -832,7 +835,7 @@ class AlertService:
                 message = (
                     f"Cecid fly emergence conditions are favorable for {count} of "
                     f"{len(diagnostics)} forecast hour(s), first {first_window} "
-                    f"({str(first_entry.get('twilight_window') or 'dawn/dusk')}). "
+                    f"({str(first_entry.get('activity_window') or first_entry.get('twilight_window') or 'activity').replace('_', ' ')}). "
                     f"Peak suitability: {peak_score:.0%}; soil wetness: "
                     f"{forecast_context['soil_wetness_mm']:.1f} mm; current rain: "
                     f"{forecast_context['current_rainfall_mm']:.1f} mm/h; wind: "

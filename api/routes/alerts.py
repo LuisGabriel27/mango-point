@@ -516,8 +516,8 @@ async def update_alert_action(
     pre-emptive alert when the pest suitability model becomes favorable.
 
     **Why this matters:**
-    Cecid Fly screening retains fruitlet and orchard-specific dawn/dusk hard
-    requirements. Soil wetness, current drying, and wind use the same soft scores as
+    Cecid Fly screening requires fruitlets and orchard-specific twilight or
+    cloudy daylight activity. Soil wetness, drying, and wind use the same scores as
     the simulator. Each alert includes `suggested_simulation_params` so the grower can
     review and manually start a live-weather simulation; this endpoint never launches
     the spatial simulation itself.

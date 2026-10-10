@@ -422,6 +422,32 @@ async def test_orchard_create_and_update_round_trip_weed_zones(monkeypatch):
     assert orchard.status_zones == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('probability', [0.0, 0.7, 1.0])
+async def test_status_zone_source_probability_survives_orchard_storage(monkeypatch, probability):
+    async def allow_uid(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchard_routes, '_ensure_unique_uid', allow_uid)
+    session = _FakeOrchardSession()
+    zone = {'id': 'source-zone', 'status': 'suspect', 'source_probability': probability,
+            'coordinates': [[122.0, 10.0], [122.1, 10.0], [122.1, 10.1]]}
+    created = await orchard_routes.create_orchard(
+        OrchardCreate(orchard_id='source-demo', name='Source Demo', status_zones=[zone]), db=session)
+    assert created.status_zones[0].source_probability == probability
+    assert session.added.status_zones[0]['source_probability'] == probability
+
+    async def return_orchard(*_args, **_kwargs):
+        return session.added
+
+    monkeypatch.setattr(orchard_routes, '_get_orchard_or_404', return_orchard)
+    updated = await orchard_routes.update_orchard('source-demo',
+        OrchardUpdate(status_zones=[{**zone, 'status': 'history_infected', 'source_probability': 1 - probability}]),
+        db=session)
+    assert updated.status_zones[0].source_probability == 1 - probability
+    assert session.added.status_zones[0]['source_probability'] == 1 - probability
+
+
 class _BootstrapConnection:
     def __init__(self, exists):
         self.exists = exists

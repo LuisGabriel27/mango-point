@@ -9,6 +9,7 @@ interpret naive inputs as Asia/Manila wall time.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -125,6 +126,7 @@ def solar_twilight_context(
     dusk = abs(local_value - sunset_dt) <= window
     return {
         "is_crepuscular": bool(dawn or dusk),
+        "is_daylight": sunrise_dt <= local_value < sunset_dt,
         "window": "dawn" if dawn else "dusk" if dusk else None,
         "sunrise": sunrise_dt,
         "sunset": sunset_dt,
@@ -132,9 +134,40 @@ def solar_twilight_context(
     }
 
 
+@lru_cache(maxsize=2048)
+def clear_sky_shortwave_reference(value: datetime, latitude: float, longitude: float) -> float:
+    """Approximate instant clear-sky GHI (W/m²), never measured orchard light.
+
+    NOAA fractional-year solar position with the Haurwitz clear-sky model:
+    https://gml.noaa.gov/grad/solcalc/solareqns.PDF
+    https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.clearsky.haurwitz.html
+    Used only to normalize radiation for date/time and sun elevation. This
+    simple reference does not model canopy, aerosol or local atmospheric data.
+    """
+    local = as_manila_time(value)
+    hour = local.hour + local.minute / 60.0 + local.second / 3600.0
+    year_length = (date(local.year + 1, 1, 1) - date(local.year, 1, 1)).days
+    gamma = 2.0 * math.pi / year_length * (local.timetuple().tm_yday - 1 + (hour - 12) / 24)
+    equation = 229.18 * (
+        0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
+        - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma)
+    )
+    declination = (
+        0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma)
+        - 0.006758 * math.cos(2 * gamma) + 0.000907 * math.sin(2 * gamma)
+        - 0.002697 * math.cos(3 * gamma) + 0.00148 * math.sin(3 * gamma)
+    )
+    solar_minutes = hour * 60 + equation + 4 * longitude - 480
+    hour_angle = math.radians(solar_minutes / 4 - 180)
+    lat = math.radians(latitude)
+    cosine = math.sin(lat) * math.sin(declination) + math.cos(lat) * math.cos(declination) * math.cos(hour_angle)
+    return 1098.0 * cosine * math.exp(-0.059 / cosine) if cosine > 0 else 0.0
+
+
 __all__ = [
     "MANILA_TZ",
     "as_manila_time",
     "solar_times",
     "solar_twilight_context",
+    "clear_sky_shortwave_reference",
 ]

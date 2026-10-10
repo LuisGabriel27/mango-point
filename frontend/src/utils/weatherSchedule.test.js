@@ -19,6 +19,7 @@ import {
   restoreCustomWeatherTimeline,
   weatherCoverage,
 } from './weatherSchedule.js'
+import { clearSkyShortwaveReference } from './daylightLight.js'
 
 test('guided schedules repeat wet and dry phases across the simulation', () => {
   const phases = [
@@ -233,4 +234,148 @@ test('Cecid gate test preset creates favorable dawn and dusk windows', () => {
   assert.equal(summary.has_dry_crepuscular_window, true)
   assert.ok([...favorableHours].some((hour) => hour >= 5 && hour <= 7))
   assert.ok([...favorableHours].some((hour) => hour >= 17 && hour <= 19))
+})
+
+test('cloud cover survives saved constant and scheduled weather requests', () => {
+  const constant = createConstantWeatherTimeline({ cloud_cover_pct: 100 }, 24, '2026-04-01T12:00')
+  const fields = customWeatherRequestFields(constant, 24, 'cecid')
+  assert.equal(fields.manual_weather.cloud_cover_pct, 100)
+  const restored = restoreCustomWeatherTimeline({ ...fields, hours: 24 })
+  assert.deepEqual(customWeatherRequestFields(restored, 24, 'cecid'), fields)
+  const split = addCustomWeatherPeriod(restored, 24)
+  split.advanced_blocks[1].cloud_cover_pct = 50
+  const scheduled = customWeatherRequestFields(split, 24, 'cecid')
+  assert.deepEqual(scheduled.manual_weather_blocks.map((block) => block.cloud_cover_pct), [100, 50])
+  assert.deepEqual(customWeatherRequestFields(restoreCustomWeatherTimeline({ ...scheduled, hours: 24 }), 24, 'cecid'), scheduled)
+})
+
+test('cloudy daylight preview separates emergence from dry-soil adult movement', () => {
+  const preview = (cloud, start = '2026-04-01T12:00') => summarizeWeatherBlocks([
+    { start_hour: 0, end_hour: 1, cloud_cover_pct: cloud, rainfall_mm: 0, wind_speed_ms: 1,
+      shortwave_radiation_wm2: 100, direct_normal_irradiance_wm2: 0 },
+  ], 1, start, 5).preview[0]
+  const clear = preview(0)
+  const partial = preview(65)
+  const overcast = preview(100)
+  assert.equal(clear.status, 'closed')
+  assert.ok(partial.movement_score > 0 && partial.movement_score < overcast.movement_score)
+  assert.equal(overcast.activity_window, 'cloudy_day')
+  assert.equal(overcast.emergence_available, false)
+  assert.equal(overcast.movement_available, true)
+  assert.equal(preview(100, '2026-04-01T02:00').movement_available, false)
+})
+
+test('moist soil is a saved Hour 0 state without manufactured antecedent rain', () => {
+  const timeline = createConstantWeatherTimeline({ cloud_cover_pct: 100, wind_speed_ms: 1, daylight_condition: 'dim_overcast' }, 49, '2026-04-01T12:00')
+  timeline.manual_soil_context = { preset: 'moist', initial_moisture_score: 0.8 }
+  assert.equal(buildSoilRainContext(timeline.manual_soil_context).reduce((sum, rain) => sum + rain, 0), 0)
+  const fields = customWeatherRequestFields(timeline, 49, 'cecid')
+  assert.deepEqual(customWeatherRequestFields(restoreCustomWeatherTimeline({ ...fields, hours: 49 }), 49, 'cecid'), fields)
+  const summary = summarizeWeatherBlocks(customWeatherBlocks(timeline, 49), 49, timeline.start_datetime, 5, {
+    manual_soil_context: timeline.manual_soil_context,
+  })
+  assert.equal(summary.preview[0].soil_wetness_mm, 4)
+  assert.equal(summary.preview[0].emergence_available, true)
+  assert.equal(summary.preview[0].initial_soil_moisture_score, 0.8)
+  assert.equal(summary.preview[48].soil_wetness_mm, 2)
+  assert.equal(summary.max_rain_24h, 0)
+})
+
+test('explicit starting moisture replaces rain history and subsequent rain contributes', () => {
+  const blocks = [
+    { start_hour: 0, end_hour: 1, cloud_cover_pct: 100, wind_speed_ms: 1, rainfall_mm: 0, daylight_condition: 'dim_overcast' },
+    { start_hour: 1, end_hour: 2, cloud_cover_pct: 100, wind_speed_ms: 1, rainfall_mm: 0.5, daylight_condition: 'dim_overcast' },
+  ]
+  const options = { cecid_initial_soil_moisture_score: 0.8, manual_weather_prefix_rain: [100] }
+  const preview = summarizeWeatherBlocks(blocks, 2, '2026-04-01T12:00', 5, options).preview
+  assert.equal(preview[0].soil_wetness_mm, 4)
+  assert.ok(Math.abs(preview[1].soil_wetness_mm - (4 * 2 ** (-1 / 48) + 0.5)) < 1e-12)
+  assert.equal(preview[1].emergence_available, true)
+  const dry = summarizeWeatherBlocks(blocks, 1, '2026-04-01T12:00', 5, { ...options, cecid_initial_soil_moisture_score: 0 }).preview[0]
+  assert.equal(dry.emergence_available, false)
+  assert.equal(dry.movement_available, true)
+})
+
+test('a direct saved moisture assumption takes precedence over old soil editor state', () => {
+  const timeline = restoreCustomWeatherTimeline({
+    hours: 24, manual_weather: { cloud_cover_pct: 100 },
+    manual_soil_context: { preset: 'recently_wet' }, cecid_initial_soil_moisture_score: 0.4,
+  })
+  assert.deepEqual(timeline.manual_soil_context, { preset: 'moist', initial_moisture_score: 0.4 })
+})
+
+test('high cloud cover with strong direct or total sunlight closes daytime activity', () => {
+  for (const [ghi, dni] of [[900, 750], [100, 750], [900, 0]]) {
+    const entry = summarizeWeatherBlocks([{ start_hour: 0, end_hour: 1, cloud_cover_pct: 100,
+      shortwave_radiation_wm2: ghi, direct_normal_irradiance_wm2: dni }], 1, '2026-04-01T12:00', 5,
+    { manual_soil_context: { preset: 'moist' } }).preview[0]
+    assert.equal(entry.movement_available, false)
+    assert.equal(entry.emergence_available, false)
+    assert.equal(entry.daylight_light_status, 'bright_sunshine')
+  }
+})
+
+test('cloud alone and tiny cloud values cannot open the daytime exception', () => {
+  for (const block of [{ cloud_cover_pct: 100 }, { cloud_cover_pct: 1, shortwave_radiation_wm2: 100, direct_normal_irradiance_wm2: 0 }]) {
+    const entry = summarizeWeatherBlocks([{ start_hour: 0, end_hour: 1, ...block }], 1, '2026-04-01T12:00').preview[0]
+    assert.equal(entry.movement_available, false)
+    assert.equal(entry.canopy_shade_enables_activity, false)
+  }
+})
+
+test('explicit custom daylight survives request replay and changes the preview independently of cloud cover', () => {
+  for (const [condition, score] of [['bright_sunshine', 0], ['intermittent_sunshine', 0.3], ['dim_overcast', 0.6]]) {
+    const timeline = createConstantWeatherTimeline({ cloud_cover_pct: 100,
+      daylight_condition: condition, daylight_condition_basis: 'observed', wind_speed_ms: 1 }, 2, '2026-04-01T12:00')
+    timeline.manual_soil_context = { preset: 'moist' }
+    const fields = customWeatherRequestFields(timeline, 2, 'cecid')
+    assert.equal(fields.manual_weather.daylight_condition, condition)
+    assert.equal(fields.manual_weather.daylight_condition_basis, 'observed')
+    assert.deepEqual(customWeatherRequestFields(restoreCustomWeatherTimeline({ ...fields, hours: 2 }), 2, 'cecid'), fields)
+    const entry = summarizeWeatherBlocks(customWeatherBlocks(timeline, 2), 2, timeline.start_datetime, 5,
+      { manual_soil_context: timeline.manual_soil_context }).preview[0]
+    assert.equal(entry.activity_score, score)
+    assert.equal(entry.daylight_light_basis, 'custom_observed')
+  }
+})
+
+test('saved hourly light changes stay separate when the other weather values are identical', () => {
+  const params = { hours: 3, manual_weather_start: '2026-04-01T12:00', manual_weather_series: [
+    { daylight_condition: 'bright_sunshine', daylight_condition_basis: 'assumed' },
+    { daylight_condition: 'dim_overcast', daylight_condition_basis: 'observed' },
+    {},
+  ] }
+  const timeline = restoreCustomWeatherTimeline(params)
+  assert.equal(timeline.advanced_blocks.length, 2)
+  const entries = expandWeatherBlocks(customWeatherBlocks(timeline, 3), 3)
+  assert.deepEqual(entries.map((entry) => entry.daylight_condition), ['bright_sunshine', 'dim_overcast', 'dim_overcast'])
+  assert.deepEqual(entries.map((entry) => entry.daylight_condition_basis), ['assumed', 'observed', 'observed'])
+})
+
+test('daylight conditions never enable darkness and still respect current rain', () => {
+  const block = { start_hour: 0, end_hour: 1, daylight_condition: 'dim_overcast' }
+  const night = summarizeWeatherBlocks([block], 1, '2026-04-01T02:00').preview[0]
+  assert.equal(night.movement_available, false)
+  const rain = summarizeWeatherBlocks([{ ...block, rainfall_mm: 2 }], 1, '2026-04-01T12:00', 5,
+    { manual_soil_context: { preset: 'moist' } }).preview[0]
+  assert.equal(rain.movement_available, false)
+  assert.equal(rain.emergence_available, false)
+})
+
+test('solar normalization keeps a clear lower-sun hour bright', () => {
+  const reference = clearSkyShortwaveReference(new Date('2026-04-01T08:00:00+08:00'))
+  const entry = summarizeWeatherBlocks([{ start_hour: 0, end_hour: 1, cloud_cover_pct: 100,
+    shortwave_radiation_wm2: reference * 0.95, direct_normal_irradiance_wm2: 0 }], 1, '2026-04-01T08:00').preview[0]
+  assert.equal(entry.movement_available, false)
+  assert.ok(Math.abs(entry.daylight_brightness_ratio - 0.95) < 1e-12)
+})
+
+test('UTC and Manila timestamps describe the same daylight and radiation reference', () => {
+  const blocks = [{ start_hour: 0, end_hour: 2, cloud_cover_pct: 100,
+    shortwave_radiation_wm2: 100, direct_normal_irradiance_wm2: 0, wind_speed_ms: 1 }]
+  const utc = summarizeWeatherBlocks(blocks, 2, '2026-04-01T04:00:00Z').preview
+  const local = summarizeWeatherBlocks(blocks, 2, '2026-04-01T12:00:00+08:00').preview
+  assert.deepEqual(utc, local)
+  assert.equal(utc[0].hour_of_day, 12)
+  assert.equal(utc[0].movement_available, true)
 })

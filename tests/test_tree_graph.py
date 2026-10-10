@@ -946,8 +946,8 @@ class TestModifiersIntegration:
             f"Low wind ({risk_low_wind:.5f}) should exceed high wind ({risk_high_wind:.5f})"
         )
 
-    def test_higher_rainfall_increases_cecid_risk(self):
-        """More accumulated rainfall must increase Cecid spread risk."""
+    def test_soil_rainfall_does_not_amplify_already_active_cecid_movement(self):
+        """Soil moisture enables emergence; movement has its own weather score."""
         g = _two_tree_graph(distance_m=3.0)
         risk_low_rain = self._run_one_step_risk(
             _cecid_weather(), g,
@@ -961,9 +961,8 @@ class TestModifiersIntegration:
             initial_rainfall_history=_sufficient_rain_history(8.0),
             pest_type="cecid",
         )
-        assert risk_high_rain > risk_low_rain, (
-            f"High rain ({risk_high_rain:.5f}) should exceed low rain ({risk_low_rain:.5f})"
-        )
+        assert risk_low_rain > 0.0
+        assert risk_high_rain == pytest.approx(risk_low_rain)
 
     def test_neighbor_threat_increases_fruitfly_risk(self):
         """Adding neighbor threat must increase spread risk for susceptible trees."""

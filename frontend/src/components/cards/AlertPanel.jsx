@@ -6,7 +6,7 @@ import { cecidForecastContext } from '../../utils/alertSimulation'
 const SEV_BADGE = { critical: 'danger', high: 'warning', medium: 'info', low: 'secondary' }
 
 function formatManilaWindow(value) {
-  if (!value) return 'Upcoming dawn/dusk'
+  if (!value) return 'Upcoming activity window'
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return String(value)
   return new Intl.DateTimeFormat('en-PH', {
@@ -77,7 +77,7 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
         <div className="rounded border bg-light p-2 mb-2" data-testid="cecid-live-forecast-details">
           <div className="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-1">
             <strong>
-              {String(cecidContext.twilight_window ?? 'dawn/dusk').replace(/^\w/, (letter) => letter.toUpperCase())}
+              {String(cecidContext.activity_window ?? cecidContext.twilight_window ?? 'activity').replaceAll('_', ' ').replace(/^\w/, (letter) => letter.toUpperCase())}
               {' · '}{formatManilaWindow(cecidContext.first_favorable_at)}
             </strong>
             <span className="badge text-bg-success">
@@ -88,6 +88,7 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
             <span>Soil wetness {metric(cecidContext.soil_wetness_mm, ' mm')}</span>
             <span>Rain now {metric(cecidContext.current_rainfall_mm, ' mm/h')}</span>
             <span>Wind {metric(cecidContext.wind_speed_ms, ' m/s')}</span>
+            {cecidContext.cloud_cover_pct != null && <span>Cloud {metric(cecidContext.cloud_cover_pct, '%', 0)}</span>}
             <span>{cecidContext.favorable_hours ?? 0} favorable hour(s)</span>
           </div>
           <small className="d-block text-muted mt-1">

@@ -100,7 +100,7 @@ const api = {
   getMetricsHistory: (params = {}) => client.get('/evaluation/metrics-history', { params }),
 
   // Weather
-  getLiveWeather: (params = {}) => client.get('/weather/live', { params }),
+  getLiveWeather: (params = {}) => client.get('/weather/live', { params, timeout: 20000 }),
   getWeatherForecast: (params = {}) => client.get('/weather/forecast', { params }),
   getWeatherStatus: () => client.get('/weather/status'),
 

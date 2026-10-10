@@ -36,6 +36,8 @@ export default function Sidebar({
   onPrintReport,
   treeOverrides,
   statusZones,
+  treeSourceProbabilityOverrides,
+  individualSourceProbabilityOverrides,
   treeStageOverrides,
   phenologyZones,
   managementZones,
@@ -289,6 +291,8 @@ export default function Sidebar({
                 orchardId={selectedOrchardId}
                 treeOverrides={treeOverrides}
                 statusZones={statusZones}
+                treeSourceProbabilityOverrides={treeSourceProbabilityOverrides}
+                individualSourceProbabilityOverrides={individualSourceProbabilityOverrides}
                 treeStageOverrides={treeStageOverrides}
                 phenologyZones={phenologyZones}
                 managementZones={managementZones}

@@ -11,12 +11,14 @@ import {
   CURRENT_SIMULATION_MODEL_VERSION,
 } from '../../utils/simulationHistoryStore'
 import { summarizeCecidResult } from '../../utils/cecidResultSummary'
+import { simulationUncertaintySummary } from '../../utils/simulationMapInterpretation'
+import { neighborPressureSummary, neighborRequestFields, restoreNeighborSources } from '../../utils/neighborSources'
 
 const STAGE_OPTIONS = [
   { label: 'Dormant', value: 'dormant' },
   { label: 'Flowering', value: 'flowering' },
   { label: 'Fruitlet', value: 'fruitlet' },
-  { label: 'Mature', value: 'mature' },
+  { label: 'Green mature / ripening', value: 'mature' },
 ]
 
 const DIR_OPTIONS = [
@@ -186,7 +188,7 @@ function BtnGroup({ options, value, onChange, small = false }) {
   )
 }
 
-function Slider({ id, label, iconName, min, max, step, value, marks, onChange }) {
+function Slider({ id, label, iconName, min, max, step, value, marks, onChange, percent = false }) {
   return (
     <div className="mb-2">
       <label className="small fw-medium mb-1 d-block" htmlFor={id}>
@@ -200,7 +202,7 @@ function Slider({ id, label, iconName, min, max, step, value, marks, onChange })
       <div className="d-flex justify-content-between small text-muted">
         {marks.map((m) => <span key={m.label}>{m.label}</span>)}
       </div>
-      <div className="text-center small fw-semibold" style={{ color: 'var(--mp-primary)' }}>{value}</div>
+      <div className="text-center small fw-semibold" style={{ color: 'var(--mp-primary)' }}>{percent ? `${Math.round(value * 100)}%` : value}</div>
     </div>
   )
 }
@@ -226,7 +228,7 @@ function CecidTimelineResult({ diagnostics, resultSummary }) {
           )}
           {Number(resultSummary.uncertainty?.runs ?? 0) > 1 && (
             <small className="d-block mt-1">
-              {resultSummary.uncertainty.runs}-run scenario range: <strong>{resultSummary.uncertainty.minimum}–{resultSummary.uncertainty.maximum}</strong>, median <strong>{Math.round(resultSummary.uncertainty.median)}</strong>. The displayed map is the fixed-seed realization, not a calibrated confidence interval.
+              {resultSummary.uncertainty.runs}-run scenario range: <strong>{resultSummary.uncertainty.minimum}–{resultSummary.uncertainty.maximum}</strong>, median <strong>{Math.round(resultSummary.uncertainty.median)}</strong>. Across runs shows infestation frequency; playback shows one fixed-seed realization. This range is not a calibrated confidence interval.
             </small>
           )}
         </div>
@@ -291,6 +293,8 @@ export default function SimulationCard({
   orthophotoOverlay,
   treeOverrides,
   statusZones,
+  treeSourceProbabilityOverrides,
+  individualSourceProbabilityOverrides,
   treeStageOverrides,
   phenologyZones,
   managementZones,
@@ -315,8 +319,10 @@ export default function SimulationCard({
   const [pestType, setPestType] = useState(selectedPestType)
   const [orchardStage, setOrchardStage] = useState('mature')
   const [daysFlowering, setDaysFlowering] = useState(60)
-  const [neighborThreat, setNeighborThreat] = useState(0)
-  const [neighborDir, setNeighborDir] = useState('N')
+  const [neighborSources, setNeighborSources] = useState([])
+  const updateNeighbor = (index, change) => setNeighborSources((sources) => (
+    sources.map((source, i) => i === index ? { ...source, ...change } : source)
+  ))
   const [treatmentEnabled, setTreatmentEnabled] = useState(false)
   const [treatmentType, setTreatmentType] = useState('targeted_spray')
   const [treatmentEfficacy, setTreatmentEfficacy] = useState(0.65)
@@ -362,7 +368,9 @@ export default function SimulationCard({
   const [useObsSeeds, setUseObsSeeds] = useState(false)
   const [obsLookbackDays, setObsLookbackDays] = useState(30)
   const [sensitivity, setSensitivity] = useState('standard')
-  const [cecidUncertaintyRuns, setCecidUncertaintyRuns] = useState('5')
+  const [uncertaintyRuns, setUncertaintyRuns] = useState('5')
+  const [historySourceProbability, setHistorySourceProbability] = useState(0.5)
+  const [suspectSourceProbability, setSuspectSourceProbability] = useState(0.5)
 
   const timelineActive = Boolean(weatherOverrideActive && weatherTimeline?.enabled)
   const timelineHours = Number.parseInt(simHours, 10)
@@ -405,7 +413,9 @@ export default function SimulationCard({
     if (suggestedParams.orchard_stage) setOrchardStage(suggestedParams.orchard_stage)
     if (suggestedParams.hours) setSimHours(String(suggestedParams.hours))
     if (suggestedParams.days_since_flowering != null) setDaysFlowering(suggestedParams.days_since_flowering)
-    if (suggestedParams.neighbor_threat != null) setNeighborThreat(suggestedParams.neighbor_threat)
+    if (suggestedParams.neighbor_sources != null || suggestedParams.neighbor_threat != null) {
+      setNeighborSources(restoreNeighborSources(suggestedParams))
+    }
     setPrefixRain(suggestedParams.manual_weather_prefix_rain ?? null)
     if (suggestedParams.weather_mode === 'live') {
       setStatus({
@@ -433,8 +443,7 @@ export default function SimulationCard({
     if (loadedParams.pest_type) setPestType(normalizePest(loadedParams.pest_type))
     if (loadedParams.orchard_stage) setOrchardStage(loadedParams.orchard_stage)
     if (loadedParams.days_since_flowering != null) setDaysFlowering(Number(loadedParams.days_since_flowering))
-    if (loadedParams.neighbor_threat != null) setNeighborThreat(Number(loadedParams.neighbor_threat))
-    if (loadedParams.neighbor_direction) setNeighborDir(loadedParams.neighbor_direction)
+    setNeighborSources(restoreNeighborSources(loadedParams))
     if (loadedParams.hours != null) setSimHours(String(loadedParams.hours))
     setPrefixRain(loadedParams.manual_weather_prefix_rain ?? null)
     const restoredSeed = Number(loadedParams.random_seed)
@@ -460,11 +469,12 @@ export default function SimulationCard({
     if (loadedParams.observations_lookback_days != null) {
       setObsLookbackDays(Number(loadedParams.observations_lookback_days))
     }
-    if (loadedParams.cecid_uncertainty_runs != null) {
-      setCecidUncertaintyRuns(String(loadedParams.cecid_uncertainty_runs))
-    } else if (dashboardState.cecid_uncertainty_runs != null) {
-      setCecidUncertaintyRuns(String(dashboardState.cecid_uncertainty_runs))
-    }
+    setUncertaintyRuns(String(loadedParams.uncertainty_runs ?? loadedParams.cecid_uncertainty_runs
+      ?? dashboardState.uncertainty_runs ?? dashboardState.cecid_uncertainty_runs ?? 5))
+    setHistorySourceProbability(Number(loadedParams.history_source_probability
+      ?? dashboardState.history_source_probability ?? 0.5))
+    setSuspectSourceProbability(Number(loadedParams.suspect_source_probability
+      ?? dashboardState.suspect_source_probability ?? 0.5))
     if (dashboardState.sensitivity) setSensitivity(dashboardState.sensitivity)
 
     const savedModelVersion = dashboardState.simulation_model_version
@@ -507,9 +517,13 @@ export default function SimulationCard({
         risk_threshold: 0.7,
         orchard_stage: orchardStage,
         days_since_flowering: daysFlowering,
-        neighbor_threat: neighborThreat,
+        ...neighborRequestFields(neighborSources),
         simulation_mode: simMode,
         include_time_series: true,
+        uncertainty_runs: Number(uncertaintyRuns),
+        history_source_probability: historySourceProbability,
+        suspect_source_probability: suspectSourceProbability,
+        tree_source_probability_overrides: treeSourceProbabilityOverrides ?? {},
         impact_assumptions: impact,
         dashboard_state: {
           report_orchard: {
@@ -527,10 +541,13 @@ export default function SimulationCard({
           impact_assumptions: impact,
           phenology_zones: phenologyZones ?? [],
           status_zones: statusZones ?? [],
+          tree_source_probability_overrides: individualSourceProbabilityOverrides ?? {},
           management_zones: managementZones ?? [],
           cecid_weed_zones: cecidWeedZones ?? [],
           cecid_emergence_zones: legacyCecidEmergenceZones ?? [],
-          cecid_uncertainty_runs: Number(cecidUncertaintyRuns),
+          uncertainty_runs: Number(uncertaintyRuns),
+          history_source_probability: historySourceProbability,
+          suspect_source_probability: suspectSourceProbability,
         },
       }
       body.management_zones = (managementZones ?? []).map((zone) => ({
@@ -540,7 +557,6 @@ export default function SimulationCard({
         coordinates: zone.coordinates,
       }))
       if (pestType === 'cecid') {
-        body.cecid_uncertainty_runs = Number(cecidUncertaintyRuns)
         body.cecid_weed_zones = (cecidWeedZones ?? []).map((zone) => ({
           id: zone.id,
           label: zone.label,
@@ -557,10 +573,6 @@ export default function SimulationCard({
         }
       }
       if (pestType === 'cecid') body.debug_gates = true
-
-      if (neighborThreat > 0 && neighborDir) {
-        body.neighbor_direction = neighborDir
-      }
 
       if (Object.keys(resolvedTreeStageOverrides).length > 0) {
         body.tree_stage_overrides = resolvedTreeStageOverrides
@@ -637,7 +649,7 @@ export default function SimulationCard({
       const cecidInterpretation = cecidSummary?.eligibleTreeCount > 0
         ? ` · ${cecidSummary.establishedTreeCount}/${cecidSummary.eligibleTreeCount} fruitlet trees established (${(cecidSummary.establishedEligibleRate * 100).toFixed(1)}%)${cecidSummary.reachableTreeCount > 0 ? ` · adult pressure reached ${cecidSummary.reachableTreeCount}` : ''}`
         : ''
-      const uncertainty = cecidSummary?.uncertainty
+      const uncertainty = simulationUncertaintySummary(res.data)
       const uncertaintyNote = Number(uncertainty?.runs ?? 0) > 1
         ? ` · ${uncertainty.runs}-run range ${uncertainty.minimum}–${uncertainty.maximum} (median ${Math.round(uncertainty.median)})`
         : ''
@@ -645,7 +657,7 @@ export default function SimulationCard({
         type: 'success',
         msg: pestType === 'cecid'
           ? `Done — ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${cecidInterpretation}${uncertaintyNote} · ${actualSourceCount} soil source anchor${actualSourceCount === 1 ? '' : 's'} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`
-          : `Done — ${nInfested} infested total (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${reachabilityNote} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
+          : `Done — ${nInfested} infested total in one run (${initialInfestedCount} initially infested + ${newlyAffectedCount} newly infested)${reachabilityNote}${uncertaintyNote} · ${seedNote} · ${sensitivityLabel} · ${weatherSrc}`,
       })
       const replayableRequest = buildReplayableSimulationRequest(body, res.data)
       onSimulationComplete?.({
@@ -710,7 +722,7 @@ export default function SimulationCard({
         options={STAGE_OPTIONS}
         small
       />
-      <small className="text-muted d-block mb-2 mt-1">Fruitlet activates Cecid Fly · Mature activates Fruit Fly</small>
+      <small className="text-muted d-block mb-2 mt-1">Fruitlets are susceptible to Cecid Fly; green mature through ripening fruit is susceptible to Fruit Fly.</small>
 
       {treeStageOverrides && Object.keys(treeStageOverrides).length > 0 && (
         <div className="alert alert-success py-1 px-2 mb-2 d-flex align-items-center gap-2" style={{ fontSize: '.78rem' }}>
@@ -747,7 +759,7 @@ export default function SimulationCard({
       <AdvancedPanel
         iconName="diagram-3"
         title="Model & Neighbor Pressure"
-        summary={`${simMode === 'tree_graph' ? 'Tree Graph' : 'Grid'} · ${Math.round(neighborThreat * 100)}% pressure${neighborThreat > 0 ? ` ${neighborDir}` : ''}`}
+        summary={`${simMode === 'tree_graph' ? 'Tree Graph' : 'Grid'} · ${neighborPressureSummary(neighborSources)}`}
         open={showModelPressure}
         onToggle={() => setShowModelPressure((value) => !value)}
       >
@@ -771,53 +783,83 @@ export default function SimulationCard({
         <>
           <div className="alert alert-info py-1 px-2 mt-2 mb-2" style={{ fontSize: '.76rem' }}>
             <i className="bi bi-geo-alt me-1" />
-            If no observed or selected Cecid source exists, each realization assumes 1–3 seeded soil anchors. They are shown on the map but do not start as infected fruit.
+            Without observed, historical, suspected, or selected source evidence, each realization assumes 1–3 soil anchors. They are shown on the map but do not start as infected fruit.
           </div>
-          <label className="small fw-medium mb-1 d-block">
-            <i className="bi bi-dice-5 me-1" />Unknown-source uncertainty
-          </label>
-          <BtnGroup
-            value={cecidUncertaintyRuns}
-            onChange={setCecidUncertaintyRuns}
-            small
-            options={[
-              { value: '1', label: 'Single run' },
-              { value: '5', label: '5 runs' },
-              { value: '9', label: '9 runs' },
-            ]}
-          />
-          <small className="text-muted d-block mt-1 mb-2">
-            Five runs is recommended when source locations are unknown. The displayed map remains one reproducible realization; the result also reports the scenario range.
-          </small>
         </>
       )}
 
+      <SectionLabel iconName="dice-5" text="Repeated Runs" />
+      {pestType === 'fruitfly' && (
+        <small className="text-muted d-block mt-2 mb-2">
+          Fruit Fly pressure acts around the initial source locations. Newly infested fruit does not create more adult sources during this forecast.
+          Individual adult flight paths and egg-to-adult development are not simulated.
+        </small>
+      )}
+      <BtnGroup value={uncertaintyRuns} onChange={setUncertaintyRuns} small options={[
+        { value: '1', label: 'Single run' }, { value: '5', label: '5 runs' }, { value: '9', label: '9 runs' },
+      ]} />
+      <small className="text-muted d-block mt-1 mb-2">
+        Across runs shows how often infestation is present. Playback shows one reproducible run.
+        Weather, tree stages and management stay fixed; uncertain source presence and establishment can vary.
+      </small>
+
+      <SectionLabel iconName="question-circle" text="Default Source Presence" />
+      <Slider id="history-source-probability" label="History Infected: reservoir present" iconName="clock-history"
+        percent
+        min={0} max={1} step={0.05} value={historySourceProbability}
+        marks={[{ label: '0%' }, { label: '50%' }, { label: '100%' }]}
+        onChange={setHistorySourceProbability} />
+      <Slider id="suspect-source-probability" label="Suspect: current infection present" iconName="question-circle"
+        percent
+        min={0} max={1} step={0.05} value={suspectSourceProbability}
+        marks={[{ label: '0%' }, { label: '50%' }, { label: '100%' }]}
+        onChange={setSuspectSourceProbability} />
+      <small className="text-muted d-block mb-2">
+        These defaults apply to History Infected or Suspect unless you set a percentage in a status zone or individual tree override.
+        History can contain a latent soil or adult reservoir
+        without starting as infested fruit; Suspect may start with a current infestation in a run.
+        The 50% defaults are scenario placeholders. Set them from your evidence; they are not field-calibrated probabilities.
+        Infected records current infestation and is used as an initial source scenario; fruit damage alone does not measure adult presence.
+      </small>
+
       <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" />
-      <Slider id="neighbor-threat" label="Threat Level" iconName="bar-chart-steps"
-        min={0} max={1} step={0.1} value={neighborThreat}
-        marks={[{label:'None'},{label:'Low'},{label:'Med'},{label:'High'},{label:'Max'}]}
-        onChange={setNeighborThreat}
-      />
-      {neighborThreat > 0 && (
-        <div className="mb-1">
-          <label className="small fw-medium mb-1 d-block">
-            <i className="bi bi-compass me-1" />
-            {pestType === 'cecid' ? 'Outside Source Direction' : 'Neighbor Direction'}
-          </label>
+      {neighborSources.map((source, index) => (
+        <div key={index} className="border rounded p-2 mb-2" role="group" aria-label={`Neighbor ${index + 1}`}>
+          <div className="d-flex align-items-center gap-2 mb-2">
+            <input className="form-control form-control-sm" aria-label={`Neighbor ${index + 1} name`}
+              value={source.label || ''} maxLength={80} placeholder={`Neighbor ${index + 1}`}
+              onChange={(event) => updateNeighbor(index, { label: event.target.value })} />
+            <button type="button" className="btn btn-sm btn-outline-danger" aria-label={`Remove neighbor ${index + 1}`}
+              onClick={() => setNeighborSources((sources) => sources.filter((_source, i) => i !== index))}>
+              <i className="bi bi-trash" />
+            </button>
+          </div>
+          <Slider id={`neighbor-threat-${index}`} label="Threat Level" iconName="bar-chart-steps"
+            min={0} max={1} step={0.1} value={source.threat}
+            marks={[{label:'None'},{label:'Low'},{label:'Med'},{label:'High'},{label:'Max'}]}
+            onChange={(threat) => updateNeighbor(index, { threat })} />
+          <div className="small fw-medium mb-1"><i className="bi bi-compass me-1" />Source direction</div>
           <div className="sim-btn-group sim-btn-group-sm">
-            {DIR_OPTIONS.map((o) => (
-              <button key={o.value} type="button"
-                className={`sim-btn-group-item${neighborDir === o.value ? ' active' : ''}`}
-                onClick={() => setNeighborDir(o.value)}>
-                {o.value}
+            {[...DIR_OPTIONS, { value: null, label: 'All sides / unknown direction' }].map((option) => (
+              <button key={option.value || 'all'} type="button" title={option.label}
+                aria-label={`Neighbor ${index + 1}: ${option.label}`} aria-pressed={source.direction === option.value}
+                className={`sim-btn-group-item${source.direction === option.value ? ' active' : ''}`}
+                onClick={() => updateNeighbor(index, { direction: option.value })}>
+                {option.value || 'All'}
               </button>
             ))}
           </div>
         </div>
-      )}
+      ))}
+      <button type="button" className="btn btn-sm btn-outline-success mb-2" disabled={neighborSources.length >= 16}
+        onClick={() => setNeighborSources((sources) => [...sources, { label: `Neighbor ${sources.length + 1}`, direction: 'N', threat: 0.3 }])}>
+        <i className="bi bi-plus-lg me-1" />Add neighbor
+      </button>
+      {neighborSources.length === 0 && <small className="text-muted d-block mb-1">No outside neighbor pressure included.</small>}
+      <small className="text-muted d-block mb-1">Add each nearby orchard with its own direction and threat level. Local pressures combine up to 100% before wind adjusts each source.</small>
       <small className="text-muted d-block mb-0">
         {pestType === 'cecid'
-          ? 'Optional, uncalibrated proxy for adults arriving from a nearby unmanaged orchard. Direction means where that source lies relative to this orchard. Use only with field evidence; it obeys fruitlet and dawn/dusk conditions and never creates a soil source.'
+          ? 'Optional, uncalibrated estimate of outside adult exposure. Direction means where that source lies. Suitable fruitlets, light, rain and wind are required. Boundary crossings, adult age, eggs and travel time are not tracked; distant trees can receive exposure in the first suitable hour.'
           : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
       </small>
 
@@ -857,11 +899,15 @@ export default function SimulationCard({
             marks={[{label:'0%'},{label:'50%'},{label:'95%'}]}
             onChange={setTreatmentEfficacy}
           />
-          {(treatmentType === 'targeted_spray' || treatmentType === 'sanitation') && (
-            <small className="text-muted d-block mb-2">
-              Applies to detected or seeded source trees unless specific targets are selected later.
-            </small>
-          )}
+          <small className="text-muted d-block mb-2">
+            {{
+              protective_spray: 'Whole living orchard: reduces incoming infestation pressure. Source output is unchanged.',
+              targeted_spray: 'Initial active source locations only: reduces source output and incoming pressure at those locations, including active historical reservoirs.',
+              sanitation: 'Initial active source locations only: reduces source output, including active historical reservoirs. Incoming susceptibility is unchanged.',
+              combined: 'Whole living orchard: reduces incoming infestation pressure and source output.',
+            }[treatmentType]}
+            {' '}Applied once at the start and held constant for this forecast; existing infestation is not removed.
+          </small>
         </div>
       )}
       </AdvancedPanel>

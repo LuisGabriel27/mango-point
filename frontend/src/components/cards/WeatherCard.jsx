@@ -12,6 +12,7 @@ import {
   weatherCoverage,
   WEATHER_VALUE_PRESETS,
 } from '../../utils/weatherSchedule'
+import { DAYLIGHT_CONDITIONS } from '../../utils/daylightLight'
 
 const CARDINAL = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 const CARDINAL_DEG = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 }
@@ -77,6 +78,35 @@ function WindDirectionField({ value, onChange }) {
   )
 }
 
+export function DaylightConditionField({ block, onChange }) {
+  return (
+    <div className="weather-preset-field">
+      <label className="weather-number-field">
+        <span>Daylight light condition</span>
+        <select className="form-select form-select-sm" value={block.daylight_condition || ''}
+          onChange={(event) => onChange({ daylight_condition: event.target.value || null,
+            daylight_condition_basis: event.target.value ? block.daylight_condition_basis || 'assumed' : null })}>
+          <option value="">Not specified (radiation needed)</option>
+          {Object.entries(DAYLIGHT_CONDITIONS).map(([value, condition]) => (
+            <option key={value} value={value}>{condition.label}</option>
+          ))}
+        </select>
+      </label>
+      {block.daylight_condition && (
+        <label className="weather-number-field mt-2">
+          <span>Light condition source</span>
+          <select className="form-select form-select-sm" value={block.daylight_condition_basis || 'assumed'}
+            onChange={(event) => onChange({ daylight_condition_basis: event.target.value })}>
+            <option value="assumed">Assumed scenario</option>
+            <option value="observed">Observed locally</option>
+          </select>
+        </label>
+      )}
+      <small className="text-muted d-block mt-1">Describes outdoor daylight for this period, separately from cloud percentage. Observed locally means your reported condition. Tree-canopy shade alone does not enable Cecid emergence or movement. Applies during daylight; rain, wind, fruit stage and soil checks still apply.</small>
+    </div>
+  )
+}
+
 function SoilContextEditor({ timeline, onChange }) {
   const context = timeline.manual_soil_context || { preset: 'dry' }
   const update = (patch) => onChange({
@@ -88,9 +118,9 @@ function SoilContextEditor({ timeline, onChange }) {
   })
   return (
     <div className="weather-soil-settings">
-      <div className="small fw-semibold mb-2">Soil before Hour 0</div>
+      <div className="small fw-semibold mb-2">Starting soil</div>
       <div className="btn-group btn-group-sm w-100 mb-2" role="group" aria-label="Starting soil condition">
-        {[['dry', 'Dry'], ['recently_wet', 'Recently wet'], ['custom', 'Custom']].map(([value, label]) => (
+        {[['dry', 'Dry'], ['moist', 'Moist now'], ['recently_wet', 'Recently wet'], ['custom', 'Custom']].map(([value, label]) => (
           <button
             type="button" key={value}
             className={'btn ' + (context.preset === value ? 'btn-primary' : 'btn-outline-secondary')}
@@ -100,6 +130,14 @@ function SoilContextEditor({ timeline, onChange }) {
         ))}
       </div>
       {context.preset === 'dry' && <small className="text-muted">No rainfall in the 72 hours before the simulation.</small>}
+      {context.preset === 'moist' && (
+        <div>
+          <NumberField label="Moisture strength" value={(context.initial_moisture_score ?? 1) * 100}
+            max={100} suffix="%" step={1}
+            onChange={(value) => update({ initial_moisture_score: Math.max(0, Math.min(1, value / 100)) })} />
+          <small className="text-muted">Assumed moist soil at Hour 0 without adding earlier rain. 100% is the model's moisture scale, not a measured soil-water percentage. Moisture decreases over time unless rain adds to it.</small>
+        </div>
+      )}
       {context.preset === 'recently_wet' && (
         <small className="text-muted">8 mm of rain over 4 hours, ending 6 hours before Hour 0.</small>
       )}
@@ -152,6 +190,14 @@ function WeatherPeriodOverview({ blocks, hours, wholeRun, modal = false }) {
             <span className="weather-period-summary-value">
               <i className="bi bi-wind" aria-hidden="true" />{block.wind_speed_ms ?? '—'} m/s {toCardinal(block.wind_dir_deg)}
             </span>
+            <span className="weather-period-summary-value">
+              <i className="bi bi-cloud" aria-hidden="true" />{block.cloud_cover_pct ?? 0}% cloud
+            </span>
+            <span className="weather-period-summary-value">
+              <i className="bi bi-brightness-high" aria-hidden="true" />
+              {DAYLIGHT_CONDITIONS[block.daylight_condition]?.label || 'Light not specified'}
+              {block.daylight_condition && ` (${block.daylight_condition_basis === 'observed' ? 'observed' : 'assumed'})`}
+            </span>
           </div>
         </div>
       ))}
@@ -199,7 +245,8 @@ export function CustomWeatherEditor({
 
   const update = (patch) => onChange({ ...timeline, ...patch, enabled: true, mode: 'advanced' })
   const updateBlock = (index, field, value) => update({
-    advanced_blocks: blocks.map((block, position) => position === index ? { ...block, [field]: value } : block),
+    advanced_blocks: blocks.map((block, position) => position === index
+      ? { ...block, ...(typeof field === 'object' ? field : { [field]: value }) } : block),
   })
 
   const changePeriod = (offset) => {
@@ -336,6 +383,9 @@ export function CustomWeatherEditor({
               suffix="°C" max={50} onChange={(value) => updateBlock(index, 'temperature_c', value)} />
             <PresetField label="Rainfall" field="rainfall_mm" value={block.rainfall_mm}
               suffix="mm/h" max={100} onChange={(value) => updateBlock(index, 'rainfall_mm', value)} />
+            <PresetField label="Cloud cover" field="cloud_cover_pct" value={block.cloud_cover_pct ?? 0}
+              suffix="%" max={100} onChange={(value) => updateBlock(index, 'cloud_cover_pct', value)} />
+            <DaylightConditionField block={block} onChange={(patch) => updateBlock(index, patch)} />
             <PresetField label="Wind strength" field="wind_speed_ms" value={block.wind_speed_ms}
               suffix="m/s" max={30} onChange={(value) => updateBlock(index, 'wind_speed_ms', value)}>
               <WindDirectionField value={block.wind_dir_deg} onChange={(value) => updateBlock(index, 'wind_dir_deg', value)} />
@@ -406,6 +456,7 @@ export function CustomWeatherEditor({
             </span>
             <strong className="weather-cecid-settings-title">Soil &amp; Cecid test preset</strong>
             <small>{isCecid ? (timeline.manual_soil_context?.preset === 'recently_wet' ? 'Recently wet' :
+              timeline.manual_soil_context?.preset === 'moist' ? 'Moist at Hour 0' :
               timeline.manual_soil_context?.preset === 'custom' ? 'Custom soil' : 'Dry soil') : 'Available for Cecid Fly'}</small>
             <i className="bi bi-chevron-down weather-cecid-settings-chevron" aria-hidden="true" />
           </summary>
@@ -418,7 +469,7 @@ export function CustomWeatherEditor({
             <button type="button" className="btn btn-sm btn-outline-primary" onClick={loadCecidPreset}>Use preset</button>
           </div>
           <small className="text-muted d-block">
-            This preset changes weather only. Soil, rain, wind and dawn/dusk determine emergence suitability;
+            This preset changes weather only. Soil moisture affects emergence; rain, wind and dawn/dusk or cloudy daylight affect adult movement;
             weed and wind coefficients remain research assumptions for BPI calibration.
           </small>
       </details>
@@ -441,6 +492,7 @@ export default function WeatherCard({
   embedded = false,
 }) {
   const [showDetails, setShowDetails] = useState(Boolean(weatherOverrideActive))
+  const [retryState, setRetryState] = useState('idle')
   const current = weather?.current
   const hours = Math.max(1, Math.min(168, Number(simulationHours) || 48))
   const timeline = Array.isArray(weatherTimeline?.advanced_blocks) || weatherTimeline?.mode === 'guided'
@@ -450,6 +502,21 @@ export default function WeatherCard({
   useEffect(() => {
     if (weatherOverrideActive) setShowDetails(true)
   }, [weatherOverrideActive])
+
+  useEffect(() => {
+    if (current?.source !== 'synthetic') setRetryState('idle')
+  }, [current?.source])
+
+  const retryWeather = async () => {
+    if (retryState === 'loading' || !onRetry) return
+    setRetryState('loading')
+    try {
+      const succeeded = await onRetry()
+      setRetryState(succeeded === false ? 'error' : 'success')
+    } catch (_) {
+      setRetryState('error')
+    }
+  }
 
   const selectCustom = () => {
     onTimelineChange?.({ ...timeline, enabled: true })
@@ -470,7 +537,15 @@ export default function WeatherCard({
             <div className="col-6">
               <i className="bi bi-wind me-1" />{current.wind_speed_ms?.toFixed(1)} m/s from {toCardinal(current.wind_direction_deg ?? 0)}
             </div>
+            <div className="col-6">
+              <i className="bi bi-cloud me-1" />Cloud: {current.cloud_cover_pct != null ? `${current.cloud_cover_pct.toFixed(0)}%` : 'Unavailable'}
+            </div>
+            <div className="col-6">
+              <i className="bi bi-sun me-1" />Solar: {current.shortwave_radiation_wm2 != null ? `${current.shortwave_radiation_wm2.toFixed(0)} W/m²` : 'Unavailable'}
+            </div>
+            <div className="col-12">Direct sunlight: {current.direct_normal_irradiance_wm2 != null ? `${current.direct_normal_irradiance_wm2.toFixed(0)} W/m²` : 'Unavailable'}</div>
           </div>
+          <small className="text-muted">Cloud and sunlight are forecast estimates. Shade beneath trees alone does not enable Cecid activity.</small>
         </div>
       ) : (
         <div className="text-muted small mb-2"><span className="spinner-border spinner-border-sm me-1" />Fetching weather…</div>
@@ -492,9 +567,27 @@ export default function WeatherCard({
         <div className="alert alert-warning py-2 px-2 mt-2 mb-2" style={{ fontSize: '.76rem' }}>
           <div className="fw-semibold"><i className="bi bi-exclamation-triangle-fill me-1" />Synthetic fallback is active</div>
           <div className="mt-1">{weather?.fallback_reason || weather?.provenance?.fallback_reason || 'The live provider did not return usable data.'}</div>
-          <button type="button" className="btn btn-sm btn-outline-dark mt-2 py-0" onClick={onRetry}>
-            <i className="bi bi-arrow-clockwise me-1" />Retry Open-Meteo
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-dark mt-2 py-0"
+            onClick={retryWeather}
+            disabled={retryState === 'loading'}
+            aria-busy={retryState === 'loading'}
+          >
+            {retryState === 'loading'
+              ? <><span className="spinner-border spinner-border-sm me-1" />Checking Open-Meteo…</>
+              : <><i className="bi bi-arrow-clockwise me-1" />Retry Open-Meteo</>}
           </button>
+          {retryState === 'error' && (
+            <div className="small text-danger mt-2" role="status">
+              Open-Meteo is still unavailable. Please try again shortly.
+            </div>
+          )}
+          {retryState === 'success' && (
+            <div className="small text-success mt-2" role="status">
+              Weather request completed; refreshing the forecast…
+            </div>
+          )}
         </div>
       )}
 

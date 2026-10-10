@@ -29,13 +29,13 @@ export function drawSnapshotMarkers(context, points, project) {
       context.lineWidth = 2
       context.stroke()
     }
-    if (point.cecid_source) {
+    if (point.cecid_source || point.initialSource) {
       context.fillStyle = '#78350f'
       context.fillRect(x + 3, y - 16, 13, 13)
       context.fillStyle = '#ffffff'
       context.font = 'bold 10px Arial'
       context.textAlign = 'center'
-      context.fillText('S', x + 9.5, y - 6)
+      context.fillText(point.is_cecid || point.cecid_source ? 'S' : point.initialSource.badge || 'S', x + 9.5, y - 6)
     }
     context.restore()
   }

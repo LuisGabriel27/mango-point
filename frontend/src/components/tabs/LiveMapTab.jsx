@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import RiskMap from '../RiskMap'
+import SourcePresenceControl from '../SourcePresenceControl'
 import MpSelect from '../MpSelect'
 import ZoneManager from '../ZoneManager'
 import ZoneClearConfirmationModal from '../ZoneClearConfirmationModal'
 import { buildZoneInventory, ZONE_TYPE_OPTIONS, zoneInventoryCounts } from '../../utils/zoneInventory'
 import { zoneClearSummary } from '../../utils/zoneManagerModel'
+import { RISK_LEGEND_ENTRIES } from '../../utils/riskSurface'
 
 const COMPASS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
   <defs>
@@ -98,14 +100,6 @@ const COMPASS_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 14
 
 const COMPASS_URI = `data:image/svg+xml;utf8,${encodeURIComponent(COMPASS_SVG)}`
 
-const RISK_LEGEND_ENTRIES = [
-  { label: 'Critical', color: '#b91c1c' },
-  { label: 'Severe',   color: '#ef4444' },
-  { label: 'High',     color: '#f97316' },
-  { label: 'Moderate', color: '#facc15' },
-  { label: 'Low',      color: '#22c55e' },
-]
-
 const TREE_STATE_LEGEND_ENTRIES = [
   { label: 'Healthy', color: '#22c55e' },
   { label: 'Infected', color: '#ef4444' },
@@ -113,14 +107,15 @@ const TREE_STATE_LEGEND_ENTRIES = [
   { label: 'Dead', color: '#424242' },
   { label: 'Historical', color: '#ff9800' },
   { label: 'Suspect', color: '#9c27b0' },
+  { label: 'S / R: source / reservoir in one run', color: '#78350f' },
 ]
 
 const CECID_LIKELIHOOD_LEGEND_ENTRIES = [
   { label: '75–100% of runs', color: '#b91c1c' },
-  { label: '50–74% of runs', color: '#ef4444' },
-  { label: '25–49% of runs', color: '#f59e0b' },
-  { label: '10–24% of runs', color: '#facc15' },
-  { label: '0–9% of runs', color: '#22c55e' },
+  { label: '50–<75% of runs', color: '#ef4444' },
+  { label: '25–<50% of runs', color: '#f59e0b' },
+  { label: '10–<25% of runs', color: '#facc15' },
+  { label: '<10% of runs', color: '#22c55e' },
 ]
 
 const CECID_TREE_STATE_LEGEND_ENTRIES = [
@@ -172,10 +167,12 @@ export default function LiveMapTab({
   statusZones = [],
   statusZoneDrawing = false,
   statusZoneStatus = 'infected',
+  statusZoneSourceProbability = null,
   statusZoneDraft = [],
   statusZoneSelectedCount = 0,
   statusOptions = [],
   onStatusZoneStatusChange,
+  onStatusZoneSourceProbabilityChange,
   onStatusZoneStart,
   onStatusZoneCancel,
   onStatusZoneFinish,
@@ -348,16 +345,15 @@ export default function LiveMapTab({
     setShowZoneManager(true)
   }
 
-  const titleText = resultPestType === 'cecid'
-    && cecidMapMode === 'likelihood'
+  const titleText = cecidMapMode === 'likelihood'
     && cecidEnsembleRuns > 1
-    ? `Cecid infestation likelihood — ${cecidEnsembleRuns} runs`
+    ? `${resultPestType === 'cecid' ? 'Cecid Fly' : 'Fruit Fly'} infestation frequency — ${cecidEnsembleRuns} runs`
     : currentFrame != null
       ? `Hour ${currentFrame.hour} — Representative realization`
       : (orchardName ?? null)
 
   const showLegend = geojson != null
-  const riskLegendEntries = resultPestType === 'cecid' && cecidMapMode === 'likelihood'
+  const riskLegendEntries = cecidMapMode === 'likelihood' && cecidEnsembleRuns > 1
     ? CECID_LIKELIHOOD_LEGEND_ENTRIES
     : RISK_LEGEND_ENTRIES
   const treeStateLegendEntries = resultPestType === 'cecid'
@@ -412,15 +408,15 @@ export default function LiveMapTab({
             <i className="bi bi-layers" /><span>Layers</span>
           </button>
 
-          {resultPestType === 'cecid' && cecidEnsembleRuns > 1 && (
-            <div className="map-result-mode" role="group" aria-label="Cecid result map mode">
+          {cecidEnsembleRuns > 1 && (
+            <div className="map-result-mode" role="group" aria-label="Simulation result map mode">
               <button
                 type="button"
                 className={`btn btn-sm ${cecidMapMode === 'likelihood' ? 'btn-success' : 'btn-light'}`}
                 onClick={() => onCecidMapModeChange?.('likelihood')}
-                title="How often each tree established infestation across repeated runs"
+                title="How often each tree was infested across repeated runs"
               >
-                Likelihood
+                Across runs
               </button>
               <button
                 type="button"
@@ -535,6 +531,10 @@ export default function LiveMapTab({
               </label>
             </div>
 
+            {zoneEditorType === 'status' && (
+              <SourcePresenceControl status={statusZoneStatus} value={statusZoneSourceProbability}
+                onChange={onStatusZoneSourceProbabilityChange} className="mb-3" />
+            )}
             {zoneEditorType === 'cecid' && (
               <p className="map-zone-editor-note"><i className="bi bi-info-circle" />Weed habitats represent a research shelter/relay assumption and do not create flies.</p>
             )}
@@ -605,15 +605,15 @@ export default function LiveMapTab({
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
 
-        {resultPestType === 'cecid' && cecidEnsembleRuns > 1 && (
-          <div className="map-result-mode" role="group" aria-label="Cecid result map mode">
+        {cecidEnsembleRuns > 1 && (
+          <div className="map-result-mode" role="group" aria-label="Simulation result map mode">
             <button
               type="button"
               className={`btn btn-sm ${cecidMapMode === 'likelihood' ? 'btn-success' : 'btn-light'}`}
               onClick={() => onCecidMapModeChange?.('likelihood')}
-              title="How often each tree established infestation across repeated runs"
+              title="How often each tree was infested across repeated runs"
             >
-              Likelihood
+              Across runs
             </button>
             <button
               type="button"
@@ -663,6 +663,10 @@ export default function LiveMapTab({
                 <div style={{ flexShrink: 0, width: 148 }}>
                   <MpSelect small value={statusZoneStatus} onChange={onStatusZoneStatusChange} options={statusOptions} />
                 </div>
+              )}
+              {zoneEditorType === 'status' && (
+                <SourcePresenceControl status={statusZoneStatus} value={statusZoneSourceProbability}
+                  onChange={onStatusZoneSourceProbabilityChange} />
               )}
               {(zoneEditorType === 'stage' || zoneEditorType === 'status' || zoneEditorType === 'management' || zoneEditorType === 'cecid') && (
                 <div style={{ flexShrink: 0, width: 132 }}>
@@ -931,6 +935,8 @@ export default function LiveMapTab({
                   options={statusOptions}
                 />
               </div>
+              <SourcePresenceControl status={statusZoneStatus} value={statusZoneSourceProbability}
+                onChange={onStatusZoneSourceProbabilityChange} />
               <button
                 type="button"
                 className="btn btn-sm btn-light"
@@ -1041,7 +1047,7 @@ export default function LiveMapTab({
                 <div className="map-risk-legend-columns">
                   <div>
                     <div className="map-risk-legend-group-title">
-                      {resultPestType === 'cecid' && cecidMapMode === 'likelihood'
+                      {cecidMapMode === 'likelihood'
                         ? 'Across runs'
                         : 'Risk level'}
                     </div>
@@ -1061,6 +1067,13 @@ export default function LiveMapTab({
                       </div>
                     ))}
                   </div>
+                </div>
+                <div className="small text-muted mt-2">
+                  {cecidMapMode === 'likelihood'
+                    ? 'Colors show how often infestation was present across repeated runs. One run shows that individual run’s score.'
+                    : 'Colors show the selected run’s risk score. Infestation is shown as 100%, rather than a guarantee across runs.'}
+                  {' '}Soft shading interpolates between trees. Ground coverage stays fixed as you zoom.
+                  {' '}Source badges show sources active in one run; assumed sources are scenario inputs, not confirmed field findings.
                 </div>
               </div>
             )}

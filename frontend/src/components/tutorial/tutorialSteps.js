@@ -1,6 +1,11 @@
 export const TUTORIAL_VERSION = 'beginner-v3-settings-v17'
 export const tourTarget = (id) => `[data-tour="${id}"]`
 
+export function tutorialPlacement(step, compactViewport) {
+  if (!compactViewport) return step.placement
+  return step.id === 'notifications' ? 'bottom' : 'center'
+}
+
 export function tutorialPreferenceKey(user) {
   const id = user?.user_id ?? user?.id ?? user?.username
   return id == null ? null : `mangopoint:tutorial:${TUTORIAL_VERSION}:${encodeURIComponent(id)}`
@@ -100,7 +105,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
     add('notifications', `${isAdmin ? '15' : '14'}. Read and manage notifications`,
       'The bell shows active alerts. Open it after the tour to read the warning and suggested response. Acknowledge marks it reviewed; Resolve closes it.',
       'Emailed shows that email was sent. Open Simulation Controls only prepares inputs; you must review them and run the forecast. An alert is not proof of infestation.',
-      { navbarPanel: 'notifications' }, 'notification-list')
+      { navbarPanel: 'notifications', placement: 'left' }, 'notification-list')
     add('finish', 'You now know the main flow',
       'Choose a pest guide next for the exact Cecid or Fruit Fly conditions. You can reopen Tutorial from the top bar at any time.',
       'Setup → Simulate → Results → Verify, then keep your account and alert contacts current.', {}, 'tutorial-start')

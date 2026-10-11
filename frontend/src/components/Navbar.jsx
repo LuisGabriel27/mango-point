@@ -125,8 +125,11 @@ export default function Navbar({
           </button>
 
           {bellDisplayed && (
-            <div className="navbar-bell-dropdown">
-              <div className="navbar-bell-header" data-tour="notification-list">
+            <div
+              className={`navbar-bell-dropdown${tutorialPanel === 'notifications' ? ' is-tutorial-target' : ''}`}
+              data-tour="notification-list"
+            >
+              <div className="navbar-bell-header">
                 <span><i className="bi bi-bell-fill me-1" />Alerts</span>
                 <span className="navbar-bell-count">{active.length} active</span>
               </div>

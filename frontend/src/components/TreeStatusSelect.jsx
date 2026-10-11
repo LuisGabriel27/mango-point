@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import MpSelect from './MpSelect'
 import SourcePresenceControl from './SourcePresenceControl'
 import { isUncertainSourceStatus } from '../utils/sourcePresence.js'
 
@@ -16,10 +17,13 @@ export default function TreeStatusSelect({ defaultValue, defaultSourceProbabilit
   const [probability, setProbability] = useState(defaultSourceProbability)
   return (
     <>
-      <select aria-label="Tree status" className="form-select mb-3 border-primary" value={value}
-        onChange={(event) => setValue(event.target.value)}>
-        {OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
+      <MpSelect
+        ariaLabel="Tree status"
+        className="mb-3"
+        value={value}
+        onChange={setValue}
+        options={OPTIONS}
+      />
       <SourcePresenceControl status={value} value={probability} onChange={setProbability} className="mb-3" />
       <div className="card bg-light border-0 mb-3">
         <div className="card-body py-2 px-3 small">

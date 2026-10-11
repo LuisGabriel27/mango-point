@@ -33,6 +33,21 @@ export function filterRunsByHistoryPeriod(runs = [], period, monthKey = historyM
   })
 }
 
+export function historyPage(runs = [], requestedPage = 0, pageSize = 10) {
+  const size = Math.max(1, Math.trunc(Number(pageSize) || 10))
+  const pageCount = Math.max(1, Math.ceil(runs.length / size))
+  const page = Math.max(0, Math.min(Math.trunc(Number(requestedPage) || 0), pageCount - 1))
+  const start = page * size
+  return {
+    runs: runs.slice(start, start + size),
+    page,
+    pageCount,
+    total: runs.length,
+    first: runs.length ? start + 1 : 0,
+    last: Math.min(start + size, runs.length),
+  }
+}
+
 export function historyMonthLabel(monthKey = historyMonthKey()) {
   const selected = historyMonthParts(monthKey)
   if (!selected) return 'Selected month'

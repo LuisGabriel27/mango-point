@@ -53,7 +53,11 @@ test('Healthy, Bagged and Dead do not offer source-presence controls', () => {
 
 test('individual tree editor restores a percentage and its status together', () => {
   const html = render(TreeStatusSelect, { defaultValue: 'history_infected', defaultSourceProbability: 0.7 })
-  assert.match(html, /value="history_infected" selected=""/)
+  assert.match(html, /role="combobox"/)
+  assert.match(html, /aria-label="Tree status"/)
+  assert.match(html, /class="mp-select-trigger"/)
+  assert.match(html, /History Infected/)
+  assert.doesNotMatch(html, /<select[^>]*aria-label="Tree status"/)
   assert.match(html, /value="70"/)
   assert.match(html, /Apply Changes/)
 })

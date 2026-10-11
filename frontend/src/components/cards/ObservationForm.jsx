@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import DatePicker from 'react-datepicker'
+import 'react-datepicker/dist/react-datepicker.css'
 import CollapsibleCard from '../CollapsibleCard'
 import MpSelect from '../MpSelect'
 import api, { apiErrorMessage } from '../../api'
@@ -209,18 +211,28 @@ export default function ObservationForm({
             <label className="form-label observation-label">Verification</label>
             <MpSelect small value={presence} onChange={setPresence} options={PRESENCE_OPTIONS} />
           </div>
-          <div>
+          <div className="observation-method-field">
             <label className="form-label observation-label">Method</label>
             <MpSelect small value={method} onChange={setMethod} options={METHOD_OPTIONS} />
           </div>
-          <div>
+          <div className="observation-time-field">
             <label className="form-label observation-label" htmlFor="observation-time">Observed at</label>
-            <input
+            <DatePicker
               id="observation-time"
-              type="datetime-local"
-              className="form-control form-control-sm"
-              value={observedAt}
-              onChange={(event) => setObservedAt(event.target.value)}
+              selected={observedAt ? new Date(observedAt) : null}
+              onChange={(date) => setObservedAt(date ? localDateTimeValue(date) : '')}
+              showTimeSelect
+              timeFormat="h:mm aa"
+              timeIntervals={5}
+              dateFormat="MMM d, yyyy h:mm aa"
+              placeholderText="Select observation date and time"
+              className="form-control form-control-sm mp-datepicker-input"
+              wrapperClassName="observation-datepicker-input-wrap"
+              calendarClassName="mp-datepicker observation-datepicker"
+              popperClassName="observation-datepicker-popper"
+              popperPlacement="bottom-end"
+              portalId="observation-datepicker-portal"
+              ariaLabel="Observation date and time"
               required
             />
           </div>

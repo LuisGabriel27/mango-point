@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTutorialSteps } from './tutorialSteps.js'
+import { buildTutorialSteps, tutorialPlacement } from './tutorialSteps.js'
 
 const text = (steps) => steps.map((step) => `${step.title} ${step.content} ${step.data.tip}`).join(' ')
 
@@ -15,6 +15,9 @@ test('quick start teaches the complete workflow without overwhelming a first-tim
   assert.match(text(steps), /recovery email/i)
   assert.match(text(steps), /Change your password/i)
   assert.match(text(steps), /bell shows active alerts/i)
+  const notificationStep = steps.find((step) => step.id === 'notifications')
+  assert.equal(notificationStep.target, '[data-tour="notification-list"]')
+  assert.equal(notificationStep.placement, 'left')
   assert.equal(steps.some((step) => step.id === 'notification-emails'), false)
   assert.deepEqual(
     [...new Set(steps.map((step) => step.data.phase).filter((phase) => phase !== 'explore'))],
@@ -30,6 +33,13 @@ test('administrator quick start explains notification recipient management', () 
   assert.equal(recipientStep.data.view.settingsTab, 'notifications')
   assert.match(text(steps), /Add recipient/)
   assert.match(text(steps), /pause, resume or delete/i)
+})
+
+test('notification tutorial stays beside the alert panel without covering it', () => {
+  const notificationStep = buildTutorialSteps({ guide: 'workflow' }).find((step) => step.id === 'notifications')
+  assert.equal(tutorialPlacement(notificationStep, false), 'left')
+  assert.equal(tutorialPlacement(notificationStep, true), 'bottom')
+  assert.equal(tutorialPlacement({ id: 'orchard', placement: 'left' }, true), 'center')
 })
 
 test('the Cecid guide explains every gate in farm language and adds custom-weather help only when relevant', () => {

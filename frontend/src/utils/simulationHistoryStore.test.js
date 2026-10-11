@@ -10,6 +10,7 @@ import {
   HISTORY_PERIOD_ALL_HISTORY,
   HISTORY_PERIOD_MONTH,
   filterRunsByHistoryPeriod,
+  historyPage,
   historyMonthKey,
   historyMonthLabel,
 } from './historyPeriod.js'
@@ -129,4 +130,18 @@ test('history calendar selects a month and year until All history is selected', 
   )
   assert.equal(historyMonthLabel('2026-10'), 'October 2026')
   assert.equal(filterRunsByHistoryPeriod(runs, HISTORY_PERIOD_ALL_HISTORY, '2026-10'), runs)
+})
+
+test('simulation history pagination limits each page to ten runs and clamps stale pages', () => {
+  const runs = Array.from({ length: 23 }, (_, index) => ({ run_id: `run-${index + 1}` }))
+
+  assert.deepEqual(historyPage(runs, 0).runs.map((run) => run.run_id),
+    Array.from({ length: 10 }, (_, index) => `run-${index + 1}`))
+  assert.deepEqual(historyPage(runs, 1).runs.map((run) => run.run_id),
+    Array.from({ length: 10 }, (_, index) => `run-${index + 11}`))
+
+  const last = historyPage(runs, 2)
+  assert.deepEqual(last.runs.map((run) => run.run_id), ['run-21', 'run-22', 'run-23'])
+  assert.deepEqual([last.first, last.last, last.total, last.page, last.pageCount], [21, 23, 23, 2, 3])
+  assert.equal(historyPage(runs.slice(0, 4), 99).page, 0)
 })

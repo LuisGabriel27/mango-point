@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ACTIONS, EVENTS, Joyride } from 'react-joyride'
-import { buildTutorialSteps, readTutorialPreference, rememberTutorial, tutorialPreferenceKey } from './tutorialSteps'
+import { buildTutorialSteps, readTutorialPreference, rememberTutorial, tutorialPlacement, tutorialPreferenceKey } from './tutorialSteps'
 import './tutorial.css'
 
 function TutorialTooltip({ index, size, step, backProps, closeProps, primaryProps, skipProps, tooltipProps }) {
@@ -9,7 +9,7 @@ function TutorialTooltip({ index, size, step, backProps, closeProps, primaryProp
     ['history', 'History'], ['verify', 'Verify'], ['settings', 'Settings'],
   ]
   return (
-    <section {...tooltipProps} className="workflow-tour-tooltip" aria-labelledby="workflow-tour-title" aria-describedby="workflow-tour-content">
+    <section {...tooltipProps} className={`workflow-tour-tooltip workflow-tour-tooltip-${step.id}`} aria-labelledby="workflow-tour-title" aria-describedby="workflow-tour-content">
       <div className="workflow-tour-topline">
         <span aria-live="polite">Step {index + 1} of {size}</span>
         <button {...closeProps} type="button" className="workflow-tour-close" aria-label="Close tutorial">×</button>
@@ -81,7 +81,7 @@ function RunningTutorial({ definitions, presentation, onPresentationChange, onEn
   }, [onEnd])
   const steps = useMemo(() => definitions.map((step) => ({
     ...step,
-    placement: compactViewport ? 'center' : step.placement,
+    placement: tutorialPlacement(step, compactViewport),
     before: () => prepare(step.data.view),
   })), [compactViewport, definitions, prepare])
 

@@ -40,4 +40,6 @@
 @media (max-width: 600px) {
   .workflow-tour-menu, .workflow-tour-notice { position: fixed; top: 76px; right: 12px; }
   .workflow-tour-tooltip { padding: 14px; font-size: 13px; }
+  .workflow-tour-tooltip-notifications { max-height: min(44dvh, 360px); }
+  .navbar-bell-dropdown.is-tutorial-target .navbar-bell-list { max-height: 30dvh; }
 }

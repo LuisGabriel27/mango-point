@@ -10,6 +10,7 @@ import {
   HISTORY_PERIOD_ALL_HISTORY,
   HISTORY_PERIOD_MONTH,
   filterRunsByHistoryPeriod,
+  historyPage,
   historyMonthKey,
   historyMonthLabel,
   historyMonthParts,
@@ -18,6 +19,7 @@ import {
 const DEFAULT_ORCHARD_ID = 'default-orchard'
 const DEFAULT_ORCHARD_LABEL = 'Default Orchard (BPI)'
 const ALL_ORCHARDS = 'all'
+const HISTORY_PAGE_SIZE = 10
 
 const HISTORY_GROUP_OPTIONS = [
   { value: 'all', label: 'No grouping' },
@@ -169,6 +171,7 @@ export default function SimulationHistoryTab({
   const [historyPeriod, setHistoryPeriod] = useState(HISTORY_PERIOD_MONTH)
   const [historyMonth, setHistoryMonth] = useState(() => historyMonthKey())
   const [historyGrouping, setHistoryGrouping] = useState('all')
+  const [requestedPage, setRequestedPage] = useState(0)
   const [status, setStatus] = useState(null)
   const currentMonthKey = useMemo(() => historyMonthKey(), [])
   const selectedMonthLabel = useMemo(() => historyMonthLabel(historyMonth), [historyMonth])
@@ -199,10 +202,24 @@ export default function SimulationHistoryTab({
     [historyMonth, historyPeriod, runs],
   )
 
-  const groupedRuns = useMemo(
-    () => groupRuns(displayedRuns, historyGrouping),
-    [displayedRuns, historyGrouping],
+  const historyView = useMemo(
+    () => historyPage(displayedRuns, requestedPage, HISTORY_PAGE_SIZE),
+    [displayedRuns, requestedPage],
   )
+
+  const groupedRuns = useMemo(
+    () => groupRuns(historyView.runs, historyGrouping),
+    [historyGrouping, historyView.runs],
+  )
+  const showPagination = displayedRuns.length > HISTORY_PAGE_SIZE
+
+  useEffect(() => {
+    if (requestedPage !== historyView.page) setRequestedPage(historyView.page)
+  }, [historyView.page, requestedPage])
+
+  useEffect(() => {
+    setRequestedPage(0)
+  }, [historyGrouping, historyMonth, historyOrchardId, historyPeriod])
 
   const orchardLabel = (runOrchardId) => {
     if (runOrchardId === DEFAULT_ORCHARD_ID) return DEFAULT_ORCHARD_LABEL
@@ -212,6 +229,7 @@ export default function SimulationHistoryTab({
   }
 
   const fetchRuns = useCallback(async () => {
+    setRequestedPage(0)
     setLoading(true)
     setStatus(null)
     setRuns([])
@@ -472,6 +490,7 @@ export default function SimulationHistoryTab({
           {loading && !runs.length ? (
             <div className="text-muted small py-4 text-center">Loading saved simulations...</div>
           ) : displayedRuns.length ? (
+            <>
             <div className="table-responsive">
               <table className="table table-sm align-middle mb-0 simulation-history-table">
                 <thead>
@@ -495,7 +514,9 @@ export default function SimulationHistoryTab({
                           <th colSpan="9" className="text-muted bg-light" style={{ fontSize: '.78rem' }}>
                             <i className="bi bi-calendar3 me-1" />
                             {group.label}
-                            <span className="fw-normal ms-2">{group.runs.length} run{group.runs.length === 1 ? '' : 's'}</span>
+                            <span className="fw-normal ms-2">
+                              {group.runs.length} run{group.runs.length === 1 ? '' : 's'}{showPagination ? ' on this page' : ''}
+                            </span>
                           </th>
                         </tr>
                       )}
@@ -561,6 +582,29 @@ export default function SimulationHistoryTab({
                 </tbody>
               </table>
             </div>
+            {showPagination && (
+              <div className="history-pagination-footer overview-table-footer mt-3 pt-2">
+                <span className="small text-muted" role="status">
+                  Showing {historyView.first.toLocaleString('en-PH')}&ndash;{historyView.last.toLocaleString('en-PH')} of {historyView.total.toLocaleString('en-PH')} simulations
+                </span>
+                <nav aria-label="Simulation history pages" className="overview-table-pagination">
+                  <span className="small text-muted">
+                    Page {(historyView.page + 1).toLocaleString('en-PH')} of {historyView.pageCount.toLocaleString('en-PH')}
+                  </span>
+                  <div className="btn-group btn-group-sm">
+                    <button type="button" className="btn btn-outline-secondary" disabled={historyView.page === 0}
+                      onClick={() => setRequestedPage(0)} aria-label="First simulation history page">First</button>
+                    <button type="button" className="btn btn-outline-secondary" disabled={historyView.page === 0}
+                      onClick={() => setRequestedPage(historyView.page - 1)} aria-label="Previous simulation history page">Previous</button>
+                    <button type="button" className="btn btn-outline-secondary" disabled={historyView.page >= historyView.pageCount - 1}
+                      onClick={() => setRequestedPage(historyView.page + 1)} aria-label="Next simulation history page">Next</button>
+                    <button type="button" className="btn btn-outline-secondary" disabled={historyView.page >= historyView.pageCount - 1}
+                      onClick={() => setRequestedPage(historyView.pageCount - 1)} aria-label="Last simulation history page">Last</button>
+                  </div>
+                </nav>
+              </div>
+            )}
+            </>
           ) : (
             <div className="text-muted small py-4 text-center">
               {historyPeriod === HISTORY_PERIOD_MONTH

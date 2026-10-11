@@ -1126,6 +1126,7 @@ body {
 .simulation-history-table .history-group-row:first-child > th {
   border-top: none !important;
 }
+.history-pagination-footer { border-top: 1px solid var(--mp-border); }
 
 /* Charts in scroll panels */
 .ops-panel-scroll .card {
@@ -2065,9 +2066,31 @@ input[type="range"]::-moz-range-progress {
 .observation-intro { margin-bottom: .7rem; font-size: .72rem; line-height: 1.45; }
 .observation-label { margin-bottom: .22rem; color: #334155; font-size: .69rem; font-weight: 750; }
 .observation-help { margin-top: .22rem; font-size: .63rem; line-height: 1.35; }
-.observation-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
-.observation-form-grid .mp-select { margin-bottom: 0; }
-.observation-count-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; margin-top: .25rem; }
+.observation-form-grid,
+.observation-count-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .55rem;
+}
+.observation-form-grid > *,
+.observation-count-grid > * { min-width: 0; }
+.observation-form-grid .mp-select-wrap { min-width: 0; margin-bottom: 0; }
+.observation-form-grid .form-control { min-width: 0; width: 100%; }
+.observation-method-field,
+.observation-time-field { grid-column: 1 / -1; }
+.observation-datepicker-input-wrap { display: block !important; width: 100%; }
+.observation-datepicker-popper { z-index: 12000 !important; }
+.observation-datepicker .react-datepicker__month { margin: .3rem; }
+.observation-datepicker .react-datepicker__day-name,
+.observation-datepicker .react-datepicker__day {
+  width: 1.55rem;
+  margin: .08rem;
+  line-height: 1.55rem;
+}
+.observation-datepicker .react-datepicker__time-container { width: 84px; }
+.observation-datepicker .react-datepicker__time-box,
+.observation-datepicker .react-datepicker__time-list { width: 83px !important; }
+.observation-count-grid { margin-top: .25rem; }
 .observation-severity-value { color: var(--mp-primary); font-size: .72rem; }
 .observation-forecast-link {
   display: flex;

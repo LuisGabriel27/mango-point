@@ -148,7 +148,7 @@ export default function AlertRecipientSettings() {
 
   return (
     <section className="settings-panel-section" aria-labelledby="notification-email-settings-title">
-      <div className="settings-section-heading">
+      <div className="settings-section-heading" data-tour="settings-notification-emails">
         <span className="settings-section-icon"><i className="bi bi-envelope-at" /></span>
         <div>
           <h3 id="notification-email-settings-title">Notification email recipients</h3>

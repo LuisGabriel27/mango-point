@@ -6,7 +6,8 @@ The pest scope is **fruit-attacking Cecid** and **Oriental Fruit Fly
 (*Bactrocera dorsalis*)**. The current reviewed model is
 `2026.10-source-progression-v17`; its source rules and remaining assumptions are
 documented in the [v17 model review](docs/v17-model-readiness-review.md).
-The React Joyride tutorial described below is a planned upgrade.
+The dashboard includes a replayable React Joyride tutorial for first-time and
+returning users.
 
 ## Current Capabilities
 
@@ -17,6 +18,8 @@ The React Joyride tutorial described below is a planned upgrade.
 - Fruit Fly initial adult source pressure is retained separately from new fruit infestation. New fruit damage does not create another adult source within the same forecast.
 - Explicit source-presence scenarios, bagging/treatment factors, and 1, 5 or 9 repeated realizations with separate frequency and one-run views.
 - Multi-orchard API foundation and frontend orchard switching.
+- System Overview with a date picker and day/week/month/year filters, orchard summaries,
+  field inspection counts, alerts and simulation activity.
 - Alerts for high-risk simulation output and orchard-aware scheduled gate monitoring.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
@@ -48,72 +51,81 @@ Surveillance and History views.
    date and method. Present, Absent and Not inspected are distinct records;
    simulated infestation must not be saved as an observed finding.
 
-Use the [66-case manual workflow test plan](docs/manual-workflow-test-plan.md),
+Use the [manual workflow test plan](docs/manual-workflow-test-plan.md),
 [results sheet](docs/manual-workflow-test-results.csv) and
 [bug log](docs/manual-workflow-bug-log.csv) for the full rehearsal. The starting
 test sheet contains Not run cases; preparing it does not establish a pass.
 
-## Planned Demo and Tutorial: React Joyride
+### System Overview
 
-**Status: documentation prepared; implementation has not started.**
-`react-joyride` is not currently a frontend dependency. This documentation step
-does not install the package or change React components, styles or application
-behavior.
+The **Overview** tab summarizes records saved to the application database across
+all orchards. Its header uses the same compact orchard dropdown, calendar
+picker and controls as History. Choose **By day**, **By week**, **By month** or
+**By year** to see a Philippine calendar day, Monday–Sunday week, month or year.
+The view opens on the current month. **By month** uses a month/year picker;
+other views use a date within the desired period. The date defaults to today;
+past periods include their full
+calendar range, while current periods stop at the time of refresh. Future dates
+are unavailable. An independent orchard filter narrows the overview without
+changing simulation inputs or the selected orchard in Setup. Day/week/month
+bar charts group activity by day; year bar charts group by month. Record types
+appear side by side for comparison. **View data table** provides the same counts
+in a table. Tables have sortable columns; larger tables add search, a sort dropdown and
+10/25/50-row pages. Scroll inside a table to see wide columns or longer pages;
+column headers stay visible. Paging and searching do not change summary totals.
 
-The planned tutorial is a guided walkthrough of the existing application for
-farm users and the final-defense demonstration. It will explain the controls
-and interpretation of outputs using short, plain-language tooltips. A visible
-**Start tutorial** entry should allow replay, with Back, Next, Skip/Close and
-progress feedback. A first-use invitation should be dismissible.
+Period totals cover completed/failed/other simulation records, inspected field
+records, Present/Absent findings, Not inspected records, and alerts raised.
+Inspection totals exclude Not inspected and simulation-generated infestation
+records. Repeat inspections of the same tree count as separate records; these
+totals do not establish orchard prevalence or forecast accuracy. Simulations
+use their execution date; field records use their observation date, falling
+back to their creation date for older entries without an observation date.
 
-| Tutorial segment | What it should explain |
+Registered orchards/trees and **Active alerts now** are current snapshots, so
+unresolved alerts remain visible even when raised before the selected period.
+Browser-only History cache entries are outside this database summary.
+The tab refreshes when opened, after saved simulation activity, every minute
+while visible, and through **Refresh**. Background refreshes preserve table
+search, sorting and pagination. Storage failures show an error with a retry
+action; a failed refresh labels any retained records as the last loaded data.
+Individual forecast outcomes remain in Results, Crop Impact,
+Spread & Weather, and History.
+
+## Guided Tutorial
+
+The top-bar **Tutorial** button is always available after sign-in. First-time
+users also see a dismissible invitation. Choose the guide that matches the task:
+
+| Guide | Purpose |
 |---|---|
-| Welcome and navigation | The workspace sequence, dashboard views and how to leave/replay the tutorial. |
-| Orchard and tree inputs | Orchard selection, host stage, tree statuses, source probabilities, zones, and scenario versus saved edits. |
-| Weather | Live versus custom weather, forecast dates, scheduled rain breaks, and Cecid soil/light assumptions. |
-| Simulation controls | Both pests and engines, duration, repeated runs, outside pressure, protection settings and the Run button. |
-| Results and playback | Legends, initial sources versus new infestation, Across runs versus One run, counts and hourly playback. |
-| History and exports | Saved results, templates, seeds/version, Excel and final versus displayed-hour reports. |
-| Field verification | Inspection records, observation methods, and Present/Absent/Not inspected. |
-| Additional tools | Overview, Crop Impact estimates, Surveillance, alerts and Settings where available to the user's role. |
+| **Quick start** | Learn Setup → Simulate → Results → History → Verify in about three minutes. |
+| **Cecid Fly setup** | Check fruitlets, starting sources, soil moisture, rain breaks, outdoor light and wind. |
+| **Fruit Fly setup** | Check mature/ripening fruit, days since flowering, initial adult pressure, warmth, daylight and wind. |
+| **Understand results** | Read the map, repeated runs, playback, reports, History and field verification correctly. |
 
-Tutorial behavior requirements:
+Each step highlights the control being explained while a grey overlay reduces
+background distraction. The tooltip separates **What to do** from **Why it
+matters**, displays the workflow position and provides Back, Next, Skip, Close
+and progress feedback. The guides use beginner wording; for example, a pest
+“gate” is introduced as a condition that must be suitable.
 
-- Navigation may open the relevant tab/workspace, but tutorial progression
-  must not change orchard records or scenario values, run simulations, save
-  observations, acknowledge alerts, send emails or initiate exports. Those
-  actions require the user's normal controls.
-- Before a result exists, explain how to obtain one and allow the user to
-  continue or replay the result segment later. Never present sample output as
-  a completed forecast for the selected orchard.
-- Open conditional panels before targeting them. Wait for the relevant
-  control to become available; a missing result, unavailable service or
-  role-restricted control must not trap the user in the tour.
-- Keep unsaved edits and displayed results intact. End cleanly on logout,
-  handle orchard changes without pointing at stale content, and leave normal
-  application controls usable after Skip/Close/Finish.
-- Use stable target identifiers, readable tooltips, keyboard-accessible
-  navigation and appropriate positioning in desktop and narrow layouts.
-- Explain weather/source assumptions and estimated outcomes accurately.
-  Tutorial completion is user guidance, not evidence of forecast accuracy.
+Tutorial navigation may show a dashboard tab or open a control panel for the
+current explanation. It does not change orchard/scenario inputs, start a
+simulation, create a result, save a field observation, acknowledge an alert,
+send a notification, change an account or initiate an export. Closing,
+skipping or finishing restores the ordinary dashboard view and preserves
+unsaved inputs. Missing controls are skipped rather than trapping the user.
 
-When implementation is requested, check React 18 compatibility and the selected
-release's API before adding the dependency. Use the official
-[React Joyride getting-started guide](https://react-joyride.com/docs/getting-started),
-[props reference](https://react-joyride.com/docs/props) and
-[conditional-step guidance](https://react-joyride.com/docs/recipes).
-Keep the step definitions and lifecycle handling maintainable rather than
-scattering tutorial logic throughout the dashboard.
+The first-use preference is stored in the browser for the signed-in user and
+tutorial version. Browser storage failure does not remove the manual Tutorial
+button. Tutorial text explains missing/loading/error and no-result states; it
+does not manufacture a demonstration forecast or field finding.
 
-Acceptance checks should cover first start, Back/Next, Skip/Close/Finish,
-replay, conditional targets, no-result and saved-result states, orchard
-switching, logout, loading failures, keyboard use and narrow layouts. Confirm
-that starting or advancing the tour changes no saved orchard, observation,
-alert or account records and triggers no automatic simulation/notification
-requests. An optional browser preference may remember dismissal/completion
-for that user and tutorial version while retaining manual replay. Then run
-the frontend tests and production build and rehearse both pests with both
-engines using the manual test plan.
+The frontend uses `react-joyride` 3.2.0, whose peer range includes React 18.
+Automated checks cover the guide definitions and browser lifecycle; the
+[manual workflow test plan](docs/manual-workflow-test-plan.md) remains the
+record for real browser rehearsal with both pests and both engines.
 
 ## Project Layout
 

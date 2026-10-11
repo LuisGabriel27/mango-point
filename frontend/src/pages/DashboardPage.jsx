@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Navbar from '../components/Navbar'
+import { TourPresentationContext } from '../components/tutorial/TourPresentation'
 import Sidebar from '../components/Sidebar'
 import LiveMapTab from '../components/tabs/LiveMapTab'
 import OverviewTab from '../components/tabs/OverviewTab'
@@ -362,6 +363,8 @@ function isCurrentSimulationRiskAlert(alert, runId) {
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState('live-map')
+  const [tourPresentation, setTourPresentation] = useState(null)
+  const displayTab = tourPresentation?.tab ?? activeTab
   const [sidebarWorkflow, setSidebarWorkflow] = useState(DEFAULT_SIDEBAR_WORKFLOW)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readStoredSidebarCollapsed)
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false)
@@ -1765,18 +1768,23 @@ export default function DashboardPage() {
   ])
 
   return (
+    <TourPresentationContext.Provider value={tourPresentation}>
     <div className="app-shell">
       <Navbar
         alerts={activeOrchardAlerts}
         alertLoading={alertLoading}
-        activeTab={activeTab}
+        activeTab={displayTab}
+        tutorialProps={{ orchardId: selectedOrchardId, customWeather: weatherOverrideActive,
+          hasResult: Boolean(simData), hasPlayback: playbackFrames.length > 0,
+          hasRepeatedRuns: cecidLikelihoodAvailable, presentation: tourPresentation,
+          onPresentationChange: setTourPresentation }}
         onTabChange={setActiveTab}
         onAlertRefresh={fetchAlerts}
         onApplySuggested={handleSuggestedSimulation}
         onControlsOpen={() => setSidebarMobileOpen(true)}
       />
 
-      <div className="viewport-layout">
+      <div className="viewport-layout" inert={tourPresentation ? "" : undefined}>
         {/* ── Main content area (map + tabs) ── */}
         <main className="fullscreen-map-area">
           <div className="ops-pages-shell">
@@ -1785,7 +1793,7 @@ export default function DashboardPage() {
               <div
                 id="ops-panel-live-map"
                 className="ops-panel"
-                style={{ display: activeTab === 'live-map' ? 'block' : 'none' }}
+                style={{ display: displayTab === 'live-map' ? 'block' : 'none' }}
               >
                 <LiveMapTab
                   geojson={mapGeojson}
@@ -1889,37 +1897,35 @@ export default function DashboardPage() {
 
               <div
                 id="ops-panel-overview"
-                className="ops-panel ops-panel-scroll"
-                style={{ display: activeTab === 'overview' ? 'block' : 'none' }}
+                className="ops-panel ops-panel-scroll" data-tour-scroll
+                style={{ display: displayTab === 'overview' ? 'block' : 'none' }}
               >
                 <OverviewTab
-                  monitoringData={monitoringData}
-                  simData={simData}
-                  currentFrame={currentFrame}
-                  totalTrees={orchardGeojson?.features?.length ?? 0}
+                  active={displayTab === 'overview'}
+                  refreshKey={historyRefreshKey}
                 />
               </div>
 
               <div
                 id="ops-panel-impact"
-                className="ops-panel ops-panel-scroll"
-                style={{ display: activeTab === 'crop-impact' ? 'block' : 'none' }}
+                className="ops-panel ops-panel-scroll" data-tour-scroll
+                style={{ display: displayTab === 'crop-impact' ? 'block' : 'none' }}
               >
                 <CropImpactTab monitoringData={monitoringData} simData={simData} />
               </div>
 
               <div
                 id="ops-panel-surveillance"
-                className="ops-panel ops-panel-scroll"
-                style={{ display: activeTab === 'spread-weather' ? 'block' : 'none' }}
+                className="ops-panel ops-panel-scroll" data-tour-scroll
+                style={{ display: displayTab === 'spread-weather' ? 'block' : 'none' }}
               >
                 <SurveillanceTab monitoringData={monitoringData} simData={simData} weather={weather} />
               </div>
 
               <div
                 id="ops-panel-history"
-                className="ops-panel ops-panel-scroll"
-                style={{ display: activeTab === 'history' ? 'block' : 'none' }}
+                className="ops-panel ops-panel-scroll" data-tour-scroll
+                style={{ display: displayTab === 'history' ? 'block' : 'none' }}
               >
                 <SimulationHistoryTab
                   onPrintRun={handleOpenSimulationReport}
@@ -1982,11 +1988,11 @@ export default function DashboardPage() {
           decisionMetrics={decisionMetrics}
           suggestedSimParams={suggestedSimParams}
           onClearSuggestedSimParams={() => setSuggestedSimParams(null)}
-          activeWorkflow={sidebarWorkflow}
+          activeWorkflow={tourPresentation?.workspace ?? sidebarWorkflow}
           onWorkflowChange={setSidebarWorkflow}
-          collapsed={sidebarCollapsed}
+          collapsed={tourPresentation ? !tourPresentation.workspace : sidebarCollapsed}
           onCollapsedChange={setSidebarCollapsed}
-          mobileOpen={sidebarMobileOpen}
+          mobileOpen={tourPresentation ? Boolean(tourPresentation.workspace) : sidebarMobileOpen}
           onMobileOpenChange={setSidebarMobileOpen}
           observationTreeIds={observationPrefill.treeIds}
           observationForecastRisk={observationPrefill.forecastRisk}
@@ -2090,5 +2096,6 @@ export default function DashboardPage() {
         </div>
       )}
     </div>
+    </TourPresentationContext.Provider>
   )
 }

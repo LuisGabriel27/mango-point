@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useTourPresentation } from '../tutorial/TourPresentation'
 import CollapsibleCard from '../CollapsibleCard'
 import api, { apiErrorMessage } from '../../api'
 import {
@@ -149,9 +150,9 @@ function SectionLabel({ iconName, text }) {
   )
 }
 
-function AdvancedPanel({ iconName, title, summary, open, onToggle, children, className = '' }) {
+function AdvancedPanel({ iconName, title, summary, open, onToggle, children, className = '', tourId }) {
   return (
-    <div className={`simulation-advanced-panel ${className}`}>
+    <div className={`simulation-advanced-panel ${className}`} data-tour={tourId}>
       <button
         type="button"
         className="sim-expandable-row"
@@ -170,9 +171,9 @@ function AdvancedPanel({ iconName, title, summary, open, onToggle, children, cla
   )
 }
 
-function BtnGroup({ options, value, onChange, small = false }) {
+function BtnGroup({ options, value, onChange, small = false, tourId }) {
   return (
-    <div className={`sim-btn-group${small ? ' sim-btn-group-sm' : ''}`}>
+    <div data-tour={tourId} className={`sim-btn-group${small ? ' sim-btn-group-sm' : ''}`}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -315,6 +316,7 @@ export default function SimulationCard({
   loadedParams,
   embedded = false,
 }) {
+  const tour = useTourPresentation()
   const [simMode, setSimMode] = useState('grid')
   const [pestType, setPestType] = useState(selectedPestType)
   const [orchardStage, setOrchardStage] = useState('mature')
@@ -708,6 +710,7 @@ export default function SimulationCard({
       <SectionLabel iconName="bug" text="Pest & Phenology" />
       <label className="small fw-medium mb-1 d-block"><i className="bi bi-bug me-1" />Pest</label>
       <BtnGroup
+        tourId="pest"
         value={pestType}
         onChange={setPestType}
         options={[
@@ -717,6 +720,7 @@ export default function SimulationCard({
       />
       <label className="small fw-medium mb-1 d-block mt-2"><i className="bi bi-flower1 me-1" />Orchard Stage</label>
       <BtnGroup
+        tourId="stage"
         value={orchardStage}
         onChange={setOrchardStage}
         options={STAGE_OPTIONS}
@@ -736,15 +740,18 @@ export default function SimulationCard({
         </div>
       )}
 
+      <div data-tour="fruit-age">
       <Slider id="days-flowering" label="Days Since Flowering" iconName="calendar-event"
         min={0} max={120} step={5} value={daysFlowering}
         marks={[{label:'0d'},{label:'30d'},{label:'60d'},{label:'90d'},{label:'120d'}]}
         onChange={setDaysFlowering}
       />
       <small className="text-muted d-block mb-0">Higher = riper fruit = stronger Fruit Fly attraction.</small>
+      </div>
 
       <SectionLabel iconName="clock-history" text="Forecast Duration" />
       <BtnGroup
+        tourId="duration"
         value={simHours}
         onChange={setSimHours}
         options={[
@@ -760,11 +767,12 @@ export default function SimulationCard({
         iconName="diagram-3"
         title="Model & Neighbor Pressure"
         summary={`${simMode === 'tree_graph' ? 'Tree Graph' : 'Grid'} · ${neighborPressureSummary(neighborSources)}`}
-        open={showModelPressure}
+        open={showModelPressure || tour?.panel === 'model'}
         onToggle={() => setShowModelPressure((value) => !value)}
       >
       <SectionLabel iconName="diagram-3" text="Spread Model" />
       <BtnGroup
+        tourId="engine"
         value={simMode}
         onChange={setSimMode}
         options={[
@@ -795,7 +803,7 @@ export default function SimulationCard({
           Individual adult flight paths and egg-to-adult development are not simulated.
         </small>
       )}
-      <BtnGroup value={uncertaintyRuns} onChange={setUncertaintyRuns} small options={[
+      <BtnGroup tourId="repeated-runs" value={uncertaintyRuns} onChange={setUncertaintyRuns} small options={[
         { value: '1', label: 'Single run' }, { value: '5', label: '5 runs' }, { value: '9', label: '9 runs' },
       ]} />
       <small className="text-muted d-block mt-1 mb-2">
@@ -804,6 +812,7 @@ export default function SimulationCard({
       </small>
 
       <SectionLabel iconName="question-circle" text="Default Source Presence" />
+      <div data-tour="source-presence">
       <Slider id="history-source-probability" label="History Infected: reservoir present" iconName="clock-history"
         percent
         min={0} max={1} step={0.05} value={historySourceProbability}
@@ -822,6 +831,8 @@ export default function SimulationCard({
         Infected records current infestation and is used as an initial source scenario; fruit damage alone does not measure adult presence.
       </small>
 
+      </div>
+      <div data-tour="neighbors">
       <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" />
       {neighborSources.map((source, index) => (
         <div key={index} className="border rounded p-2 mb-2" role="group" aria-label={`Neighbor ${index + 1}`}>
@@ -863,13 +874,15 @@ export default function SimulationCard({
           : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
       </small>
 
+      </div>
       </AdvancedPanel>
 
       <AdvancedPanel
         iconName="shield-plus"
         title="Treatment Scenario"
+        tourId="treatment"
         summary={treatmentEnabled ? `${treatmentType.replace(/_/g, ' ')} · ${Math.round(treatmentEfficacy * 100)}%` : 'Not included'}
-        open={showTreatment}
+        open={showTreatment || tour?.panel === 'treatment'}
         onToggle={() => setShowTreatment((value) => !value)}
       >
       <label className="sim-toggle-row mb-1" htmlFor="treatment-enabled">
@@ -978,6 +991,7 @@ export default function SimulationCard({
       )}
 
       {/* Calibration panel */}
+      <div data-tour="accuracy">
       <button
         type="button"
         className="sim-expandable-row"
@@ -993,7 +1007,7 @@ export default function SimulationCard({
         </span>
         <i className={`bi bi-chevron-${showCalibration ? 'up' : 'down'} sim-expandable-chevron`} />
       </button>
-      {showCalibration && (
+      {(showCalibration || tour?.panel === 'accuracy') && (
         <div className="border rounded p-2 mb-2" style={{ fontSize: '.82rem' }}>
 
           {/* Observation seeding */}
@@ -1052,6 +1066,7 @@ export default function SimulationCard({
         </div>
       )}
 
+      </div>
       {pestType === 'cecid' && (
         <CecidTimelineResult diagnostics={gateDiagnostics} resultSummary={cecidResultSummary} />
       )}
@@ -1067,7 +1082,7 @@ export default function SimulationCard({
       )}
       <div className="simulation-action-footer">
       <hr className="mt-3 mb-2" />
-      <button id="run-sim-btn" type="button" className="btn btn-success w-100 fw-semibold"
+      <button data-tour="run" id="run-sim-btn" type="button" className="btn btn-success w-100 fw-semibold"
         onClick={handleRun} disabled={running || !orchardGeojson}>
         {running
           ? <><span className="spinner-border spinner-border-sm me-2" />Running…</>

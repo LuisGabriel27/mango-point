@@ -145,7 +145,7 @@ export default function OrchardSwitcher({
       <label className="small fw-medium mb-1 d-block">
         <i className="bi bi-map me-1" /> Active Orchard
       </label>
-      <div className="orchard-select-row mb-2">
+      <div className="orchard-select-row mb-2" data-tour="orchard">
         <MpSelect
           value={selectedId ?? ''}
           onChange={onSelect}

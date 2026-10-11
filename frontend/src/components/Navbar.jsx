@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import SettingsModal from './SettingsModal'
+import WorkflowTutorial from './tutorial/WorkflowTutorial'
 import { AlertList } from './cards/AlertPanel'
 
 const TABS = [
@@ -19,12 +20,16 @@ export default function Navbar({
   onAlertRefresh,
   onApplySuggested,
   onControlsOpen,
+  tutorialProps,
 }) {
   const { user, logout } = useAuth()
   const [clock, setClock] = useState('')
   const [bellOpen, setBellOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const bellRef = useRef(null)
+  const tutorialPanel = tutorialProps?.presentation?.navbarPanel
+  const bellDisplayed = bellOpen || tutorialPanel === 'notifications'
+  const settingsDisplayed = settingsOpen || tutorialPanel === 'settings'
 
   useEffect(() => {
     const tick = () => {
@@ -52,7 +57,7 @@ export default function Navbar({
 
   return (
     <>
-      <nav className="main-navbar">
+      <nav className="main-navbar" inert={tutorialProps?.presentation ? "" : undefined}>
       <a className="navbar-brand" href="/">
         <img src="/brand/mangopoint-logo-v2.png" className="navbar-logo" alt="" width="40" height="40" />
         <span>MangoPoint</span>
@@ -72,6 +77,7 @@ export default function Navbar({
       </div>
 
       <div className="navbar-controls">
+        {tutorialProps && <WorkflowTutorial user={user} {...tutorialProps} />}
         <span className="navbar-clock d-none d-md-inline">{clock}</span>
         {user && (
           <div className="navbar-user d-none d-lg-flex">
@@ -93,6 +99,7 @@ export default function Navbar({
 
         <button
           type="button"
+          data-tour="settings"
           className="navbar-settings-btn"
           onClick={() => {
             setBellOpen(false)
@@ -107,18 +114,19 @@ export default function Navbar({
         <div className="navbar-bell-wrap" ref={bellRef}>
           <button
             type="button"
-            className={`navbar-bell-btn${bellOpen ? ' is-open' : ''}`}
+            className={`navbar-bell-btn${bellDisplayed ? ' is-open' : ''}`}
             onClick={() => setBellOpen((open) => !open)}
+            data-tour="alerts"
             aria-label="Notifications"
-            aria-expanded={bellOpen}
+            aria-expanded={bellDisplayed}
           >
             <i className="bi bi-bell-fill" />
             {active.length > 0 && <span className="navbar-bell-badge">{active.length}</span>}
           </button>
 
-          {bellOpen && (
+          {bellDisplayed && (
             <div className="navbar-bell-dropdown">
-              <div className="navbar-bell-header">
+              <div className="navbar-bell-header" data-tour="notification-list">
                 <span><i className="bi bi-bell-fill me-1" />Alerts</span>
                 <span className="navbar-bell-count">{active.length} active</span>
               </div>
@@ -139,7 +147,11 @@ export default function Navbar({
         </button>
       </div>
       </nav>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsDisplayed && <SettingsModal
+        key={tutorialPanel === 'settings' ? tutorialProps?.presentation?.settingsTab : 'manual'}
+        tutorialTab={tutorialPanel === 'settings' ? tutorialProps?.presentation?.settingsTab : null}
+        onClose={() => { if (tutorialPanel !== 'settings') setSettingsOpen(false) }}
+      />}
     </>
   )
 }

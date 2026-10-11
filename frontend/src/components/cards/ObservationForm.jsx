@@ -192,7 +192,7 @@ export default function ObservationForm({
           Click a tree on the map to prefill it, or separate multiple IDs with commas for a bulk inspection.
         </div>
 
-        <div className="observation-form-grid mt-2">
+        <div className="observation-form-grid mt-2" data-tour="verify">
           <div>
             <label className="form-label observation-label">Pest</label>
             <MpSelect

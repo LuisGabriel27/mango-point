@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/utils/weatherSchedule.test.js src/utils/cecidWeedZones.test.js src/utils/managementZones.test.js src/utils/orchardTreeZones.test.js src/utils/sidebarWorkspace.test.js src/utils/bundledOrchards.test.js src/utils/simulationHistoryStore.test.js src/utils/alertSimulation.test.js src/utils/cecidResultSummary.test.js src/utils/cecidMapInterpretation.test.js src/utils/economicImpact.test.js src/utils/mapReady.test.js src/components/ZoneManager.test.js src/utils/simulationReport.test.js src/utils/mapSnapshot.test.js src/components/cards/WeatherCard.test.js src/utils/riskSurface.test.js src/utils/neighborSources.test.js src/utils/simulationMapInterpretation.test.js src/components/SimulationReportModal.test.js src/utils/sourcePresence.test.js src/components/SourcePresenceControl.test.js",
-    "preview": "vite preview"
+    "test": "node --test src/utils/weatherSchedule.test.js src/utils/cecidWeedZones.test.js src/utils/managementZones.test.js src/utils/orchardTreeZones.test.js src/utils/sidebarWorkspace.test.js src/utils/bundledOrchards.test.js src/utils/simulationHistoryStore.test.js src/utils/alertSimulation.test.js src/utils/cecidResultSummary.test.js src/utils/cecidMapInterpretation.test.js src/utils/economicImpact.test.js src/utils/mapReady.test.js src/components/ZoneManager.test.js src/utils/simulationReport.test.js src/utils/mapSnapshot.test.js src/components/cards/WeatherCard.test.js src/utils/riskSurface.test.js src/utils/neighborSources.test.js src/utils/simulationMapInterpretation.test.js src/components/SimulationReportModal.test.js src/utils/sourcePresence.test.js src/components/SourcePresenceControl.test.js src/utils/systemOverview.test.js src/utils/overviewTable.test.js src/components/tabs/overview/SystemOverview.test.js src/components/tutorial/tutorialSteps.test.js",
+    "preview": "vite preview",
+    "test:tour": "playwright test"
   },
   "dependencies": {
     "axios": "^1.7.9",
@@ -16,10 +17,12 @@
     "react": "^18.3.1",
     "react-datepicker": "^9.1.0",
     "react-dom": "^18.3.1",
+    "react-joyride": "3.2.0",
     "react-plotly.js": "^2.6.0",
     "react-router-dom": "^6.28.2"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@vitejs/plugin-react": "^4.3.4",
     "esbuild": "^0.25.12",
     "vite": "^6.0.7"

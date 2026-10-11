@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTourPresentation } from '../tutorial/TourPresentation'
 import RiskMap from '../RiskMap'
 import SourcePresenceControl from '../SourcePresenceControl'
 import MpSelect from '../MpSelect'
@@ -240,11 +241,13 @@ export default function LiveMapTab({
   onTreeClick,
   onPrintReport,
 }) {
+  const tour = useTourPresentation()
   const [showGrid, setShowGrid] = useState(false)
   const [showZoneManager, setShowZoneManager] = useState(false)
   const [zoneEditorOpen, setZoneEditorOpen] = useState(false)
   const [layersOpen, setLayersOpen] = useState(false)
-  const [legendOpen, setLegendOpen] = useState(false)
+  const [legendExpanded, setLegendOpen] = useState(false)
+  const legendOpen = legendExpanded || tour?.panel === 'legend'
   const [clearRequest, setClearRequest] = useState(null)
   const [zoneListFilter, setZoneListFilter] = useState('all')
   const [zoneEditorType, setZoneEditorType] = useState('stage')
@@ -363,7 +366,7 @@ export default function LiveMapTab({
   return (
     <div className="operations-map-panel">
       <div className="operations-map-stage" style={{ position: 'relative' }}>
-        <div className="map-command-bar" role="toolbar" aria-label="Map controls">
+        <div data-tour="map-controls" className="map-command-bar" role="toolbar" aria-label="Map controls">
           {onPrintReport && (
             <button type="button" className="map-command-btn" onClick={onPrintReport} title="Print or export this simulation result">
               <i className="bi bi-printer" /><span>Report</span>
@@ -380,7 +383,7 @@ export default function LiveMapTab({
           </button>
           <button
             type="button"
-            className={`map-command-btn${zoneEditorOpen ? ' active' : ''}`}
+            data-tour="map-zones" className={`map-command-btn${zoneEditorOpen ? ' active' : ''}`}
             aria-expanded={zoneEditorOpen}
             aria-controls="map-zone-editor-panel"
             onClick={() => {
@@ -409,7 +412,7 @@ export default function LiveMapTab({
           </button>
 
           {cecidEnsembleRuns > 1 && (
-            <div className="map-result-mode" role="group" aria-label="Simulation result map mode">
+            <div data-tour="map-mode" className="map-result-mode" role="group" aria-label="Simulation result map mode">
               <button
                 type="button"
                 className={`btn btn-sm ${cecidMapMode === 'likelihood' ? 'btn-success' : 'btn-light'}`}
@@ -1025,7 +1028,7 @@ export default function LiveMapTab({
         </div>
 
         {showLegend && (
-          <section className={`map-risk-legend${legendOpen ? ' is-open' : ' is-collapsed'}`} aria-label="Map legend">
+          <section data-tour="legend" className={`map-risk-legend${legendOpen ? ' is-open' : ' is-collapsed'}`} aria-label="Map legend">
             <button
               type="button"
               className="map-legend-toggle"

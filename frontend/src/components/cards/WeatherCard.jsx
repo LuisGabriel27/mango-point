@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTourPresentation } from '../tutorial/TourPresentation'
 import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import CollapsibleCard from '../CollapsibleCard'
@@ -40,7 +41,7 @@ function NumberField({ label, value, onChange, min = 0, max, step = 0.1, suffix 
 
 function PresetField({ label, field, value, onChange, suffix, max, children }) {
   return (
-    <div className="weather-preset-field">
+    <div className="weather-preset-field" data-tour={`weather-${field}`}>
       <div className="weather-value-row">
         <NumberField label={label} value={value} onChange={onChange} suffix={suffix} max={max} />
         {children}
@@ -80,7 +81,7 @@ function WindDirectionField({ value, onChange }) {
 
 export function DaylightConditionField({ block, onChange }) {
   return (
-    <div className="weather-preset-field">
+    <div className="weather-preset-field" data-tour="weather-light">
       <label className="weather-number-field">
         <span>Daylight light condition</span>
         <select className="form-select form-select-sm" value={block.daylight_condition || ''}
@@ -220,9 +221,13 @@ export function CustomWeatherEditor({
   const coverage = weatherCoverage(blocks, hours)
   const rainyPeriodCount = blocks.filter((block) => block.rainfall_mm > 0).length
   const dryPeriodCount = Math.max(0, blocks.length - rainyPeriodCount)
+  const tour = useTourPresentation()
+  const [soilOpen, setSoilOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   const [periodsOpen, setPeriodsOpen] = useState(false)
   const [periodsMode, setPeriodsMode] = useState('overview')
+  const visiblePeriodsOpen = periodsOpen || tour?.panel === 'weather-periods'
+  const visiblePeriodsMode = tour?.panel === 'weather-periods' ? 'editor' : periodsMode
   const isCecid = pestType === 'cecid'
 
   useEffect(() => {
@@ -281,7 +286,7 @@ export function CustomWeatherEditor({
 
   return (
     <div className="custom-weather-editor">
-      <div className="weather-start-field">
+      <div className="weather-start-field" data-tour="weather-schedule">
         <label className="weather-start-label" htmlFor="custom-weather-start">Start date &amp; time</label>
         <DatePicker
           id="custom-weather-start"
@@ -296,7 +301,7 @@ export function CustomWeatherEditor({
         <small className="text-muted">Guimaras time. Hour 0 begins here.</small>
       </div>
 
-      <div className="weather-periods-toolbar">
+      <div className="weather-periods-toolbar" data-tour="weather-periods">
         <div>
           <strong>Weather periods</strong>
           <small>{blocks.length} period{blocks.length === 1 ? '' : 's'} · {hours} simulation hours</small>
@@ -319,21 +324,21 @@ export function CustomWeatherEditor({
         <i className="bi bi-chevron-right weather-period-general-preview-arrow" aria-hidden="true" />
       </div>
 
-      {periodsOpen && (
+      {visiblePeriodsOpen && (
         <div className="weather-periods-modal-backdrop" role="presentation" onMouseDown={() => setPeriodsOpen(false)}>
           <div className="weather-periods-modal" role="dialog" aria-modal="true" aria-labelledby="weather-periods-modal-title"
             onMouseDown={(event) => event.stopPropagation()}>
             <div className="weather-periods-modal-header">
               <div>
-                <h5 id="weather-periods-modal-title">{periodsMode === 'overview' ? 'Weather period details' : 'Set up weather periods'}</h5>
-                <small>{periodsMode === 'overview'
+                <h5 id="weather-periods-modal-title">{visiblePeriodsMode === 'overview' ? 'Weather period details' : 'Set up weather periods'}</h5>
+                <small>{visiblePeriodsMode === 'overview'
                   ? 'Review the schedule first, then continue to edit each period.'
                   : 'Edit each time range and its weather values. Later periods take priority if ranges overlap.'}</small>
               </div>
               <button type="button" className="btn-close" aria-label="Close weather periods" onClick={() => setPeriodsOpen(false)} />
             </div>
             <div className="weather-periods-modal-body">
-      {periodsMode === 'overview' ? (
+      {visiblePeriodsMode === 'overview' ? (
         <>
           <div className="weather-period-overview-intro">
             <strong>{blocks.length} period{blocks.length === 1 ? '' : 's'} · {hours} simulation hours</strong>
@@ -425,7 +430,7 @@ export function CustomWeatherEditor({
       )}
 
             <div className="weather-periods-modal-footer">
-              {periodsMode === 'overview' ? (
+              {visiblePeriodsMode === 'overview' ? (
                 <button type="button" className="btn btn-sm btn-primary" onClick={() => setPeriodsMode('editor')}>
                   <i className="bi bi-pencil-square me-1" />Set up periods
                 </button>
@@ -449,7 +454,9 @@ export function CustomWeatherEditor({
         </div>
       )}
 
-      <details className="weather-cecid-settings">
+      <details className="weather-cecid-settings" data-tour="soil-settings"
+        open={soilOpen || tour?.panel === 'soil'}
+        onToggle={(event) => { if (!tour) setSoilOpen(event.currentTarget.open) }}>
           <summary>
             <span className="weather-period-general-preview-icon weather-cecid-settings-icon" aria-hidden="true">
               <i className="bi bi-moisture" />
@@ -491,6 +498,7 @@ export default function WeatherCard({
   onSimulationHoursChange,
   embedded = false,
 }) {
+  const tour = useTourPresentation()
   const [showDetails, setShowDetails] = useState(Boolean(weatherOverrideActive))
   const [retryState, setRetryState] = useState('idle')
   const current = weather?.current
@@ -552,7 +560,7 @@ export default function WeatherCard({
       )}
       <small className="text-muted d-block mb-2"><i className="bi bi-arrow-repeat me-1" />Auto-refreshes every 60 s</small>
 
-      <div className="weather-source-switch" role="group" aria-label="Simulation weather source">
+      <div data-tour="weather-source" className="weather-source-switch" role="group" aria-label="Simulation weather source">
         <button type="button" className={'btn btn-sm ' + (!weatherOverrideActive ? 'btn-primary' : 'btn-outline-secondary')}
           aria-pressed={!weatherOverrideActive} onClick={() => onOverrideToggle?.(false)}>
           <i className="bi bi-cloud-sun me-1" />Live Forecast
@@ -599,7 +607,7 @@ export default function WeatherCard({
             <span className="sim-expandable-label">Custom weather settings</span>
             <i className={'bi bi-chevron-' + (showDetails ? 'up' : 'down') + ' sim-expandable-chevron'} />
           </button>
-          {showDetails && (
+          {(showDetails || ['weather', 'soil', 'weather-periods'].includes(tour?.panel)) && (
             <CustomWeatherEditor
               timeline={timeline} hours={hours} pestType={pestType}
               onCecidPresetLoad={onCecidPresetLoad}

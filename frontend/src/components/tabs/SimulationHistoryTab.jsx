@@ -374,7 +374,7 @@ export default function SimulationHistoryTab({
   return (
     <div className="p-3">
       <div className="card shadow-sm border-0 monitoring-module-chart-card">
-        <div className="card-header">
+        <div className="card-header" data-tour="history-heading">
           <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
             <div>
               <div className="fw-bold" style={{ fontSize: '.88rem' }}>

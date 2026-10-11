@@ -1,167 +1,40 @@
-import { calculateSimulationEconomicImpact, formatPhp } from '../../utils/economicImpact'
-import { neighborPressureSummary, restoreNeighborSources } from '../../utils/neighborSources'
-import { simulationUncertaintySummary } from '../../utils/simulationMapInterpretation'
+import { useEffect, useState } from 'react'
+import api, { apiErrorMessage } from '../../api'
+import { failOverviewLoad, overviewDateKey, requestSystemOverview, startOverviewLoad } from '../../utils/systemOverview'
+import SystemOverview from './overview/SystemOverview'
 
-function KpiCard({ iconName, iconColor, title, value, detail }) {
-  return (
-    <div className="col-12 col-md-4">
-      <div className="card shadow-sm border-0 h-100 monitoring-kpi-card">
-        <div className="card-body p-3">
-          <div className="d-flex align-items-start gap-3">
-            <div className="monitoring-kpi-icon">
-              <i className={`bi bi-${iconName} ${iconColor} fs-4`} />
-            </div>
-            <div className="flex-grow-1">
-              <p className="monitoring-kpi-label text-muted mb-1">{title}</p>
-              <h3 className="monitoring-kpi-value mb-1 fw-bold">{value ?? '—'}</h3>
-              <div className="monitoring-kpi-detail">{detail}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+export default function OverviewTab({ active = true, refreshKey = 0 }) {
+  const [period, setPeriod] = useState('month')
+  const [selectedDate, setSelectedDate] = useState(() => overviewDateKey())
+  const [orchardId, setOrchardId] = useState('')
+  const [reload, setReload] = useState(0)
+  const [directory, setDirectory] = useState([])
+  const [state, setState] = useState({ loading: true, data: null, error: '' })
+  const requestKey = `${period}:${orchardId}:${selectedDate}`
 
-export default function OverviewTab({ monitoringData, simData, totalTrees: totalTreesProp = 0 }) {
-  const m = monitoringData ?? {}
-  const impact = simData?.impact_assumptions ?? {}
-  const yieldKg = Number(impact.yield_per_tree_kg ?? 45)
-  const pricePhp = Number(impact.farmgate_price_php_per_kg ?? 60)
-  const baseDamage = Number(impact.damage_base ?? 30) / 100
-  const economic = calculateSimulationEconomicImpact(simData ?? {})
-  const uncertainty = simulationUncertaintySummary(simData)
-  const acrossRuns = Number(uncertainty?.runs) > 1
+  useEffect(() => {
+    if (!active) return undefined
+    setState((previous) => startOverviewLoad(previous, requestKey))
+    return requestSystemOverview(api.getSystemOverview,
+      { period, date: selectedDate, ...(orchardId ? { orchard_id: orchardId } : {}) },
+      (data) => {
+        setDirectory(data.orchards)
+        setState({ key: requestKey, loading: false, refreshing: false, data, error: '', refreshError: '' })
+      },
+      (error) => setState((previous) => failOverviewLoad(previous, requestKey,
+        apiErrorMessage(error, 'Unable to load the overview.'))),
+    )
+  }, [active, period, orchardId, selectedDate, requestKey, refreshKey, reload])
 
-  // Simulation data takes priority over monitoring DB data
-  const infestedFinal = simData?.n_infested_final ?? null
-  // totalTrees: prefer the real geojson count passed from parent (works without DB trees),
-  // fall back to what the monitoring API returns from the DB tree table
-  const totalTrees = totalTreesProp > 0 ? totalTreesProp : (m.infestation_rate?.total_trees ?? 0)
+  useEffect(() => {
+    if (!active) return undefined
+    const interval = window.setInterval(() => setReload((value) => value + 1), 60_000)
+    return () => window.clearInterval(interval)
+  }, [active])
 
-  // Infestation rate: compute from sim result if available
-  const infestRateVal = infestedFinal != null && totalTrees > 0
-    ? infestedFinal / totalTrees
-    : (m.infestation_rate?.rate ?? null)
-  const infestRate = infestRateVal != null ? `${(infestRateVal * 100).toFixed(1)}%` : '—'
-  const infestRatePct = infestRateVal != null ? `${(infestRateVal * 100).toFixed(1)}%` : '0%'
-
-  const infestedTrees = infestedFinal ?? m.infestation_rate?.infested_trees ?? 0
-  const activeAlerts = m.alert_summary?.active ?? 0
-
-  const lossBase = economic
-    ? formatPhp(economic.projected_loss)
-    : infestedFinal != null
-      ? formatPhp(infestedFinal * yieldKg * pricePhp * baseDamage)
-      : '—'
-
-  // Susceptible stage: prefer sim metadata stage_breakdown, fallback to monitoring phenology
-  const susceptible = (() => {
-    const sb = simData?.metadata?.stage_breakdown
-    if (sb && Object.keys(sb).length) {
-      const total = Object.values(sb).reduce((s, v) => s + (v ?? 0), 0)
-      const sus = (sb.fruitlet ?? 0) + (sb.mature ?? 0)
-      return total > 0 ? `${Math.round((sus / total) * 100)}%` : '—'
-    }
-    const rows = Array.isArray(m.phenology) ? m.phenology : []
-    if (!rows.length) return '—'
-    const total = rows.reduce((s, r) => s + (r.count ?? 0), 0)
-    const sus = rows
-      .filter((r) => ['fruitlet', 'mature'].includes(r.stage))
-      .reduce((s, r) => s + (r.count ?? 0), 0)
-    return total > 0 ? `${Math.round((sus / total) * 100)}%` : '—'
-  })()
-
-  // Simulation peak hour (from last time series frame)
-  const peakHour = simData?.time_series?.length
-    ? simData.time_series[simData.time_series.length - 1]?.hour ?? null
-    : null
-
-  return (
-    <div className="row g-3 p-3">
-      {acrossRuns && <div className="col-12"><div className="alert alert-info py-2 mb-0 small">
-        <strong>{uncertainty.runs}-run scenario range:</strong> {uncertainty.minimum}–{uncertainty.maximum} infested trees;
-        median {uncertainty.median}. The totals below describe one representative run.
-        Across runs on the map shows infestation frequency; the scenario range is not a calibrated confidence interval.
-      </div></div>}
-      <KpiCard
-        iconName="virus" iconColor="text-danger"
-        title={acrossRuns ? 'Infestation rate in one run' : 'Infestation rate'}
-        value={infestRate}
-        detail={
-          <div className="mt-2">
-            <div className="progress" style={{ height: 6 }}>
-              <div className="progress-bar bg-danger" style={{ width: infestRatePct }} />
-            </div>
-            {infestedFinal != null && (
-              <small className="text-muted">{infestedFinal} of {totalTrees || '?'} trees</small>
-            )}
-          </div>
-        }
-      />
-      <KpiCard
-        iconName="tree-fill" iconColor="text-danger"
-        title={acrossRuns ? 'Infested trees in one run' : 'Infested trees'}
-        value={infestedTrees}
-        detail={
-          <small className="text-muted">
-            {infestedFinal != null
-              ? `after ${peakHour != null ? `${peakHour}h` : 'simulation'}`
-              : 'from monitoring data'}
-          </small>
-        }
-      />
-      <KpiCard
-        iconName="bell-fill" iconColor="text-danger"
-        title="Active alerts"
-        value={activeAlerts}
-        detail={
-          m.alert_summary ? (
-            <small className="text-muted">
-              {m.alert_summary.by_severity?.critical ?? 0} critical · {m.alert_summary.by_severity?.high ?? 0} high
-            </small>
-          ) : null
-        }
-      />
-      <KpiCard
-        iconName="cash-coin" iconColor="text-success"
-        title="Estimated loss at risk"
-        value={lossBase}
-        detail={<small className="text-muted">base scenario ({Math.round(baseDamage * 100)}% damage rate)</small>}
-      />
-      <KpiCard
-        iconName="piggy-bank" iconColor="text-success"
-        title="Potential savings with recommendations"
-        value={economic ? formatPhp(economic.estimated_savings) : '—'}
-        detail={economic ? (
-          <small className="text-muted">{Math.round(economic.recommendation_effectiveness * 100)}% of projected loss potentially avoided</small>
-        ) : <small className="text-muted">run a simulation to estimate</small>}
-      />
-      <KpiCard
-        iconName="flower1" iconColor="text-primary"
-        title="Susceptible stage exposure"
-        value={susceptible}
-        detail={<small className="text-muted">fruitlet + mature trees</small>}
-      />
-
-      {simData && (
-        <div className="col-12">
-          <div className="card border-0 shadow-sm">
-            <div className="card-body p-3">
-              <div className="d-flex flex-wrap gap-3 small">
-                <span><i className="bi bi-cpu me-1 text-primary" /><strong>Mode:</strong> {simData.metadata?.simulation_mode ?? simData.simulation_mode ?? '—'}</span>
-                <span><i className="bi bi-bug me-1 text-danger" /><strong>Pest:</strong> {simData.pest_type ?? '—'}</span>
-                <span><i className="bi bi-clock me-1" /><strong>Duration:</strong> {simData.hours ?? '—'} h</span>
-                <span><i className="bi bi-grid me-1" /><strong>Cells at risk:</strong> {simData.cells_at_risk ?? '—'}</span>
-                <span><i className="bi bi-flower1 me-1 text-success" /><strong>Stage:</strong> {simData.metadata?.orchard_stage ?? '—'}</span>
-                {simData.metadata?.neighbor_threat > 0 && (
-                  <span><i className="bi bi-exclamation-triangle me-1 text-warning" /><strong>Neighbor pressure:</strong> {neighborPressureSummary(restoreNeighborSources(simData.metadata))}</span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
+  if (!active) return null
+  const visibleState = state.key === requestKey ? state : { loading: true, data: null, error: '' }
+  return <SystemOverview {...visibleState} period={period} selectedDate={selectedDate} orchardId={orchardId} directory={directory}
+    onPeriodChange={setPeriod} onDateChange={(value) => { if (value) setSelectedDate(value) }}
+    onOrchardChange={setOrchardId} onRefresh={() => setReload((value) => value + 1)} />
 }

@@ -264,7 +264,7 @@ export default function SurveillanceTab({ monitoringData, simData, weather }) {
     <div className="p-3">
       <div className="d-flex flex-column gap-3">
         <div className="card shadow-sm border-0 monitoring-module-chart-card">
-          <div className="card-header py-2">
+          <div className="card-header py-2" data-tour="surveillance-heading">
             <div className="d-flex align-items-center justify-content-between">
               <div className="d-flex align-items-center">
                 <i className="bi bi-graph-up-arrow me-2" />

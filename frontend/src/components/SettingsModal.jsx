@@ -12,7 +12,7 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-export default function SettingsModal({ onClose }) {
+export default function SettingsModal({ onClose, tutorialTab = null }) {
   const { user, updateUser } = useAuth()
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
@@ -21,7 +21,9 @@ export default function SettingsModal({ onClose }) {
     { id: 'account', label: 'Account', icon: 'person-gear' },
     ...(isAdmin ? [{ id: 'notifications', label: 'Notification emails', icon: 'envelope-at' }] : []),
   ], [isAdmin])
-  const [activeTab, setActiveTab] = useState('account')
+  const [activeTab, setActiveTab] = useState(() => (
+    tutorialTab && tabs.some((tab) => tab.id === tutorialTab) ? tutorialTab : 'account'
+  ))
   const [fullName, setFullName] = useState(user?.full_name || '')
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileError, setProfileError] = useState('')
@@ -233,7 +235,7 @@ export default function SettingsModal({ onClose }) {
                 </section>
 
                 <section className="settings-panel-section" aria-labelledby="email-settings-title">
-                  <div className="settings-section-heading">
+                  <div className="settings-section-heading" data-tour="settings-recovery-email">
                     <span className="settings-section-icon"><i className="bi bi-envelope-check" /></span>
                     <div><h3 id="email-settings-title">Login and recovery email</h3><p>Brevo sends password reset codes to this address.</p></div>
                   </div>
@@ -261,7 +263,7 @@ export default function SettingsModal({ onClose }) {
                 </section>
 
                 <section className="settings-panel-section" aria-labelledby="password-settings-title">
-                  <div className="settings-section-heading">
+                  <div className="settings-section-heading" data-tour="settings-password">
                     <span className="settings-section-icon"><i className="bi bi-shield-lock" /></span>
                     <div><h3 id="password-settings-title">Password</h3><p>Confirm your current password before choosing a replacement.</p></div>
                   </div>

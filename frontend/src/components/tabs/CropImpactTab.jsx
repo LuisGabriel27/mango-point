@@ -166,7 +166,7 @@ export default function CropImpactTab({ monitoringData, simData }) {
       <div className="row g-3">
         <div className="col-12">
           <div className="card shadow-sm border-0 monitoring-module-chart-card">
-            <div className="card-header py-2">
+            <div className="card-header py-2" data-tour="impact-heading">
               <div className="d-flex align-items-center">
                 <i className="bi bi-cash-coin me-2" />
                 <span className="fw-semibold">Estimated Loss at Risk (Scenario)</span>

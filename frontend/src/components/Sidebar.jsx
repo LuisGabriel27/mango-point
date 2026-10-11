@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import OrchardSwitcher from './cards/OrchardSwitcher'
+import { useTourPresentation } from './tutorial/TourPresentation'
 import WeatherCard from './cards/WeatherCard'
 import SimulationCard from './cards/SimulationCard'
 import PlaybackCard from './cards/PlaybackCard'
@@ -68,12 +69,13 @@ export default function Sidebar({
   observationLat = null,
   currentSimulationRunId = null,
 }) {
+  const tour = useTourPresentation()
   const asideRef = useRef(null)
   const closeButtonRef = useRef(null)
   const tabRefs = useRef([])
 
   useEffect(() => {
-    if (!mobileOpen) return undefined
+    if (!mobileOpen || tour) return undefined
     const isOverlay = typeof window.matchMedia !== 'function'
       || window.matchMedia('(max-width: 991.98px)').matches
     if (!isOverlay) return undefined
@@ -110,7 +112,7 @@ export default function Sidebar({
       document.body.style.overflow = previousOverflow
       previousFocus?.focus?.()
     }
-  }, [mobileOpen, onMobileOpenChange])
+  }, [mobileOpen, onMobileOpenChange, Boolean(tour)])
 
   const selectedOrchard = orchards?.find((orchard) => orchard.orchard_id === selectedOrchardId)
   const orchardLabel = selectedOrchard?.name
@@ -219,7 +221,7 @@ export default function Sidebar({
             <span><i className="bi bi-cloud-sun" />{weatherLabel}</span>
           </button>
 
-          <div className="sidebar-workflow-tabs" role="tablist" aria-label="Simulation workflow">
+          <div className="sidebar-workflow-tabs" data-tour="workflow-tabs" role="tablist" aria-label="Simulation workflow">
             {SIDEBAR_WORKFLOWS.map((workflow, index) => (
               <button
                 key={workflow.id}
@@ -241,7 +243,7 @@ export default function Sidebar({
             ))}
           </div>
 
-          <div className="sidebar-workflow-panels">
+          <div className="sidebar-workflow-panels" data-tour-scroll>
             <div
               id="sidebar-panel-setup"
               className="sidebar-workflow-panel"
@@ -316,7 +318,7 @@ export default function Sidebar({
             </div>
 
             <div
-              id="sidebar-panel-results"
+              id="sidebar-panel-results" data-tour="results"
               className="sidebar-workflow-panel"
               role="tabpanel"
               aria-labelledby="sidebar-tab-results"
@@ -334,12 +336,12 @@ export default function Sidebar({
               )}
               {onPrintReport && (
                 <div className="p-3">
-                  <button type="button" className="btn btn-outline-success w-100" onClick={onPrintReport}>
+                  <button type="button" className="btn btn-outline-success w-100" data-tour="report" onClick={onPrintReport}>
                     <i className="bi bi-printer me-1" />Print / Export report
                   </button>
                 </div>
               )}
-              <div hidden={!playbackFrames.length}>
+              <div hidden={!playbackFrames.length} data-tour="playback">
                 <PlaybackCard
                   frames={playbackFrames}
                   currentFrameIdx={currentFrameIdx}

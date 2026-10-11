@@ -69,6 +69,7 @@ const api = {
 
   // Monitoring
   getMonitoringMetrics: () => client.get('/monitoring/metrics'),
+  getSystemOverview: (params = {}, signal) => client.get('/monitoring/overview', { params, signal }),
   getAlertMonitoringStatus: () => client.get('/monitoring/alerts/status'),
   triggerAlertScan: (params = {}) => client.post('/monitoring/alerts/scan', null, { params }),
 

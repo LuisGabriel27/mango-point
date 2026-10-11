@@ -5,19 +5,38 @@ GET /monitoring/metrics — Aggregate monitoring dashboard metrics.
 """
 
 import logging
+from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
 from ..core.database import get_db
 from ..services.alert_monitoring_service import alert_monitoring_service
 from ..services.monitoring_service import monitoring_service
+from ..services.system_overview_service import OverviewPeriod, get_system_overview, overview_window
+from utils.datetime_utils import utcnow_aware
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/monitoring", tags=["Monitoring"])
+
+
+@router.get("/overview", summary="Get system activity for a selected calendar period")
+async def get_overview(
+    period: OverviewPeriod = Query("week"),
+    orchard_id: Optional[str] = Query(None, min_length=1, max_length=100),
+    selected_date: Optional[date] = Query(None, alias="date",
+                                         description="Date (YYYY-MM-DD) within the day/week/month/year; defaults to today in Philippine time."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Saved activity in Philippine time, with current inventory/active alerts."""
+    try:
+        overview_window(period, utcnow_aware(), selected_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await get_system_overview(db, period, orchard_id, selected_date=selected_date)
 
 
 @router.get(

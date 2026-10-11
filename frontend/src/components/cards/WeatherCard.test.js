@@ -31,7 +31,6 @@ async function componentExports(relativePath) {
   return module.exports
 }
 const { default: WeatherCard, CustomWeatherEditor, DaylightConditionField } = await componentExports('./WeatherCard.jsx')
-const { default: OverviewTab } = await componentExports('../tabs/OverviewTab.jsx')
 const timeline = createConstantWeatherTimeline({ temperature_c: 27, rainfall_mm: 0, wind_speed_ms: 1 }, 48)
 
 test('the weather selector has two choices and the editor exposes exact values plus shortcuts', () => {
@@ -63,7 +62,7 @@ test('Cecid soil settings are discoverable before selecting Cecid in simulation 
   assert.match(fruitfly, /Soil &amp; Cecid test preset/)
   assert.match(fruitfly, /Available for Cecid Fly/)
   assert.match(fruitfly, /Dawn \+ dusk test/)
-  assert.match(cecid, /<details class="weather-cecid-settings">/)
+  assert.match(cecid, /<details class="weather-cecid-settings"[^>]*>/)
   assert.match(cecid, /Starting soil condition/)
   assert.match(cecid, /Dawn \+ dusk test/)
   assert.match(cecid, /Hour 0–72/)
@@ -90,16 +89,6 @@ test('soil controls expose moist now as a labeled scenario rather than invented 
   assert.match(html, /value="80"/)
   assert.match(html, /without adding earlier rain/)
   assert.match(html, /not a measured soil-water percentage/)
-})
-
-test('Overview emphasizes infestation and no longer labels the maximum score as critical risk', () => {
-  const html = renderToStaticMarkup(React.createElement(OverviewTab, {
-    totalTrees: 194, simData: { n_infested_final: 39, peak_risk: 1, hours: 168 },
-  }))
-  assert.match(html, /Infestation rate/)
-  assert.match(html, /20\.1%/)
-  assert.match(html, /39 of 194 trees/)
-  assert.doesNotMatch(html, /Peak risk score|Critical/)
 })
 
 test('custom daylight controls separate outdoor light and evidence from cloud cover and canopy shade', () => {

@@ -111,7 +111,7 @@ fallback. Inspect the saved source list after running.
 |---|---|---|
 | WF-33 | Inspect source/reservoir badges, tree details and map legends. | Badges describe initial source scenarios; new infestation is not automatically labelled an adult source; cells and trees are distinguished where relevant. |
 | WF-34 | Run one realization, then 5 or 9 repeated runs. Toggle Across runs and One run. | Frequency is labelled as repeated-run frequency; one-run totals and playback remain representative outcomes. |
-| WF-35 | Compare the map, Overview, spread/weather charts and Results at the same point in the run. | Figures refer to their stated frame/final result and units; unexplained contradictory totals are logged. |
+| WF-35 | Compare the map, Crop Impact, spread/weather charts and Results at the same point in the run. | Figures refer to their stated frame/final result and units; unexplained contradictory totals are logged. Overview separately reports saved system activity. |
 | WF-36 | Play, pause, step backward/forward, drag the slider and restart at the end. | Hour, weather, map state and counts agree; playback stops at the last frame and does not run past it. |
 | WF-37 | Inspect Dead, Bagged and out-of-stage trees. | Dead trees are excluded from new infestation; bagging reduces modeled pressure; unsuitable targets do not receive that pest's establishment outcome. |
 | WF-38 | Change crop-impact assumptions and compare displayed calculations/report values. | Units and arithmetic agree; estimated loss/savings are labelled as scenario estimates rather than measured benefits. |
@@ -212,6 +212,22 @@ template → export).
 If a model/input rule changes, identify the affected automated checks and
 controlled/historical results before updating paper tables. Record browser
 usability testing separately from biological or field validation.
+
+## System Overview
+
+These additional cases are **Not run** until rehearsed in a browser. Use existing
+saved runs for both pests and both engines; do not create field observations or
+validation outcomes solely to populate this view.
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-67 | Open Overview with saved runs for both pests/engines; use its header calendar and By day/week/month/year dropdown. Check the initial current month, past/current periods, February and a week crossing New Year. | The month/year picker matches History styling; other periods use a date picker. The chosen date selects its Philippine calendar period (weeks Monday–Sunday); current ranges stop at refresh time; future dates are unavailable; counts match saved records; year charts use monthly buckets. |
+| WF-68 | Filter Overview by orchard, then return to All orchards while simulation controls contain unsaved edits. | Summary scope changes independently; simulation orchard, inputs and displayed result remain intact. |
+| WF-69 | Compare field counts against existing Present, Absent and Not inspected records, including repeated inspections. | Only field records count; Not inspected is excluded from inspection totals; repeat visits count separately; simulated infestation never appears as observed presence. |
+| WF-70 | Choose an empty period/orchard and inspect older unresolved alerts. | Empty activity is explained; current inventory and Active alerts now remain visible; missing data is not represented as observed absence. |
+| WF-71 | Change filters quickly, leave/reopen Overview, log out, and try Refresh after a storage failure. | No old response replaces the new scope; inactive loading is canceled; errors offer retry; normal navigation and authenticated access remain usable. |
+| WF-72 | Use the date picker, period/orchard dropdowns, bar chart legend and table search/sort/page controls with keyboard and a narrow window. | Controls and tables remain reachable; grouped bars and table counts agree; Present findings are labelled as part of inspections; Overview navigation sends no simulations, notifications, record writes or exports. |
+| WF-73 | With an existing large summary, search/sort Orchard activity; try 10/25/50 rows, the last page, no matches and an automatic/manual refresh. Check long names and horizontal/vertical table scrolling. | Only the selected page renders; all matching rows remain reachable; counts and last/empty pages are correct; headers stay visible and long names do not overflow the page. Same-scope refresh preserves search/sort/page; smaller results clamp the page; failed refresh identifies retained records as last loaded. Mark Blocked if insufficient existing data prevents rehearsal. |
 
 ## Completion check
 

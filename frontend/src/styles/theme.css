@@ -1003,6 +1003,62 @@ body {
 .monitoring-kpi-label { font-size: .65rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--mp-muted); }
 .monitoring-kpi-value { font-family: "Manrope", sans-serif; font-size: 1.5rem; font-weight: 700; color: var(--mp-text); }
 .monitoring-kpi-detail { min-height: 2rem; }
+
+.system-overview { max-width: 1600px; margin: 0 auto; }
+.overview-header-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1rem; }
+.overview-header-copy { flex: 1 1 210px; min-width: 0; }
+.overview-panel-title { font-size: .88rem; font-weight: 700; color: var(--mp-text); }
+.overview-panel-title i { color: var(--mp-primary); }
+.overview-subtitle { font-size: .75rem; font-weight: 400; color: var(--mp-muted); overflow-wrap: anywhere; }
+.overview-filters { display: flex; flex: 1 1 560px; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: flex-end; min-width: 0; }
+.overview-orchard-filter { flex: 0 1 180px; min-width: 150px; }
+.overview-period-select { width: 125px; }
+.overview-filters > .btn { white-space: nowrap; }
+.overview-scope { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; padding: .65rem 1rem; font-size: .75rem; color: var(--mp-muted); }
+.overview-range { color: var(--mp-primary); font-weight: 600; }
+.overview-kpi-detail { font-size: .72rem; line-height: 1.45; }
+.overview-notes { font-size: .72rem; line-height: 1.5; }
+.system-overview .mp-select-dropdown { max-height: min(18rem, 50vh); overflow-y: auto; overscroll-behavior: contain; }
+.system-overview .mp-select-option { overflow-wrap: anywhere; }
+.overview-date-picker { max-width: 100%; }
+.overview-date-picker input[type="date"] { width: 145px; min-width: 0; min-height: 29px; padding: 0; border: 0; outline: 0; background: transparent; color: #34443b; font: inherit; font-size: .72rem; font-weight: 700; }
+.overview-date-picker:focus-within { border-color: var(--mp-primary); box-shadow: 0 0 0 3px rgba(27, 67, 50, .12); }
+.overview-status { padding: 3rem 1rem; text-align: center; color: var(--mp-muted); }
+.system-overview .card, .system-overview .card-body, .overview-data-table { min-width: 0; }
+.overview-table-tools, .overview-table-footer, .overview-table-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.overview-table-search { flex: 1 1 160px; min-width: 0; position: relative; }
+.overview-table-search > i { position: absolute; top: 50%; left: .6rem; transform: translateY(-50%); color: var(--mp-muted); pointer-events: none; }
+.overview-table-search .form-control { padding-left: 1.9rem !important; }
+.overview-table-order { flex: 0 1 210px; min-width: 170px; }
+.overview-table-page-size { width: 100px; }
+.overview-table-footer { justify-content: space-between; }
+.overview-table-scroll { max-height: 24rem; max-width: 100%; overflow: auto; overscroll-behavior: contain; }
+.overview-table-scroll:focus-visible { outline: 2px solid var(--mp-primary); outline-offset: 2px; }
+.overview-table-scroll table { width: 100%; }
+.overview-table-scroll thead th { position: sticky; top: 0; z-index: 1; background: #f3f7f5; }
+.overview-table-scroll th:first-child, .overview-table-scroll td:first-child { min-width: 9rem; max-width: 20rem; overflow-wrap: anywhere; }
+.overview-table-scroll .overview-table-number { min-width: 5.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.overview-table-scroll td.overview-table-number { white-space: nowrap; }
+.overview-table { font-size: .8rem; }
+.overview-table tbody > tr > th { border-bottom: 1px solid var(--mp-border) !important; padding: .65rem .55rem; }
+.overview-table tbody > tr > * + * { border-left: 1px solid rgba(27, 67, 50, .12) !important; }
+.overview-sort-button { display: inline-flex; align-items: center; justify-content: flex-start; gap: .4rem; width: 100%; padding: .25rem 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: inherit; }
+.overview-table-number .overview-sort-button { justify-content: flex-end; }
+.overview-sort-button i { flex-shrink: 0; font-size: .7rem; }
+.overview-sort-button:focus-visible { outline: 2px solid var(--mp-primary); outline-offset: 2px; }
+.system-overview table th { font-weight: 600; }
+.system-overview table caption { font-size: .75rem; }
+@media (max-width: 639.98px) {
+  .overview-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
+  .overview-orchard-filter, .overview-period-filter { grid-column: 1 / -1; min-width: 0; }
+  .overview-period-select { width: 100%; }
+  .overview-date-picker { width: 100%; }
+  .overview-date-picker input { flex: 1; }
+  .overview-filters > .btn { justify-self: end; }
+  .overview-table-search { flex-basis: 100%; }
+  .overview-table-order { flex: 1 1 150px; min-width: 0; }
+  .overview-table-pagination { width: 100%; justify-content: space-between; }
+}
 .monitoring-risk-badge { display: inline-flex; align-items: center; min-height: 1.5rem; }
 .monitoring-module-chart-card { border: 1px solid var(--mp-border) !important; border-radius: var(--mp-card-radius) !important; box-shadow: var(--mp-shadow-sm) !important; background: #fff; }
 .monitoring-module-chart-card .card-header {
@@ -1256,9 +1312,11 @@ hr { border-top: 1px solid var(--mp-border); opacity: 1; }
   text-align: left;
 }
 .mp-select-trigger:hover,
-.mp-select-trigger.open {
+.mp-select-trigger.open,
+.mp-select-trigger:focus-visible {
   border-color: var(--mp-primary);
 }
+.mp-select-trigger:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(27,67,50,.1); }
 .mp-select-trigger.open {
   box-shadow: 0 0 0 3px rgba(27,67,50,.1);
   border-radius: 7px 7px 0 0;
@@ -1285,7 +1343,8 @@ hr { border-top: 1px solid var(--mp-border); opacity: 1; }
   cursor: pointer;
   transition: background .1s;
 }
-.mp-select-option:hover { background: var(--mp-primary-light); color: var(--mp-primary); }
+.mp-select-option:hover,
+.mp-select-option.active { background: var(--mp-primary-light); color: var(--mp-primary); }
 .mp-select-option.selected {
   background: var(--mp-primary-light);
   color: var(--mp-primary);

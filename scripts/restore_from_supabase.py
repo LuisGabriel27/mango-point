@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 RESTORE_ORDER = [
     "user_account",
+    "access_request",
     "alert_email_recipient",
     "alert_email_recipient_state",
     "orchard",

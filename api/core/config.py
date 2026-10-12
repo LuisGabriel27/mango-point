@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     ALERT_MONITORING_FORECAST_HOURS: int = 48
     ALERT_MONITORING_DEDUPE_HOURS: int = 6
     
+    # Public request website. Applicant records stay behind FastAPI.
+    ACCESS_REQUEST_LIMIT_PER_HOUR: int = Field(default=5, ge=1, le=100)
+    ACCESS_WEBSITE_ORIGINS: list[str] = []
+
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
@@ -144,7 +148,7 @@ class Settings(BaseSettings):
                 return False
         return value
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "ACCESS_WEBSITE_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: Any) -> Any:
         """Support JSON arrays and comma-separated origin lists."""

@@ -35,7 +35,7 @@ from api.core.database import (
     is_database_unavailable,
 )
 from api.core.security import AuthConfigurationError, get_current_active_user
-from api.routes import auth, alerts, evaluation, monitoring, observations, orchards, simulation, sync, validation, weather
+from api.routes import access_requests, auth, alerts, evaluation, monitoring, observations, orchards, simulation, sync, validation, weather
 from api.services.alert_monitoring_service import alert_monitoring_service
 from api.services.auth_service import auth_service
 from api.services.cloud_sync_service import cloud_sync_service
@@ -136,7 +136,7 @@ Cecid Fly (Procontarinia frugivora, mango fruitlets) and Fruit Fly (Bactrocera d
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=[*settings.CORS_ORIGINS, *settings.ACCESS_WEBSITE_ORIGINS],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,8 +180,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(access_requests.router)
 
-# Public routes remain limited to auth, health, root, and the generated docs.
+# Only inquiry submission is public; request listing and review enforce admin
+# access in their own dependencies. Orchard workflows remain authenticated.
 protected_router_dependencies = [Depends(get_current_active_user)]
 app.include_router(simulation.router, dependencies=protected_router_dependencies)
 app.include_router(orchards.router, dependencies=protected_router_dependencies)

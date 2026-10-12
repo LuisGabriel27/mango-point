@@ -92,6 +92,30 @@ action; a failed refresh labels any retained records as the last loaded data.
 Individual forecast outcomes remain in Results, Crop Impact,
 Spread & Weather, and History.
 
+## Organization request website
+
+The separate [MangoPoint request website](https://mangopoint-access.almondbear10.chatgpt.site)
+introduces the orchard workflow and accepts organization inquiries about
+demonstrations, licensing and subscriptions. Existing customers follow its
+**Customer sign in** link to the application. Sending an inquiry does not create
+an account, collect payment, activate a subscription or grant orchard access.
+
+The [administrator inbox](https://mangopoint-access.almondbear10.chatgpt.site/review.html)
+uses an existing MangoPoint administrator account. Administrators can search
+and filter requests, record **New**, **In discussion**, **Approved** or **Closed**
+and save private review notes. Approval records a decision; account provisioning
+and commercial arrangements remain separate.
+
+Source lives in `sites/mangopoint-access/`. The form and inbox use FastAPI
+`/access-requests` endpoints; applicant data is stored in the local application
+database and queued through the existing Supabase cloud-backup service.
+Configure `ACCESS_WEBSITE_ORIGINS` in the server-side `.env` and restart the API
+when deploying to a new origin. The website uses the existing stable Vercel
+`/api` route and needs that backend to be running to submit or review requests.
+
+See the [request website setup and verification notes](docs/access-request-website.md)
+for schema preparation, local preview and test evidence.
+
 ## Guided Tutorial
 
 The top-bar **Tutorial** button is always available after sign-in. First-time

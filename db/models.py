@@ -7,6 +7,7 @@ This is the SINGLE SOURCE OF TRUTH for database models.
 
 Tables:
     - user_account:             Dashboard users and authentication metadata
+    - access_request:           Private organization/licensing inquiries
     - orchard:                  Orchard metadata
     - tree:                     Tree spatial + biological data (PostGIS)
     - pest:                     Pest species
@@ -26,7 +27,7 @@ from datetime import datetime
 from typing import Optional, List, Any, Dict
 from sqlalchemy import (
     Integer, Float, String, Text, DateTime, Numeric,
-    Boolean, ForeignKey, Enum as SQLEnum, JSON, Index, Sequence,
+    Boolean, ForeignKey, Enum as SQLEnum, JSON, Index, Sequence, CheckConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, Mapped, mapped_column
@@ -148,6 +149,42 @@ class UserAccount(Base):
     __table_args__ = (
         Index("idx_user_account_username", "username", unique=True),
         Index("idx_user_account_email", "email", unique=True),
+    )
+
+
+class AccessRequest(Base):
+    """Licensing inquiries, separate from accounts and orchard records."""
+    __tablename__ = "access_request"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    client_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    organization: Mapped[str] = mapped_column(String(200), nullable=False)
+    sector: Mapped[str] = mapped_column(String(30), nullable=False)
+    contact_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    location: Mapped[str] = mapped_column(String(200), nullable=False)
+    orchard_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    interest: Mapped[str] = mapped_column(String(30), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="new")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    consent_version: Mapped[str] = mapped_column(String(50), nullable=False, default="access-inquiry-v1")
+    reviewed_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("user_account.user_id", ondelete="SET NULL"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('new', 'reviewing', 'approved', 'closed')", name="ck_access_request_status"),
+        CheckConstraint("version >= 1", name="ck_access_request_version"),
+        CheckConstraint("orchard_count IS NULL OR orchard_count BETWEEN 0 AND 100000", name="ck_access_request_orchards"),
+        Index("idx_access_request_status_created", "status", "created_at"),
+        Index("idx_access_request_client_created", "client_hash", "created_at"),
     )
 
 

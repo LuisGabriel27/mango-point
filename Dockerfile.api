@@ -1,0 +1,27 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-api.txt ./
+RUN python -m pip install --upgrade pip && \
+    python -m pip install -r requirements-api.txt
+
+COPY __init__.py run_server.py ./
+COPY api ./api
+COPY core ./core
+COPY db ./db
+COPY scripts ./scripts
+COPY spatial ./spatial
+COPY utils ./utils
+COPY validation ./validation
+COPY data/*.csv data/*.geojson data/*.md ./data/
+
+RUN mkdir -p /app/data/orchards /app/outputs
+
+EXPOSE 8000
+
+CMD ["python", "run_server.py", "--host", "0.0.0.0", "--port", "8000"]

@@ -19,3 +19,5 @@ data/*.tif
 data/orchards/
 node_modules/
 dist/
+.vercel
+.env*

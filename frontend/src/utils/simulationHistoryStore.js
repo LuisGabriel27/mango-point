@@ -7,7 +7,7 @@ const DEFAULT_ORCHARD_ID = 'default-orchard'
 
 // Keep in sync with core/config.py. It identifies changes that can alter a
 // fixed-seed simulation result, not ordinary UI/API changes.
-export const CURRENT_SIMULATION_MODEL_VERSION = '2026.10-source-scope-v13'
+export const CURRENT_SIMULATION_MODEL_VERSION = '2026.10-source-progression-v17'
 
 let dbPromise = null
 

@@ -1,4 +1,67 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap");
+/* Web fonts intentionally use local/system fallbacks so the installed app renders offline. */
+
+.connection-status {
+  position: fixed;
+  top: .75rem;
+  left: 50%;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  max-width: min(92vw, 720px);
+  padding: .6rem .85rem;
+  border: 1px solid;
+  border-radius: .75rem;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  font: 600 .82rem/1.25 system-ui, sans-serif;
+  transform: translateX(-50%);
+}
+
+.connection-status-local {
+  border-color: #74c69d;
+  background: #d8f3dc;
+  color: #1b4332;
+}
+
+.connection-status-error {
+  border-color: #f4a261;
+  background: #fff3cd;
+  color: #713f12;
+}
+
+.connection-status-retry {
+  border: 0;
+  border-radius: .4rem;
+  background: #1b4332;
+  color: #fff;
+  padding: .25rem .55rem;
+  font: inherit;
+}
+
+.connection-status-close {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: -.25rem -.35rem -.25rem 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.connection-status-close:hover,
+.connection-status-close:focus-visible {
+  background: rgb(0 0 0 / 10%);
+  outline: none;
+}
+
+.connection-status-close:focus-visible {
+  box-shadow: 0 0 0 2px currentColor;
+}
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Design tokens

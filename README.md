@@ -192,6 +192,71 @@ If you prefer separate terminals instead of `.\start_dev.bat`:
 API docs: `http://localhost:8000/docs`
 Frontend: `http://localhost:3000`
 
+### Deployed local-first mode
+
+The Vercel frontend can also operate as an installed/cached Progressive Web App
+while its reviewed Python simulation engine and authoritative data remain on the
+user's device. In this mode, the browser prefers the loopback FastAPI companion
+at `http://127.0.0.1:8000`; if no companion is available and internet access is
+working, it uses the configured remote API instead.
+
+Prepare each laptop **while it still has internet access**:
+
+```powershell
+cd <project-folder>
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+.\start_offline_companion.bat -Prepare
+```
+
+Then open `https://mango-point-projects.vercel.app`, allow the browser's Local
+Network Access prompt, sign in to the local MangoPoint account, and reload once.
+Installing the app from the browser is recommended. This first online visit is
+required so the service worker can cache the application; a device that has
+never loaded this release cannot open it for the first time without internet.
+
+For later offline starts, run `start_offline_companion.bat` without `-Prepare`.
+It reuses a healthy local API or starts prepared Docker images with no build or
+download, waits for API/database health, and checks whether the Vercel origin
+can access local health and login. `-Prepare` permits an online image build
+when the companion is absent. A healthy running API is reused; deliberate
+Docker code updates use `docker compose up -d --build --wait --wait-timeout 120`
+while online.
+
+If simulation says it cannot reach the server even though local `/health`
+works, run this **on the affected laptop**:
+
+```powershell
+.\start_offline_companion.bat -CheckOnly
+```
+
+A healthy Docker API alone does not establish browser permission or CORS
+access. Follow the [offline companion troubleshooting guide](docs/offline-companion-troubleshooting.md)
+to check the Vercel origin, Chrome/Edge local network permission, local account,
+PWA cache preparation and offline testing method.
+
+If the deployed origin is rejected by this project's running Docker API, run
+`start_offline_companion.bat -RepairCors` on that laptop. It preserves other
+settings, saves a private `.env` backup, adds the Vercel origin, recreates only
+the API container from its existing image and verifies the new access settings.
+
+For an offline rehearsal:
+
+1. Confirm `http://127.0.0.1:8000/health` reports a connected database.
+2. Confirm the dashboard shows **Local-first mode**.
+3. Reload the Vercel app once while online, then disconnect Wi-Fi.
+4. Keep Docker Desktop and both MangoPoint containers running.
+5. Reopen the same Vercel URL, select **Custom Weather**, run a simulation, and
+   confirm the result appears in History.
+6. Reconnect Wi-Fi. The local API resumes its queued Supabase backup; live
+   weather, email delivery, online basemaps, and other internet services also
+   become available again.
+
+This is not a browser-only simulation. The cached Vercel PWA is the deployed
+interface, while Docker supplies FastAPI, the unchanged
+`2026.10-source-progression-v17` engine, and PostgreSQL/PostGIS locally. If the
+companion is stopped, offline simulation is unavailable. Docker images and npm
+assets must be downloaded during preparation, before entering an offline site.
+
 Default local login after database initialization:
 
 ```text
@@ -200,6 +265,135 @@ password: change-this-admin-password
 ```
 
 Change `DEFAULT_ADMIN_PASSWORD` in `.env` before a shared demo.
+
+### Sharing the deployed app with another laptop
+
+Browser-only visitors use the API and database on your server laptop. Use one
+command from the project folder:
+
+```powershell
+.\start_production.bat
+```
+
+The launcher reuses a healthy API or starts it in the background against the
+configured local database. If that database is unavailable, it starts the
+Docker API/database stack (Docker Desktop must already be running). It waits
+for the database, public tunnel and deployed login route before printing
+**Share https://mango-point-projects.vercel.app**. Open the site after that
+message. Logs are saved under `outputs/remote-access/`.
+
+If the API and database are already running, this command only prepares the
+public connection:
+
+```powershell
+.\start_remote_access.bat
+```
+
+The deployed frontend uses the fixed same-origin `/api` path. The helper
+uses the saved stable connection when configured; otherwise it reuses or starts
+a Cloudflare Quick Tunnel. It checks health and browser access, and publishes
+the current destination in the Vercel project's
+**MangoPoint API** routing rule. A changed tunnel needs a route update, not a
+frontend rebuild; cached PWA bundles keep using `/api`. API responses are never
+cached by the service worker. The first transition from an older frontend
+requires one rebuild; the helper preserves the existing Vercel project root
+and assigns the production alias after that build. `-ForceDeploy` explicitly
+rebuilds when needed for frontend changes.
+
+The server laptop needs Node/npm, the existing Vercel project link, Vercel CLI
+authentication, and Tailscale for stable access or `cloudflared` for temporary
+access. If required, authenticate with
+`npx.cmd --yes vercel@63.1.2 login` before running the helper.
+
+#### Stable laptop address without buying a domain
+
+Use Tailscale Funnel to assign this laptop an HTTPS address of the form
+`https://device.tailnet.ts.net`. Visitors keep using
+**https://mango-point-projects.vercel.app** and do not need to install Tailscale.
+The device address stays the same across ordinary server restarts. Keep the
+same Tailscale account, registered device and device/tailnet names.
+
+Complete this setup once:
+
+1. Install [Tailscale for Windows](https://tailscale.com/docs/install/windows)
+   and sign in from its system tray menu. On the current server laptop,
+   Tailscale 1.104.1 was installed and the stable connection activated on
+   2026-10-12, using `https://msi.tail814675.ts.net`.
+2. In the [Tailscale Machines page](https://login.tailscale.com/admin/machines),
+   open this laptop's menu and choose **Disable key expiry**. The launcher
+   requires this setting to prevent periodic device reauthentication from
+   interrupting access.
+3. Run this command from the MangoPoint project folder:
+
+   ```powershell
+   .\setup_stable_access.bat
+   ```
+
+4. If Tailscale displays a setup link, open it and enable Funnel/HTTPS for
+   this laptop. Wait for **Share https://mango-point-projects.vercel.app**.
+   Initial public DNS/certificate setup can take several minutes; the launcher
+   waits up to ten minutes for API readiness during stable setup.
+
+The setup starts/reuses MangoPoint, enables a persistent Funnel to the local
+API on port 8000, enables Tailscale's Windows unattended mode, checks the
+public API/database and Vercel login route, then saves the connection in
+`outputs/remote-access/connection.json`. This ignored file contains only the
+provider and public address. It must stay on the server laptop.
+
+For later server starts, use the usual command:
+
+```powershell
+.\start_production.bat
+```
+
+It reuses the saved stable address. If Tailscale is signed out, its key expires,
+or its device name changes, the launcher reports the problem and does not
+silently switch to a temporary address. It also stops before replacing another
+service's existing Serve/Funnel configuration. An explicit
+`setup_stable_access.bat` run registers a deliberately changed device name.
+The launcher must still run after a laptop restart to start the MangoPoint API;
+unattended mode keeps the Tailscale connection available across Windows logout.
+
+For an existing permanent Cloudflare Tunnel hostname or hosted API instead,
+save its already configured HTTPS origin with:
+
+```powershell
+.\start_production.bat -PublicApiUrl https://api.your-domain.example -RememberConnection
+```
+
+The helper verifies the endpoint before saving it; it does not create a domain,
+DNS record or external tunnel. Temporary `*.trycloudflare.com` origins cannot
+be saved as stable connections.
+
+Check the connection without starting a tunnel or changing production:
+
+```powershell
+.\start_remote_access.bat -CheckOnly
+```
+
+Keep the server laptop awake and connected to the internet, with the API,
+PostgreSQL and tunnel running. After restarting the laptop or tunnel, run
+`start_production.bat` before sharing the site. The helper stops if unrelated
+unpublished Vercel routing changes exist so it does not publish another
+operator's edits. Browser-only visitors need internet to reach this server;
+offline simulation still requires a companion on their own laptop.
+
+Stable addressing prevents Quick Tunnel URL changes from breaking the API
+connection. Availability still depends on the laptop, database, internet and
+tunnel provider. Tailscale Funnel is currently beta and has bandwidth limits;
+for stronger production availability, use a permanent Cloudflare Tunnel hostname
+or an always-on hosted API/database. Cloudflare Quick Tunnels remain temporary
+development connections with no uptime guarantee.
+See [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel),
+[persistent Funnel background mode](https://tailscale.com/docs/reference/tailscale-cli/funnel),
+[device key expiry](https://tailscale.com/docs/features/access-control/key-expiry)
+and [Windows unattended mode](https://tailscale.com/docs/how-to/run-unattended).
+See [Cloudflare Quick Tunnel limitations](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+and [Vercel project routing rules](https://vercel.com/docs/routing/project-routing-rules).
+The [2026-10-12 connection check](docs/production-connection-check-2026-10-12.md)
+records the published repair, executed login/offline checks and their limits.
+The subsequent [stable address check](docs/stable-access-check-2026-10-12.md)
+records Tailscale activation and the production sign-in retest.
 
 Manual setup, if you do not want to use the Windows helper:
 
@@ -530,6 +724,22 @@ cd frontend
 npm.cmd test
 npm.cmd run build
 ```
+
+Connection checks for the server-laptop deployment:
+
+```powershell
+python -m pytest -q tests/test_remote_access_startup.py
+.\start_remote_access.bat -CheckOnly
+cd frontend
+# Set MANGOPOINT_TEST_USERNAME and MANGOPOINT_TEST_PASSWORD in this terminal
+# for an existing account; never put them in frontend environment files.
+npm.cmd run test:production
+npm.cmd run test:pwa
+```
+
+The production browser check blocks loopback access, signs in through `/api`,
+and reads orchard records. It does not create a simulation or a field record.
+Credentials remain in the test process environment and traces are disabled.
 
 The [testing methods guide](docs/testing-methods-for-defense.md) distinguishes
 automated implementation checks, controlled simulations and historical

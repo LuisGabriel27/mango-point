@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
+import ConnectionStatus from './components/ConnectionStatus'
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -64,6 +65,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
+        <ConnectionStatus />
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />

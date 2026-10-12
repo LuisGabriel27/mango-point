@@ -1,10 +1,14 @@
 import axios from 'axios'
+import { getConnectionState, localFetchOptions, resolveApiTarget } from './offline/apiRuntime.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
+const client = axios.create({ adapter: 'fetch' })
 
-const client = axios.create({ baseURL: API_BASE })
-
-client.interceptors.request.use((config) => {
+client.interceptors.request.use(async (config) => {
+  const target = await resolveApiTarget()
+  config.baseURL = target.baseURL
+  if (target.mode === 'local' || target.mode === 'local-unavailable') {
+    config.fetchOptions = localFetchOptions(config)
+  }
   const token = sessionStorage.getItem('access_token')
   if (token) config.headers['Authorization'] = `Bearer ${token}`
   return config
@@ -21,6 +25,14 @@ function formatValidationItem(item) {
 }
 
 export function apiErrorMessage(error, fallback = 'Request failed.') {
+  if (!error?.response && error?.code === 'ERR_NETWORK') {
+    return getConnectionState().mode.startsWith('local')
+      ? 'Cannot reach MangoPoint on this device. Start the local server and check browser local network permission, then try again.'
+      : 'Cannot reach the MangoPoint server. Check your internet connection and ask the server operator to run start_production.bat.'
+  }
+  if ([502, 503, 504].includes(error?.response?.status) && !error?.response?.data?.detail) {
+    return 'The MangoPoint server is temporarily unavailable. Please try again after the server is ready.'
+  }
   const detail =
     error?.response?.data?.detail ??
     error?.response?.data?.message ??

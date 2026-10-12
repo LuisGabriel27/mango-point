@@ -1,0 +1,18 @@
+{
+  "name": "MangoPoint",
+  "short_name": "MangoPoint",
+  "description": "Local-first mango orchard pest simulation and decision support",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8f7f4",
+  "theme_color": "#1b4332",
+  "icons": [
+    {
+      "src": "/brand/mangopoint-logo-v2.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ import {
 } from './historyPeriod.js'
 
 test('frontend simulation model version matches the backend release', () => {
-  assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-source-scope-v13')
+  assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-source-progression-v17')
 })
 
 test('generated simulation seed is copied into a replayable request', () => {

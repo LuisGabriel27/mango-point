@@ -229,3 +229,100 @@ def test_funnel_requires_public_https_mapping_and_never_accepts_foreground_confi
         } | ConvertTo-Json -Compress
     """)
     assert result == {"private": False, "plain": False, "foreground": False, "missing": False}
+
+
+def test_unchanged_release_reuses_api_base_but_still_fetches_live_html(tmp_path):
+    cache = str(tmp_path / 'frontend-check.json').replace("'", "''")
+    result = run_helper(f"""
+        $script:requests = @()
+        $script:progress = @()
+        function Invoke-WebRequest {{
+            param($Uri)
+            $script:requests += $Uri
+            $script:progress += "$ProgressPreference"
+            return @{{ Content = '<script src="/assets/index-current.js"></script>' }}
+        }}
+        function Get-MangoPointBundleText {{
+            param($Url)
+            $script:requests += $Url
+            $script:progress += "$ProgressPreference"
+            return '{{VITE_API_BASE:"/api"}}'
+        }}
+        $first = Get-MangoPointLiveApiBase 'https://app.example.test' '{cache}' $false $false 6>$null
+        $second = Get-MangoPointLiveApiBase 'https://app.example.test' '{cache}' $false $false 6>$null
+        @{{ first = $first; second = $second; requests = $script:requests; progress = $script:progress }} | ConvertTo-Json -Compress
+    """)
+    assert result['first'] == result['second'] == '/api'
+    assert len(result['requests']) == 3
+    assert 'connection_check=' in result['requests'][0]
+    assert result['requests'][1].endswith('/assets/index-current.js')
+    assert 'connection_check=' in result['requests'][2]
+    assert result['progress'] == ['SilentlyContinue'] * 3
+    saved = json.loads((tmp_path / 'frontend-check.json').read_text(encoding='utf-8-sig'))
+    assert saved == {
+        'version': 1, 'siteUrl': 'https://app.example.test',
+        'assetUrl': 'https://app.example.test/assets/index-current.js', 'apiBase': '/api',
+    }
+
+
+@pytest.mark.parametrize('reason', ['release-changed', 'site-changed', 'refresh'])
+def test_changed_release_site_or_explicit_refresh_cannot_reuse_cache(tmp_path, reason):
+    cache_file = tmp_path / 'frontend-check.json'
+    cache_file.write_text(json.dumps({
+        'version': 1,
+        'siteUrl': 'https://other.example.test' if reason == 'site-changed' else 'https://app.example.test',
+        'assetUrl': 'https://app.example.test/assets/index-old.js' if reason == 'release-changed' else 'https://app.example.test/assets/index-current.js',
+        'apiBase': '/api',
+    }))
+    cache = str(cache_file).replace("'", "''")
+    result = run_helper(f"""
+        $script:bundleRequests = 0
+        function Invoke-WebRequest {{
+            param($Uri)
+            return @{{ Content = '<script src="/assets/index-current.js"></script>' }}
+        }}
+        function Get-MangoPointBundleText {{
+            $script:bundleRequests += 1
+            return '{{VITE_API_BASE:"https://stale.trycloudflare.com"}},fallback="/api";'
+        }}
+        $base = Get-MangoPointLiveApiBase 'https://app.example.test' '{cache}' $false ${str(reason == 'refresh').lower()} 6>$null
+        @{{ base = $base; downloads = $script:bundleRequests }} | ConvertTo-Json -Compress
+    """)
+    assert result == {'base': 'https://stale.trycloudflare.com', 'downloads': 1}
+
+
+@pytest.mark.parametrize('existing', [None, '{bad-json'])
+def test_read_only_cache_miss_fetches_bundle_without_writing(tmp_path, existing):
+    cache_file = tmp_path / 'frontend-check.json'
+    if existing is not None:
+        cache_file.write_text(existing)
+    cache = str(cache_file).replace("'", "''")
+    result = run_helper(f"""
+        function Invoke-WebRequest {{
+            param($Uri)
+            return @{{ Content = '<script src="/assets/index-current.js"></script>' }}
+        }}
+        function Get-MangoPointBundleText {{ return '{{VITE_API_BASE:"/api"}}' }}
+        @{{ base = (Get-MangoPointLiveApiBase 'https://app.example.test' '{cache}' $true $false 6>$null) }} | ConvertTo-Json -Compress
+    """)
+    assert result == {'base': '/api'}
+    if existing is None:
+        assert not cache_file.exists()
+    else:
+        assert cache_file.read_text() == existing
+
+
+def test_cached_configuration_does_not_mask_a_failed_live_page_check(tmp_path):
+    cache_file = tmp_path / 'frontend-check.json'
+    cache_file.write_text(json.dumps({
+        'version': 1, 'siteUrl': 'https://app.example.test',
+        'assetUrl': 'https://app.example.test/assets/index-current.js', 'apiBase': '/api',
+    }))
+    cache = str(cache_file).replace("'", "''")
+    result = run_helper(f"""
+        function Invoke-WebRequest {{ throw 'Fixture internet failure' }}
+        try {{ Get-MangoPointLiveApiBase 'https://app.example.test' '{cache}' $true $false 6>$null | Out-Null; $blocked = $false }}
+        catch {{ $blocked = $true }}
+        @{{ blocked = $blocked }} | ConvertTo-Json -Compress
+    """)
+    assert result == {'blocked': True}

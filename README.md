@@ -282,6 +282,16 @@ for the database, public tunnel and deployed login route before printing
 **Share https://mango-point-projects.vercel.app**. Open the site after that
 message. Logs are saved under `outputs/remote-access/`.
 
+Normal startup checks the small live page, reuses the checked API configuration
+for an unchanged frontend bundle, and downloads that bundle again when a new
+release is detected. The cache is saved in ignored
+`outputs/remote-access/frontend-check.json`; it contains no credentials.
+Large bundle downloads use a text-only HTTP client with a 30-second timeout,
+and PowerShell's byte-progress display is suppressed. Stage messages and the
+elapsed startup time remain visible. Public API/database/login checks still
+run every time. `-CheckOnly` does not write the cache; `-ForceDeploy` refreshes
+the bundle check and explicitly rebuilds the frontend.
+
 If the API and database are already running, this command only prepares the
 public connection:
 
@@ -394,6 +404,8 @@ The [2026-10-12 connection check](docs/production-connection-check-2026-10-12.md
 records the published repair, executed login/offline checks and their limits.
 The subsequent [stable address check](docs/stable-access-check-2026-10-12.md)
 records Tailscale activation and the production sign-in retest.
+The [startup performance check](docs/production-startup-performance-check-2026-10-12.md)
+records the large-download fix and measured startup time on this laptop.
 
 Manual setup, if you do not want to use the Windows helper:
 

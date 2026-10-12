@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$previousProgressPreference = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
+$startupTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $projectFolder = Split-Path $PSScriptRoot -Parent
 $frontendFolder = Join-Path $projectFolder 'frontend'
 $siteUrl = 'https://mango-point-projects.vercel.app'
@@ -15,13 +18,10 @@ $localApi = 'http://127.0.0.1:8000'
 . (Join-Path $PSScriptRoot 'remote_access_helpers.ps1')
 . (Join-Path $PSScriptRoot 'stable_access_helpers.ps1')
 $connectionConfigPath = Join-Path $projectFolder 'outputs\remote-access\connection.json'
+$frontendCheckCachePath = Join-Path $projectFolder 'outputs\remote-access\frontend-check.json'
 
 function Get-LiveApiUrl {
-    $page = Invoke-WebRequest -UseBasicParsing -Uri "$siteUrl/login?connection_check=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" -TimeoutSec 20 -Headers @{ 'Cache-Control' = 'no-cache' }
-    $asset = [regex]::Match($page.Content, 'src="([^"]*/assets/index-[^"]+\.js)"').Groups[1].Value
-    if (-not $asset) { throw 'Could not locate the deployed application script.' }
-    $bundle = Invoke-WebRequest -UseBasicParsing -Uri ([uri]::new([uri]$siteUrl, $asset)) -TimeoutSec 30
-    return Get-MangoPointBundleApiBase $bundle.Content
+    return Get-MangoPointLiveApiBase -SiteUrl $siteUrl -CachePath $frontendCheckCachePath -CheckOnly $CheckOnly -Refresh $ForceDeploy
 }
 
 function Get-RunningTunnelUrls {
@@ -103,6 +103,7 @@ except Exception:
 }
 
 function Set-MangoPointApiRoute([string]$ApiUrl) {
+    Write-Host '[INFO] Checking the published Vercel /api route...'
     $link = Get-Content (Join-Path $frontendFolder '.vercel\project.json') -Raw | ConvertFrom-Json
     $endpoint = "/v1/projects/$($link.projectId)/routes?teamId=$($link.orgId)"
     $state = Convert-VercelJson (Invoke-Vercel -VercelArgs @('api', $endpoint))
@@ -147,8 +148,10 @@ try {
     if ($RememberConnection -and $connection.provider -eq 'quick') {
         throw 'Only a stable connection can be remembered. Use -UseTailscale or -PublicApiUrl.'
     }
+    Write-Host '[INFO] Checking the local API and database...'
     Start-MangoPointServer
     Write-Host '[OK] Local API and database are ready.'
+    Write-Host '[INFO] Checking the deployed app release...'
     $liveApi = Get-LiveApiUrl
     if ($connection.provider -eq 'tailscale') {
         $tunnelUrl = Start-MangoPointTailscaleFunnel -CheckOnly $CheckOnly -ExpectedUrl $connection.publicApiUrl -ConfigureUnattended $RememberConnection
@@ -182,9 +185,11 @@ try {
     if ($publicReadinessTimeout -eq 600) {
         Write-Host '[INFO] Checking stable HTTPS access; first-time DNS/certificate setup can take several minutes...'
     }
+    Write-Host '[INFO] Checking public API health and browser access...'
     Assert-TunnelReady $tunnelUrl -TimeoutSeconds $publicReadinessTimeout
     Write-Host "[OK] Public API and browser access are ready: $tunnelUrl"
     Set-MangoPointApiRoute $tunnelUrl
+    Write-Host '[INFO] Checking the deployed /api connection...'
     Wait-MangoPointApiReady "$siteUrl/api" -TimeoutSeconds $publicReadinessTimeout
     if ($liveApi -eq '/api' -and -not $ForceDeploy) {
         Write-Host '[OK] Vercel uses the fixed /api address. No deployment is needed.'
@@ -225,7 +230,9 @@ try {
         if ((Get-LiveApiUrl) -ne '/api') { throw 'The live frontend does not yet use /api. Check the deployment before sharing it.' }
         Write-Host '[OK] Vercel now uses the fixed /api address.'
     }
-    Wait-MangoPointApiReady "$siteUrl/api" -TimeoutSeconds $publicReadinessTimeout
+    if ($ForceDeploy -or $liveApi -ne '/api') {
+        Wait-MangoPointApiReady "$siteUrl/api" -TimeoutSeconds $publicReadinessTimeout
+    }
     # Confirm protected application routes also reach FastAPI, not the SPA fallback.
     $authCheck = Invoke-WebRequest -UseBasicParsing -Method Options -Uri "$siteUrl/api/auth/login" -Headers @{ Origin = $siteUrl; 'Access-Control-Request-Method' = 'POST'; 'Access-Control-Request-Headers' = 'content-type' } -TimeoutSec 20
     if ($authCheck.Headers['Access-Control-Allow-Origin'] -ne $siteUrl) { throw 'Vercel API login preflight failed.' }
@@ -235,6 +242,7 @@ try {
         Write-Host '[OK] Saved the stable connection for future start_production.bat runs.'
     }
     Write-Host '[OK] Vercel API health, database and login access are ready.'
+    Write-Host "[OK] Startup checks completed in $([math]::Round($startupTimer.Elapsed.TotalSeconds, 1)) seconds."
     Write-Host "[OK] Share $siteUrl"
     Write-Host 'Keep the laptop awake, online, and the MangoPoint API running.'
 } catch {
@@ -242,4 +250,5 @@ try {
     exit 1
 } finally {
     Pop-Location
+    $ProgressPreference = $previousProgressPreference
 }

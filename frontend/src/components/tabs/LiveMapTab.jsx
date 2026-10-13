@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTourPresentation } from '../tutorial/TourPresentation'
 import RiskMap from '../RiskMap'
 import SourcePresenceControl from '../SourcePresenceControl'
@@ -252,6 +252,9 @@ export default function LiveMapTab({
   const [zoneListFilter, setZoneListFilter] = useState('all')
   const [zoneEditorType, setZoneEditorType] = useState('stage')
   const [drawMode, setDrawMode] = useState('polygon')
+  const zoneEditorRef = useRef(null)
+  const zoneEditorToggleRef = useRef(null)
+  const mapCardRef = useRef(null)
   const [zoneVisibility, setZoneVisibility] = useState({
     stage: true,
     status: true,
@@ -302,6 +305,22 @@ export default function LiveMapTab({
   }
   const activeDrawing = Boolean(drawingByType[zoneEditorType])
   const activeDraft = draftByType[zoneEditorType] || []
+
+  useEffect(() => {
+    if (!zoneEditorOpen || tour) return undefined
+    const dismiss = (event) => {
+      if (event.button !== 0) return
+      if (zoneEditorRef.current?.contains(event.target)
+        || zoneEditorToggleRef.current?.contains(event.target)) return
+      // Map gestures belong to the current draft while drawing. Other outside
+      // clicks hide the panel without cancelling or saving that draft.
+      if (activeDrawing && mapCardRef.current?.contains(event.target)) return
+      setZoneEditorOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    return () => document.removeEventListener('pointerdown', dismiss, true)
+  }, [zoneEditorOpen, activeDrawing, Boolean(tour)])
+
   const cancelAllDrawings = () => {
     onStageZoneCancel?.()
     onStatusZoneCancel?.()
@@ -375,6 +394,7 @@ export default function LiveMapTab({
           <button
             type="button"
             className={`map-command-btn${showGrid ? ' active' : ''}`}
+            aria-label="Grid"
             aria-pressed={showGrid}
             onClick={() => setShowGrid((current) => !current)}
             title="Show or hide the orchard grid"
@@ -383,7 +403,9 @@ export default function LiveMapTab({
           </button>
           <button
             type="button"
+            ref={zoneEditorToggleRef}
             data-tour="map-zones" className={`map-command-btn${zoneEditorOpen ? ' active' : ''}`}
+            aria-label="Zones"
             aria-expanded={zoneEditorOpen}
             aria-controls="map-zone-editor-panel"
             onClick={() => {
@@ -399,6 +421,7 @@ export default function LiveMapTab({
           <button
             type="button"
             className={`map-command-btn${layersOpen ? ' active' : ''}`}
+            aria-label="Layers"
             aria-expanded={layersOpen}
             aria-controls="map-layers-popover"
             disabled={activeDrawing}
@@ -469,6 +492,7 @@ export default function LiveMapTab({
 
         {zoneEditorOpen && (
           <section
+            ref={zoneEditorRef}
             id="map-zone-editor-panel"
             className={`map-zone-editor-panel${activeDrawing ? ' is-drawing' : ''}`}
             aria-label={activeDrawing ? 'Active zone drawing controls' : 'Zone editor'}
@@ -986,7 +1010,7 @@ export default function LiveMapTab({
           <div className="map-animation-title">{titleText}</div>
         )}
 
-        <div className="map-card">
+        <div ref={mapCardRef} className="map-card">
           <RiskMap
             key={viewportKey}
             geojson={geojson}

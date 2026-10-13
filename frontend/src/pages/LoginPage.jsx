@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { apiErrorMessage } from '../api'
 import AuthLayout from '../components/AuthLayout'
+import LoginTerms from '../components/LoginTerms'
 
 export default function LoginPage() {
   const { login, sessionNotice } = useAuth()
@@ -104,6 +105,7 @@ export default function LoginPage() {
           )}
         </button>
       </form>
+      <LoginTerms />
     </AuthLayout>
   )
 }

@@ -12,7 +12,7 @@ function TutorialTooltip({ index, size, step, backProps, closeProps, primaryProp
     <section {...tooltipProps} className={`workflow-tour-tooltip workflow-tour-tooltip-${step.id}`} aria-labelledby="workflow-tour-title" aria-describedby="workflow-tour-content">
       <div className="workflow-tour-topline">
         <span aria-live="polite">Step {index + 1} of {size}</span>
-        <button {...closeProps} type="button" className="workflow-tour-close" aria-label="Close tutorial">×</button>
+        <button {...closeProps} type="button" className="workflow-tour-close" aria-label="Close guide">×</button>
       </div>
       <div className="workflow-tour-flow" aria-label="MangoPoint workflow">
         {phases.map(([id, label]) => (
@@ -31,7 +31,7 @@ function TutorialTooltip({ index, size, step, backProps, closeProps, primaryProp
         )}
       </div>
       <div className="workflow-tour-actions">
-        <button {...skipProps} type="button" className="btn btn-sm btn-link">Skip tutorial</button>
+        <button {...skipProps} type="button" className="btn btn-sm btn-link">Skip guide</button>
         <div>
           {index > 0 && <button {...backProps} type="button" className="btn btn-sm btn-outline-secondary">Back</button>}
           <button {...primaryProps} type="button" className="btn btn-sm btn-success">{index + 1 === size ? 'Finish' : 'Next'}</button>
@@ -95,10 +95,10 @@ function RunningTutorial({ definitions, presentation, onPresentationChange, onEn
       spotlightPadding: 6, spotlightRadius: 8, zIndex: 20000,
       width: 'min(370px, calc(100vw - 24px))', scrollDuration: 0, scrollOffset: 16,
     }}
-    locale={{ back: 'Back', close: 'Close tutorial', last: 'Finish', next: 'Next', skip: 'Skip tutorial' }}
+    locale={{ back: 'Back', close: 'Close guide', last: 'Finish', next: 'Next', skip: 'Skip guide' }}
     onEvent={({ type, action }) => {
       if (type === EVENTS.TARGET_NOT_FOUND) onMissing()
-      if (type === EVENTS.ERROR) onEnd('A tutorial panel was unavailable. You can replay the guide when it is ready.')
+      if (type === EVENTS.ERROR) onEnd('A guide panel was unavailable. You can replay the guide when it is ready.')
       else if (type === EVENTS.TOUR_END || action === ACTIONS.CLOSE) onEnd()
     }}
   />
@@ -125,7 +125,7 @@ export default function WorkflowTutorial({ user, orchardId, customWeather, hasRe
     restoreLauncherFocus.current = true
     setSession(null)
     onPresentationChange(null)
-    setNotice(message || (missed.current ? 'Unavailable controls were skipped. Replay the guide after loading the relevant weather or result.' : 'Tutorial closed. Your inputs are unchanged; replay anytime.'))
+    setNotice(message || (missed.current ? 'Unavailable controls were skipped. Replay the guide after loading the relevant weather or result.' : 'Guide closed. Your inputs are unchanged; replay anytime.'))
     const savedScroll = restore.current
     restore.current = null
     requestAnimationFrame(() => {
@@ -143,7 +143,7 @@ export default function WorkflowTutorial({ user, orchardId, customWeather, hasRe
 
   useEffect(() => {
     if (session && (session.orchardId !== orchardId || session.userKey !== key)) {
-      end('The orchard or signed-in user changed. Restart Tutorial for the current orchard.')
+      end('The orchard or signed-in user changed. Restart Guide for the current orchard.')
     }
   }, [orchardId, key, session, end])
   useEffect(() => () => { onPresentationChange(null) }, [onPresentationChange])
@@ -160,7 +160,7 @@ export default function WorkflowTutorial({ user, orchardId, customWeather, hasRe
 
   const start = (guide) => {
     if (document.querySelector('[aria-modal="true"], .modal.show, .weather-periods-modal')) {
-      setNotice('Close the open dialog first, then start Tutorial. Your unfinished inputs will stay in place.')
+      setNotice('Close the open dialog first, then start Guide. Your unfinished inputs will stay in place.')
       setMenuOpen(false)
       return
     }
@@ -183,7 +183,7 @@ export default function WorkflowTutorial({ user, orchardId, customWeather, hasRe
     <button type="button" className="navbar-controls-btn workflow-tour-launcher" data-tour="tutorial-start"
       ref={launcher} aria-expanded={menuOpen} aria-controls="workflow-tour-menu"
       onClick={() => setMenuOpen((open) => !open)}>
-      <i className="bi bi-question-circle" aria-hidden="true" /><span>Tutorial</span>
+      <i className="bi bi-question-circle" aria-hidden="true" /><span>Guide</span>
     </button>
     {!session && (menuOpen || invited) && <div className="workflow-tour-menu" id="workflow-tour-menu" ref={menu}
       onKeyDown={(event) => { if (event.key === 'Escape') {
@@ -208,7 +208,7 @@ export default function WorkflowTutorial({ user, orchardId, customWeather, hasRe
       }}>{invited ? 'Maybe later' : 'Close menu'}</button>
     </div>}
     {notice && !session && <div className="workflow-tour-notice" role="status">{notice}
-      <button type="button" aria-label="Dismiss tutorial message" onClick={() => setNotice('')}>×</button>
+      <button type="button" aria-label="Dismiss guide message" onClick={() => setNotice('')}>×</button>
     </div>}
     {session && <RunningTutorial definitions={session.steps} presentation={presentation}
       onPresentationChange={onPresentationChange} onEnd={end} onMissing={() => { missed.current = true }} />}

@@ -78,7 +78,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'Across runs is a model frequency. It is not the percentage of fruit damaged.', model)
     add('run', '8. Review, then run',
       'Check the orchard, pest, fruit stage, weather, source, duration and map method. After closing the tour, press Run Simulation yourself.',
-      'The tutorial never presses this button. If the button is unavailable, wait for the orchard map to finish loading.', simulate)
+      'The guide never presses this button. If the button is unavailable, wait for the orchard map to finish loading.', simulate)
     add('results', hasResult ? '9. Read the result' : '9. Results appear here',
       hasResult
         ? 'Use the map, legend and playback to see where and when modeled risk changed.'
@@ -91,12 +91,12 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'Run a simulation or use History → Load Result first. Then record the inspected tree, date, method and whether the forecast pest was Present, Absent or Not inspected.',
       'Only save what was actually observed. Never copy a simulated result into a field record.', { workspace: 'verify' })
     add('recovery-email', '12. Set your recovery email',
-      'In Settings > Account, use Login and recovery email to save an address you can access. Enter your current password, then choose Save recovery email after closing the tutorial.',
+      'In Settings > Account, use Login and recovery email to save an address you can access. Enter your current password, then choose Save recovery email after closing the guide.',
       'This is also your login email and receives password-reset codes. Replace the default local address, which cannot receive email.',
       { navbarPanel: 'settings', settingsTab: 'account', placement: 'auto' }, 'settings-recovery-email')
     add('password-settings', '13. Change your password',
       'In Settings > Account, enter the current password, a new password of at least eight characters, and the new password again. Then choose Change password.',
-      'If you forget it later, Forgot password? sends a reset code to the saved recovery email. The tutorial never changes your password.',
+      'If you forget it later, Forgot password? sends a reset code to the saved recovery email. The guide never changes your password.',
       { navbarPanel: 'settings', settingsTab: 'account', placement: 'auto' }, 'settings-password')
     if (isAdmin) add('notification-emails', '14. Add notification email recipients',
       'In Settings > Notification emails, enter an optional name and email address, then choose Add recipient. You can also edit, pause, resume or delete a recipient.',
@@ -107,7 +107,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'Emailed shows that email was sent. Open Simulation Controls only prepares inputs; you must review them and run the forecast. An alert is not proof of infestation.',
       { navbarPanel: 'notifications', placement: 'left' }, 'notification-list')
     add('finish', 'You now know the main flow',
-      'Choose a pest guide next for the exact Cecid or Fruit Fly conditions. You can reopen Tutorial from the top bar at any time.',
+      'Choose a pest guide next for the exact Cecid or Fruit Fly conditions. You can reopen Guide from the top bar at any time.',
       'Setup → Simulate → Results → Verify, then keep your account and alert contacts current.', {}, 'tutorial-start')
     return steps
   }
@@ -201,7 +201,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'Across runs is model frequency, not measured fruit damage.', model)
     add('run', 'Review, then run',
       'Check mature fruit, days since flowering, adult source pressure, weather, duration and map method. Then close the guide and press Run Simulation.',
-      'The tutorial never starts the run for you.', simulate)
+      'The guide never starts the run for you.', simulate)
     add('results', hasResult ? 'Read this Fruit Fly result' : 'Return after running',
       hasResult ? 'Separate initial adult sources from newly infested fruit when reading the map.' : 'Run the forecast, then replay this guide to inspect the real result.',
       'The forecast does not simulate a new egg-to-adult generation or individual flight paths.', { workspace: 'results' })
@@ -229,7 +229,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'Frequency is not calibrated field probability and not the percentage of damaged fruit.', { tab: 'live-map' })
     add('report', 'Check before sharing a report',
       'Confirm the orchard, pest, model version, weather source and whether the report uses the final or displayed hour.',
-      'Print or export only through the normal button after closing the tutorial.', { workspace: 'results' })
+      'Print or export only through the normal button after closing the guide.', { workspace: 'results' })
   }
   add('history', 'History keeps completed runs',
     'Load Result reopens an output. Use as Template restores inputs for another run.',
@@ -242,8 +242,8 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
     'These views support interpretation; they do not prove forecast accuracy or measured farm benefit.', { tab: 'overview' }, 'overview-heading')
   add('settings', 'Help remains available',
     isAdmin
-      ? 'Tutorial stays in the top bar. Settings also contains account and administrator notification controls.'
-      : 'Tutorial stays in the top bar. Settings contains your account controls; some tools are for administrators only.',
+      ? 'Guide stays in the top bar. Settings also contains account and administrator notification controls.'
+      : 'Guide stays in the top bar. Settings contains your account controls; some tools are for administrators only.',
     'Close this guide before making account or notification changes.', {}, 'settings')
   add('finish', 'Results guide complete',
     'Read the assumptions, inspect the modeled result, find the saved run, then verify it in the orchard.',

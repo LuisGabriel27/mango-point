@@ -44,8 +44,13 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
     } finally { setActing(false) }
   }
 
-  const ts = alert.triggered_at
-    ? new Date(alert.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const notifiedAt = alert.triggered_at ? new Date(alert.triggered_at) : null
+  const hasNotificationDate = notifiedAt && !Number.isNaN(notifiedAt.getTime())
+  const notificationDate = hasNotificationDate
+    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', year: 'numeric', month: 'short', day: 'numeric' }).format(notifiedAt)
+    : ''
+  const notificationTime = hasNotificationDate
+    ? new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', hour: 'numeric', minute: '2-digit', hour12: true }).format(notifiedAt)
     : ''
   const isWeatherAlert = alert.zone_name?.toLowerCase().includes('weather forecast')
   const cecidContext = cecidForecastContext(alert)
@@ -55,7 +60,7 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
       className={`border rounded p-2 mb-2${isWeatherAlert ? ' border-primary border-opacity-50' : ''}`}
       style={{ fontSize: '.8rem' }}
     >
-      <div className="d-flex align-items-start justify-content-between gap-1 mb-1">
+      <div className="d-flex align-items-start justify-content-between flex-wrap gap-2 mb-1">
         <div className="d-flex align-items-center gap-1">
           {isWeatherAlert && <i className="bi bi-cloud-rain-fill text-primary" style={{ fontSize: '.85rem' }} />}
           <span className={`badge bg-${SEV_BADGE[alert.severity] ?? 'secondary'}`}>
@@ -70,7 +75,14 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
             </span>
           )}
         </div>
-        <small className="text-muted">{ts}</small>
+        {hasNotificationDate ? (
+          <time className="notification-timestamp text-muted" dateTime={notifiedAt.toISOString()} title={`Notified on ${notificationDate} at ${notificationTime} (Philippine time)`}>
+            <span>{notificationDate}</span>{' '}
+            <span>{notificationTime} PHT</span>
+          </time>
+        ) : (
+          <small className="notification-timestamp text-muted">Date unavailable</small>
+        )}
       </div>
       <div className="mb-1">{alert.message}</div>
       {cecidContext && (
@@ -130,30 +142,41 @@ export function AlertItem({ alert, onUpdate, onApplySuggested }) {
   )
 }
 
-export function AlertList({ alerts = [], loading, onRefresh, onApplySuggested }) {
+export function AlertList({ alerts = [], loading, error, onRefresh, onApplySuggested }) {
   const active = alerts.filter((alert) => alert.status === 'active')
 
-  if (loading) {
+  if (loading && !active.length) {
     return <div className="text-muted small"><span className="spinner-border spinner-border-sm me-1" />Loading…</div>
   }
-  if (active.length === 0) {
+  if (active.length === 0 && !error) {
     return (
       <div className="text-muted small">
         <i className="bi bi-check-circle me-1 text-success" />No active alerts
       </div>
     )
   }
-  return active.map((alert) => (
-    <AlertItem
-      key={alert.alert_id}
-      alert={alert}
-      onUpdate={onRefresh}
-      onApplySuggested={onApplySuggested}
-    />
-  ))
+  return (
+    <>
+      {error && (
+        <div className="alert alert-warning p-2 mb-2 small" role="alert">
+          <div>{error}</div>
+          {active.length > 0 && <div className="mt-1">Showing the last loaded alerts.</div>}
+          <button type="button" className="btn btn-outline-secondary btn-sm mt-2" onClick={onRefresh} disabled={loading}>Retry</button>
+        </div>
+      )}
+      {active.map((alert) => (
+        <AlertItem
+          key={alert.alert_id}
+          alert={alert}
+          onUpdate={onRefresh}
+          onApplySuggested={onApplySuggested}
+        />
+      ))}
+    </>
+  )
 }
 
-export default function AlertPanel({ alerts = [], loading, onRefresh, onApplySuggested }) {
+export default function AlertPanel({ alerts = [], loading, error, onRefresh, onApplySuggested }) {
   const active = alerts.filter((alert) => alert.status === 'active')
   const badge = active.length > 0 ? (
     <span className="badge bg-danger rounded-pill ms-1">{active.length}</span>
@@ -164,6 +187,7 @@ export default function AlertPanel({ alerts = [], loading, onRefresh, onApplySug
       <AlertList
         alerts={alerts}
         loading={loading}
+        error={error}
         onRefresh={onRefresh}
         onApplySuggested={onApplySuggested}
       />

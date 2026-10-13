@@ -10,7 +10,7 @@ import SimulationHistoryTab from '../components/tabs/SimulationHistoryTab'
 import SimulationReportModal from '../components/SimulationReportModal'
 import TreeStatusSelect from '../components/TreeStatusSelect'
 import { isUncertainSourceStatus, sourcePresenceOverrides, sourceProbability } from '../utils/sourcePresence.js'
-import api from '../api'
+import api, { apiErrorMessage } from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
 import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
 import { forecastVerificationContext, verificationNumber } from '../utils/forecastVerification'
@@ -442,6 +442,8 @@ export default function DashboardPage() {
   // Alerts
   const [alerts, setAlerts] = useState([])
   const [alertLoading, setAlertLoading] = useState(false)
+  const [alertError, setAlertError] = useState('')
+  const alertRequestRef = useRef(null)
 
   // Weather
   const [weather, setWeather] = useState(null)
@@ -756,15 +758,24 @@ export default function DashboardPage() {
   }, [])
 
   const fetchAlerts = useCallback(async () => {
+    const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
+    alertRequestRef.current?.abort()
+    const controller = new AbortController()
+    alertRequestRef.current = controller
     setAlertLoading(true)
+    setAlertError('')
     try {
-      const orchardId = selectedOrchardIdRef.current || DEFAULT_ORCHARD_ID
-      const res = await api.getAlerts({ limit: 100, orchard_id: orchardId })
+      const res = await api.getAlerts({ limit: 100, status: 'active', orchard_id: orchardId }, controller.signal)
+      if (controller.signal.aborted || selectedOrchardIdRef.current !== orchardId) return
       setAlerts(res.data.alerts ?? [])
-    } catch (_) {
-      /* ignore */
+    } catch (error) {
+      if (controller.signal.aborted || selectedOrchardIdRef.current !== orchardId) return
+      setAlertError(apiErrorMessage(error, 'Could not refresh notifications. Please try again.'))
     } finally {
-      setAlertLoading(false)
+      if (alertRequestRef.current === controller) {
+        setAlertLoading(false)
+        alertRequestRef.current = null
+      }
     }
   }, [])
 
@@ -1034,7 +1045,23 @@ export default function DashboardPage() {
 
   // ── Initial loads ──────────────────────────────────────────────────────
   useEffect(() => { fetchOrchards() }, [])
-  useEffect(() => { fetchAlerts() }, [])
+  useEffect(() => {
+    setAlerts([])
+    setAlertError('')
+    fetchAlerts()
+    const refreshVisibleAlerts = () => {
+      if (document.visibilityState === 'visible') fetchAlerts()
+    }
+    const interval = setInterval(refreshVisibleAlerts, 60_000)
+    document.addEventListener('visibilitychange', refreshVisibleAlerts)
+    window.addEventListener('focus', refreshVisibleAlerts)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshVisibleAlerts)
+      window.removeEventListener('focus', refreshVisibleAlerts)
+      alertRequestRef.current?.abort()
+    }
+  }, [fetchAlerts, selectedOrchardId])
   useEffect(() => { fetchWeather() }, [fetchWeather])
   useEffect(() => { fetchMonitoring() }, [])
   useEffect(() => { writeStoredSidebarCollapsed(sidebarCollapsed) }, [sidebarCollapsed])
@@ -1780,6 +1807,7 @@ export default function DashboardPage() {
       <Navbar
         alerts={activeOrchardAlerts}
         alertLoading={alertLoading}
+        alertError={alertError}
         activeTab={displayTab}
         tutorialProps={{ orchardId: selectedOrchardId, customWeather: weatherOverrideActive,
           hasResult: Boolean(simData), hasPlayback: playbackFrames.length > 0,

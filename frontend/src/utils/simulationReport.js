@@ -11,6 +11,30 @@ import { RISK_LEGEND_ENTRIES } from './riskSurface.js'
 import { renderSimulationReport } from './simulationReportTemplate.js'
 
 const EMPTY = { type: 'FeatureCollection', features: [] }
+
+export function summarizeReportSources(sources) {
+  const groups = [
+    { key: 'infected', label: 'Recorded / selected infected' },
+    { key: 'history', label: 'History Infected' },
+    { key: 'suspect', label: 'Suspect' },
+    { key: 'assumed', label: 'Assumed / fallback' },
+    { key: 'other', label: 'Other source inputs' },
+  ].map((group) => ({ ...group, sources: [] }))
+  for (const source of sources) {
+    const status = String(source.status || '').toLowerCase()
+    const origin = String(source.origin || '').toLowerCase()
+    const key = status === 'history_infected' || origin === 'history_reservoir' ? 'history'
+      : status === 'suspect' || origin === 'suspect_infection' ? 'suspect'
+        : source.assumed === true || origin === 'assumed_fallback' ? 'assumed'
+          : ['infected', 'infested'].includes(status) ? 'infected' : 'other'
+    groups.find((group) => group.key === key).sources.push(source)
+  }
+  return groups.map((group) => ({ ...group, count: group.sources.length,
+    active: group.sources.every((source) => typeof source.active === 'boolean')
+      ? group.sources.filter((source) => source.active).length : null,
+    ids: group.sources.map((source) => source.tree_id ?? source.id ?? source.source_id ?? 'Ground source'),
+  }))
+}
 export const REPORT_RISK_LEGEND = RISK_LEGEND_ENTRIES.map(({ color, label }) => [color, label])
 export const REPORT_FREQUENCY_LEGEND = RISK_LEGEND_ENTRIES.map(({ color }, index) => [color,
   ['75–100% of runs', '50–<75% of runs', '25–<50% of runs', '10–<25% of runs', '<10% of runs'][index],
@@ -50,7 +74,7 @@ export function reportDate(value) {
   })
 }
 
-export function buildSimulationReport(run, { orchard = {}, selection = 'final', displayed = null, generatedAt = new Date().toISOString(), recordDetails = {} } = {}) {
+export function buildSimulationReport(run, { orchard = {}, selection = 'final', displayed = null, generatedAt = new Date().toISOString(), recordDetails = {}, includeDetails = false } = {}) {
   const result = { ...parse(run?.response_payload), ...run }
   const metadata = parse(result.metadata)
   const request = parse(result.request_payload ?? result.input_parameters)
@@ -120,12 +144,61 @@ export function buildSimulationReport(run, { orchard = {}, selection = 'final', 
       : defaultOrchard ? null : false
   )
   const source = result.weather_source ?? result.history?.weather_source ?? metadata.weather_provenance?.source
-    ?? (request.manual_weather || request.manual_weather_blocks || request.manual_weather_series ? 'Manual scenario' : 'Not recorded')
+    ?? (request.manual_weather || request.manual_weather_blocks?.length || request.manual_weather_series?.length ? 'Manual scenario' : 'Not recorded')
   const label = `${useDisplayed ? 'Displayed result' : 'Final result'}${hour != null ? ` · Hour ${hour}` : ''}`
+  const initialSources = Array.isArray(metadata.initial_sources) ? metadata.initial_sources
+    : Array.isArray(metadata.cecid_sources) ? metadata.cecid_sources : []
+  const sourceSummary = summarizeReportSources(initialSources)
+  const runCount = simulationUncertaintySummary({ metadata })?.runs
+    ?? number(request.uncertainty_runs ?? request.cecid_uncertainty_runs)
+    ?? Math.max(1, ...geojson.features.map((feature) => number(feature.properties?.ensemble_runs) ?? 1))
+  const treatments = Array.isArray(request.treatment_applications) ? request.treatment_applications : []
+  const weatherBlocks = Array.isArray(request.manual_weather_blocks) ? request.manual_weather_blocks : []
+  const setting = (name, val, suffix = '') => [name, val == null ? 'Not recorded' : `${val}${suffix}`]
+  const settings = [
+    setting('Host stage', metadata.orchard_stage ?? request.orchard_stage),
+    setting('Days since flowering', metadata.days_since_flowering ?? request.days_since_flowering),
+    setting('Repeated runs', runCount), setting('Random seed', result.random_seed ?? request.random_seed ?? metadata.random_seed),
+    setting('Weather source', source),
+    setting('Outside pressure', request.neighbor_threat != null || metadata.neighbor_threat != null
+      || Array.isArray(request.neighbor_sources) || Array.isArray(metadata.neighbor_sources)
+      ? neighborPressureSummary(restoreNeighborSources({ ...request, ...metadata })) : null),
+    setting('Treatment scenarios', Array.isArray(request.treatment_applications)
+      ? treatments.length ? treatments.map((item) => `${item.treatment_type || 'Treatment'}${item.efficacy != null ? ` (${reportPercent(item.efficacy)} efficacy)` : ''}${item.source_reduction != null ? ` (${reportPercent(item.source_reduction)} source reduction)` : ''}`).join('; ') : 'None' : null),
+    setting('Bagged tree inputs', Array.isArray(request.bagged_tree_ids)
+      ? new Set([...request.bagged_tree_ids.map(String), ...Object.entries(request.tree_overrides || {}).filter(([, status]) => status === 'bagged').map(([id]) => id)]).size : null),
+    setting('Observation seeds', typeof request.use_observations_as_seeds === 'boolean'
+      ? request.use_observations_as_seeds ? `Enabled · ${request.observations_lookback_days ?? 'unspecified'} day lookback` : 'Disabled' : null),
+  ]
+  if (pest === 'cecid') {
+    const soil = request.manual_soil_context
+    const moisture = number(request.cecid_initial_soil_moisture_score ?? (soil?.preset === 'moist' ? soil.initial_moisture_score : null))
+    settings.push(setting('Starting soil context', moisture != null ? `Assumed Hour 0 moisture ${reportPercent(moisture)}`
+      : soil?.preset === 'dry' ? 'Dry preset' : soil?.preset === 'recently_wet' || soil?.preset === 'custom'
+        ? `${soil.preset.replace(/_/g, ' ')} · ${soil.total_rain_mm ?? 'unspecified'} mm antecedent rain`
+        : request.manual_weather_prefix_rain?.length ? 'Saved antecedent rain' : null))
+  } else if ((result.simulation_mode ?? metadata.simulation_mode ?? request.simulation_mode) === 'tree_graph') {
+    settings.push(setting('Graph link cutoff', metadata.tg_max_neighbor_dist_m ?? request.tg_max_neighbor_dist_m, ' m'))
+  }
+  const highRisk = features.filter((feature) => feature.risk != null && feature.risk >= 0.5).length
+  const priorityIds = features.filter((feature) => feature.risk != null && feature.risk >= 0.5)
+    .sort((a, b) => b.risk - a.risk).slice(0, 5).map((feature) => feature.id)
+  // Field-check guidance is generated for the selected report frame. It never
+  // claims that inspection or treatment has happened, or that map scores prove presence.
+  const actions = [
+    { title: highRisk ? 'Inspect the priority locations first' : 'Continue field monitoring', timing: 'Next field visit',
+      detail: highRisk ? `${highRisk} ${unit} meet the report's 50% screening threshold. Start with IDs ${priorityIds.join(', ')}; confirm pest signs before intervention.`
+        : 'No locations meet the report screening threshold. Inspect susceptible fruit and source locations; this does not establish pest absence.' },
+    { title: pest === 'cecid' ? 'Check fruitlets and bagging' : 'Check mature fruit and sanitation', timing: 'After field confirmation',
+      detail: pest === 'cecid' ? 'Inspect susceptible fruitlets, verify bagging coverage and record confirmed signs. Review source and soil assumptions before rerunning.'
+        : 'Inspect mature/ripening fruit, traps and fallen fruit. Review bagging and sanitation around confirmed affected trees.' },
+    { title: 'Record findings and review the scenario', timing: 'After inspection',
+      detail: 'Log Present, Absent or Not inspected with the tree ID and date. Update inputs and rerun when weather, sources or management change. Use approved targeted control only after confirmation.' },
+  ]
   return {
     runId: result.run_id ?? metadata.run_id ?? 'Unrecorded run', orchardId,
     orchardName: savedOrchard.name || orchard.name || (orchardId === 'default-orchard' ? 'Default Orchard (BPI)' : orchardId),
-    pestLabel: pest === 'cecid' ? 'Cecid Fly' : pest === 'fruitfly' ? 'Fruit Fly' : pest || 'Not recorded',
+    pestLabel: pest === 'cecid' ? 'Fruit-attacking Cecid Fly' : pest === 'fruitfly' ? 'Oriental Fruit Fly' : pest || 'Not recorded',
     pest, hours: result.hours ?? request.hours ?? metadata.hours, hour, label, mapMode,
     mapDescription: mapMode === 'likelihood' ? 'Infestation frequency across repeated runs' : 'Representative simulation result',
     generatedAt, recordDetails: details, startedAt: result.started_at ?? metadata.started_at,
@@ -151,10 +224,22 @@ export function buildSimulationReport(run, { orchard = {}, selection = 'final', 
     priorityLocations: features.filter((feature) => feature.risk != null && feature.risk >= 0.5)
       .sort((left, right) => right.risk - left.risk || String(left.id).localeCompare(String(right.id), 'en', { numeric: true }))
       .slice(0, 10),
-    highRisk: features.filter((feature) => feature.risk != null && feature.risk >= 0.5).length,
+    highRisk, sourceSummary, settings, actions, weatherBlocks, includeDetails,
+    parameterOverrides: Object.entries({
+      cecid_base_dispersal_prob: request.cecid_base_dispersal_prob,
+      cecid_favorable_threshold: request.cecid_favorable_threshold,
+      cecid_rainfall_threshold_mm: request.cecid_rainfall_threshold_mm,
+      fruit_fly_base_dispersal_prob: request.fruit_fly_base_dispersal_prob,
+      fruit_fly_temp_threshold_c: request.fruit_fly_temp_threshold_c,
+      tg_lambda0: metadata.tg_lambda0 ?? request.tg_lambda0,
+      tg_alpha: metadata.tg_alpha ?? request.tg_alpha,
+      tg_beta: metadata.tg_beta ?? request.tg_beta,
+      tg_wind_bias: metadata.tg_wind_bias ?? request.tg_wind_bias,
+    }).filter(([, entry]) => entry != null),
+    weatherInput: request.manual_weather ?? null,
+    weatherSeriesCount: Array.isArray(request.manual_weather_series) ? request.manual_weather_series.length : null,
     uncertainty: simulationUncertaintySummary({ metadata }),
-    initialSources: Array.isArray(metadata.initial_sources) ? metadata.initial_sources
-      : Array.isArray(metadata.cecid_sources) ? metadata.cecid_sources : [],
+    initialSources,
     sourceAssumptions: {
       history: number(request.history_source_probability ?? metadata.source_uncertainty_assumptions?.history_source_probability),
       suspect: number(request.suspect_source_probability ?? metadata.source_uncertainty_assumptions?.suspect_source_probability),

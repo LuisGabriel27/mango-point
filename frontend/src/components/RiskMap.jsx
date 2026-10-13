@@ -11,7 +11,7 @@ import { interpretCecidTree } from '../utils/cecidMapInterpretation'
 import { initialSourceDetails, interpretSimulationTree, resolveTreeStatuses } from '../utils/simulationMapInterpretation'
 import { runWhenMapReady } from '../utils/mapReady'
 import { geometryCenter } from '../utils/mapGeometry'
-import { captureMapSnapshot, waitForMapSnapshot } from '../utils/mapSnapshot'
+import { captureMapSnapshot, REPORT_MAP_STYLE, waitForMapSnapshot } from '../utils/mapSnapshot'
 import { buildRiskSurface, riskColor, applyRiskSurfaceCanvas } from '../utils/riskSurface'
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
@@ -968,6 +968,7 @@ export default forwardRef(function RiskMap({
   const mapLoadedRef = useRef(false)
   const overlayPendingRef = useRef(true)
   const heatmapPendingRef = useRef(true)
+  const overlayErrorRef = useRef(null)
   // Tracks whether the orthophoto image is currently being fetched/applied,
   // so the UI can render a spinner. The GWF overlay is ~6 MB and used to
   // appear "broken" while it silently downloaded.
@@ -1015,16 +1016,20 @@ export default forwardRef(function RiskMap({
       await waitForMapSnapshot(map, () => (
         mapRef.current === map && mapLoadedRef.current && !overlayPendingRef.current && !heatmapPendingRef.current
       ))
-      return captureMapSnapshot(map, points)
+      if (overlayErrorRef.current) throw new Error('The orchard orthophoto could not be loaded. Retry when the image is available; the report will not substitute a basemap.')
+      return captureMapSnapshot(map, points, undefined, {
+        mapBase: activeOverlay ? 'orthophoto' : 'locations-only',
+        attribution: activeOverlay?.attribution || (activeOverlay ? 'Orchard orthophoto · MangoPoint' : 'MangoPoint · saved simulation locations'),
+      })
     },
-  }), [points, reportMode])
+  }), [points, reportMode, activeOverlay])
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return undefined
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAP_STYLE,
+      style: reportMode ? REPORT_MAP_STYLE : MAP_STYLE,
       center: [DEFAULT_LON, DEFAULT_LAT],
       zoom: DEFAULT_ZOOM,
       attributionControl: false,
@@ -1069,6 +1074,7 @@ export default forwardRef(function RiskMap({
     let cancelled = false
     let objectUrl = null
     overlayPendingRef.current = true
+    overlayErrorRef.current = null
 
     const applyOverlay = async () => {
       if (!activeOverlay) {
@@ -1099,6 +1105,19 @@ export default forwardRef(function RiskMap({
 
         objectUrl = resolved.objectUrl
 
+        if (reportMode) {
+          // Validate static images as well as authenticated orchard assets.
+          // A style source can finish loading after an image failure; that
+          // must not produce a report claiming to contain an orthophoto.
+          await new Promise((resolve, reject) => {
+            const image = new Image()
+            image.onload = resolve
+            image.onerror = () => reject(new Error('The orchard orthophoto image is unavailable.'))
+            image.src = resolved.imageUrl
+          })
+          if (cancelled) return
+        }
+
         map.addSource('ortho-src', {
           type: 'image',
           url: resolved.imageUrl,
@@ -1115,6 +1134,7 @@ export default forwardRef(function RiskMap({
         if (beforeLayer) map.addLayer(overlayLayer, beforeLayer)
         else map.addLayer(overlayLayer)
       } catch (error) {
+        if (!cancelled) overlayErrorRef.current = error
         console.warn('Orthophoto overlay unavailable:', error.message)
       } finally {
         if (!cancelled) {
@@ -1131,7 +1151,7 @@ export default forwardRef(function RiskMap({
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [activeOverlay])
+  }, [activeOverlay, reportMode])
 
   useEffect(() => {
     const map = mapRef.current

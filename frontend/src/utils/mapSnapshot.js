@@ -41,7 +41,7 @@ export function drawSnapshotMarkers(context, points, project) {
   }
 }
 
-export function captureMapSnapshot(map, points, createCanvas = () => document.createElement('canvas')) {
+export function captureMapSnapshot(map, points, createCanvas = () => document.createElement('canvas'), options = {}) {
   const source = map.getCanvas()
   const canvas = createCanvas()
   canvas.width = source.width
@@ -63,6 +63,13 @@ export function captureMapSnapshot(map, points, createCanvas = () => document.cr
   context.fillText('N', source.clientWidth - 31, 53)
   return {
     dataUrl: canvas.toDataURL('image/png'),
-    attribution: map.getContainer().querySelector('.maplibregl-ctrl-attrib-inner')?.textContent?.trim() || 'MapLibre · © OpenStreetMap contributors · Tiles © Esri',
+    attribution: options.attribution ?? map.getContainer().querySelector('.maplibregl-ctrl-attrib-inner')?.textContent?.trim() ?? 'Imagery attribution not recorded',
+    mapBase: options.mapBase,
   }
+}
+// The report has no online basemap underneath the orchard image.
+export const REPORT_MAP_STYLE = {
+  version: 8,
+  sources: {},
+  layers: [{ id: 'report-background', type: 'background', paint: { 'background-color': '#ffffff' } }],
 }

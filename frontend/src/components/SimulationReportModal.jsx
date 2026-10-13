@@ -78,14 +78,16 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [recordDetails, setRecordDetails] = useState(EMPTY_RECORD_DETAILS)
+  const [includeDetails, setIncludeDetails] = useState(false)
+  const [mapAttempt, setMapAttempt] = useState(0)
   const dialogRef = useRef(null)
   const mapRef = useRef(null)
   const activeRef = useRef(true)
   const logoRef = useRef(null)
   const prepared = useMemo(() => {
-    try { return { report: buildSimulationReport(run, { orchard, selection, displayed, recordDetails }) } }
+    try { return { report: buildSimulationReport(run, { orchard, selection, displayed, recordDetails, includeDetails }) } }
     catch (failure) { return { error: failure.message } }
-  }, [run, orchard, selection, displayed, recordDetails])
+  }, [run, orchard, selection, displayed, recordDetails, includeDetails])
   const report = prepared.report
 
   useEffect(() => {
@@ -148,7 +150,10 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
       }
     } catch (failure) {
       printWindow?.close()
-      if (activeRef.current) setError(failure.message || 'Could not prepare the report. Please try again.')
+      if (activeRef.current) {
+        setError(failure.message || 'Could not prepare the report. Please try again.')
+        setMapAttempt((attempt) => attempt + 1)
+      }
     } finally {
       if (activeRef.current) setBusy(false)
     }
@@ -172,7 +177,11 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
               </label>
               <span className="small text-muted">{report.pestLabel} · {report.hours} h simulation</span>
             </div>
-            <p className="simulation-report-intro">An A4 portrait record of the orchard map, modeled results, source assumptions and simulation settings. Add the record details below, then choose <strong>Save as PDF</strong> in the print dialog.</p>
+            <p className="simulation-report-intro">A compact A4 portrait report with the orthophoto, pest, starting source evidence, simulation settings and action plan. Add optional notes, then choose <strong>Save as PDF</strong> in the print dialog.</p>
+            <label className="d-flex align-items-center gap-2 small mb-2">
+              <input type="checkbox" checked={includeDetails} disabled={busy} onChange={(event) => setIncludeDetails(event.target.checked)} />
+              Include detailed tables (all sources, zones, weather periods and saved model assumptions)
+            </label>
             <section className="simulation-report-record" aria-labelledby="simulation-report-record-title">
               <div className="simulation-report-section-heading">
                 <h3 id="simulation-report-record-title">Record details</h3>
@@ -187,7 +196,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
               </div>
               <div className="simulation-report-map">
               <RiskMap
-                key={`${report.runId}:${selection}`}
+                key={`${report.runId}:${selection}:${mapAttempt}`}
                 ref={mapRef}
                 reportMode
                 geojson={report.geojson}
@@ -205,6 +214,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
               />
               </div>
             <div className="small mt-2"><strong>{report.label}</strong> · {report.mapDescription} · Maximum map {report.mapMode === 'likelihood' ? 'frequency' : 'risk'}: {reportPercent(report.peak)} · Infested {report.unit}{report.mapMode === 'likelihood' ? ' in one run' : ''}: {report.infested ?? 'Not recorded'}</div>
+            <p className="small text-muted mt-2 mb-0">Orthophoto only; surrounding basemap is excluded from the report. {report.initialSources.length ? report.sourceSummary.filter((group) => group.count).map((group) => `${group.label}: ${group.count}`).join(' · ') : 'Source detail was not saved with this run.'}</p>
             {Number(report.uncertainty?.runs) > 1 && <p className="small text-muted mb-0">{report.uncertainty.runs} runs: {report.uncertainty.minimum}–{report.uncertainty.maximum} infested {report.unit}, median {report.uncertainty.median}. Tree states and source badges describe one run; across-runs shading shows infestation frequency.</p>}
             {report.economic && (
               <div className="simulation-report-planning-estimate">

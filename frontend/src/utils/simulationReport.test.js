@@ -84,7 +84,7 @@ test('Cecid final maps use ensemble frequency and keep representative totals lab
 })
 
 test('offline HTML embeds the map and logo, preserves attribution, and escapes user content', () => {
-  const report = buildSimulationReport(run)
+  const report = buildSimulationReport(run, { recordDetails: { fieldNotes: 'Inspection pending.' } })
   report.orchardName = '<img src=x onerror=alert(1)>'
   const html = simulationReportHtml(report, snapshot, 'data:image/png;base64,AQID')
   assert.match(html, /src="data:image\/png;base64,AAAA"/)
@@ -112,7 +112,7 @@ test('Fruit Fly final and displayed reports preserve their metric and sampled so
         assumed: true, probability: 0.5, active: true }] },
     request_payload: { ...run.request_payload, history_source_probability: 0.5, suspect_source_probability: 0.75 },
   }
-  const report = buildSimulationReport(result)
+  const report = buildSimulationReport(result, { includeDetails: true })
   assert.equal(report.mapMode, 'likelihood')
   assert.equal(report.peak, 0.2)
   assert.equal(report.uncertainty.runs, 5)
@@ -211,10 +211,67 @@ test('legacy Cecid sources and saved synthetic weather provenance remain visible
   const report = buildSimulationReport({ ...run, pest_type: 'cecid', metadata: {
     cecid_sources: [{ tree_id: '1', label: 'Soil source', assumed: true }],
     weather_provenance: { provider: 'synthetic', fallback_reason: 'No saved forecast available', anchor_time: '2026-10-02T00:00:00Z' },
-  } })
+  } }, { includeDetails: true })
   assert.equal(report.initialSources.length, 1)
   const html = simulationReportHtml(report, snapshot)
   assert.match(html, /Soil source/)
   assert.match(html, /No saved forecast available/)
   assert.match(html, /Weather provider<\/dt><dd>synthetic/)
+})
+
+test('source summary distinguishes input infections, historical, suspect and assumed fallback sources', () => {
+  const sources = [
+    { tree_id: 'known', status: 'infected', origin: 'observed_infection', assumed: false, probability: 1, active: true },
+    { tree_id: 'history', status: 'history_infected', assumed: true, probability: 0, active: false },
+    { tree_id: 'suspect', status: 'suspect', assumed: true, probability: 0.75, active: true },
+    { tree_id: 'fallback', status: 'infected', origin: 'assumed_fallback', assumed: true, probability: 1, active: true },
+  ]
+  const report = buildSimulationReport({ ...run, metadata: { initial_sources: sources } })
+  assert.deepEqual(report.sourceSummary.slice(0, 4).map((group) => [group.key, group.count, group.active]),
+    [['infected', 1, 1], ['history', 1, 0], ['suspect', 1, 1], ['assumed', 1, 1]])
+  const html = simulationReportHtml(report, { ...snapshot, mapBase: 'orthophoto' })
+  assert.match(html, /Recorded \/ selected infected/)
+  assert.match(html, /0.0%/)
+  assert.match(html, /adult presence is not independently verified/)
+  assert.match(html, /surrounding basemap excluded/)
+  assert.doesNotMatch(html, /All saved source inputs/)
+  assert.match(simulationReportHtml({ ...report, includeDetails: true }, snapshot), /All saved source inputs/)
+})
+
+test('compact report uses saved settings and frame-specific inspection guidance without inventing missing records', () => {
+  const request = { ...run.request_payload, orchard_stage: 'mature', days_since_flowering: 75,
+    uncertainty_runs: 5, bagged_tree_ids: ['2'], tree_overrides: { '2': 'bagged', '3': 'bagged' },
+    use_observations_as_seeds: false, treatment_applications: [], tg_max_neighbor_dist_m: 20 }
+  const report = buildSimulationReport({ ...run, request_payload: request })
+  const settings = Object.fromEntries(report.settings)
+  assert.equal(settings['Bagged tree inputs'], '2')
+  assert.equal(settings['Treatment scenarios'], 'None')
+  assert.equal(settings['Observation seeds'], 'Disabled')
+  assert.equal(settings['Graph link cutoff'], '20 m')
+  assert.equal(report.actions[0].title, 'Inspect the priority locations first')
+  const early = buildSimulationReport({ ...run, request_payload: request }, { selection: 'displayed', displayed })
+  assert.equal(early.actions[0].title, 'Continue field monitoring')
+  assert.match(simulationReportHtml(early, { ...snapshot, mapBase: 'locations-only' }), /Orthophoto unavailable/)
+  assert.match(simulationReportHtml(report, snapshot), /cannot establish that the simulation had zero sources/)
+})
+
+test('large source sets stay summarized in compact reports and remain complete in optional tables', () => {
+  const sources = Array.from({ length: 65 }, (_, i) => ({ tree_id: `history-${i}`, status: 'history_infected', assumed: true, probability: 0.5 }))
+  const report = buildSimulationReport({ ...run, metadata: { initial_sources: sources } })
+  assert.equal(report.sourceSummary[1].active, null)
+  const compact = simulationReportHtml(report, snapshot)
+  assert.match(compact, /\+59 more/)
+  assert.doesNotMatch(compact, /history-64/)
+  const detailed = simulationReportHtml({ ...report, includeDetails: true }, snapshot)
+  assert.match(detailed, /history-64/)
+  assert.match(detailed, /<td>Not recorded<\/td>/)
+})
+
+test('dry soil is not promoted to moist by the preset default and missing neighbor input stays unknown', () => {
+  const report = buildSimulationReport({ ...run, pest_type: 'cecid', request_payload: {
+    ...run.request_payload, manual_soil_context: { preset: 'dry', initial_moisture_score: 1 },
+  } })
+  const settings = Object.fromEntries(report.settings)
+  assert.equal(settings['Starting soil context'], 'Dry preset')
+  assert.equal(settings['Outside pressure'], 'Not recorded')
 })

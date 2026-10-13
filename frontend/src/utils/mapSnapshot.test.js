@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { captureMapSnapshot, drawSnapshotMarkers, waitForMapSnapshot } from './mapSnapshot.js'
+import { captureMapSnapshot, drawSnapshotMarkers, REPORT_MAP_STYLE, waitForMapSnapshot } from './mapSnapshot.js'
 
 test('map export composites HTML tree markers over the WebGL imagery at the correct pixel ratio', () => {
   const calls = []
@@ -20,6 +20,18 @@ test('map export composites HTML tree markers over the WebGL imagery at the corr
   assert.ok(calls.some(([method, x, y, radius]) => method === 'arc' && x === 100 && y === 200 && radius === 7))
   assert.ok(calls.some(([method, text]) => method === 'fillText' && text === 'S'))
   assert.equal(snapshot.attribution, 'Tiles © Esri')
+})
+
+test('report style excludes all online basemap sources and snapshot attribution describes its actual imagery', () => {
+  assert.deepEqual(REPORT_MAP_STYLE.sources, {})
+  assert.equal(REPORT_MAP_STYLE.layers.length, 1)
+  assert.equal(REPORT_MAP_STYLE.layers[0].type, 'background')
+  const context = new Proxy({}, { get: () => () => {}, set: () => true })
+  const canvas = { getContext: () => context, toDataURL: () => 'data:image/png;base64,AAAA' }
+  const map = { getCanvas: () => ({ width: 900, height: 500, clientWidth: 900 }) }
+  const snapshot = captureMapSnapshot(map, [], () => canvas, { mapBase: 'orthophoto', attribution: 'Orchard orthophoto' })
+  assert.equal(snapshot.mapBase, 'orthophoto')
+  assert.equal(snapshot.attribution, 'Orchard orthophoto')
 })
 
 test('report includes active Fruit Fly reservoir and infection source badges', () => {

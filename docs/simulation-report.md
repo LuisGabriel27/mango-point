@@ -6,18 +6,56 @@ Add a reference, preparer, organization, reviewer, field observations and planne
 actions before exporting. These optional fields belong to the current export;
 they do not change the saved simulation or create an approval record.
 
-The A4 portrait document contains:
+The default A4 portrait report uses a compact layout inspired by the team's
+modernised report template: a dark green header, amber section markers, clear
+result cards and an inspection checklist. Standard reports are designed for
+two pages; long names/notes or optional tables may require more pages.
 
-1. Orchard and record identification, modeled outcomes, and map-value distribution.
-2. A dedicated map with the selected metric, legend, source badges and attribution.
-3. Saved scenario inputs, recorded hourly weather, conditional crop-impact estimates,
-   observations, planned actions, and signature/date spaces.
-4. Supporting run identifiers, forecast and execution dates, weather provenance,
-   up to ten priority locations, all saved source/zone entries, and sampled progression.
+1. **Map and results:** orchard, pest, modeling method, forecast/reporting hour,
+   modeled outcomes, repeated-run range where saved, orthophoto, legend, first
+   five priority locations and the suggested next field-check step.
+2. **Sources, settings and follow-up:** source basis/counts and first six IDs per
+   group, presence assumptions, saved scenario settings, weather at the reported
+   hour, a three-step action plan, optional crop-impact estimates, preparer notes,
+   review/signature spaces, model version, run identity and thresholds.
 
+Select **Include detailed tables** to attach all saved sources, zone records,
+custom weather periods, sampled progression and full saved model interpretations.
+The checkbox starts unchecked. Compact source groups disclose when additional
+IDs are omitted; missing details remain Not recorded rather than implying absence.
 Supporting tables and long notes continue onto additional pages. Table headings
-repeat and the PDF includes page numbers and the run reference. The map and logo
-are embedded in the offline HTML, so its record can be printed without reconnecting.
+repeat and the PDF includes page numbers and the record reference. Empty optional
+notes do not create large blank writing areas. The map and logo are embedded in
+the offline HTML, so an exported record can be printed without reconnecting.
+
+## Orthophoto map
+
+The report map uses the orchard orthophoto and simulation overlays on a white
+background. It does not load or capture Esri satellite or OpenStreetMap tiles.
+The normal interactive dashboard map retains its existing basemap. Source badges,
+tree markers, shading, zone outlines and the north arrow are included in the capture.
+
+If a supplied orthophoto fails to load, export reports an error and permits retry
+instead of substituting a basemap. A run without an orthophoto is labelled as
+simulation locations on a white background. The capture's attribution describes
+the imagery actually included.
+
+## Sources and actions
+
+The source summary separates **Recorded / selected infected**, **History
+Infected**, **Suspect**, **Assumed / fallback**, and other source inputs if present.
+An assumed fallback remains assumed even if its simulated starting status is
+infected. Infected input records are not independent proof of adult presence.
+Historical and suspect probabilities are scenario assumptions; per-location
+settings take precedence over displayed defaults. Detailed Active values describe
+the starting realization, with unknown values labelled Not recorded.
+
+The report's action plan is inspection guidance derived from the selected map
+and pest. It prioritizes locations meeting the report screening threshold,
+suggests fruitlet/bagging or mature-fruit/sanitation checks as applicable, then
+asks the field team to record findings and review the scenario. It does not
+claim an inspection occurred, prescribe pesticide products/doses or save actions
+to orchard records. Preparer-entered follow-up notes remain separate.
 
 Choose **Print / Save PDF**, then **Save as PDF**. Use A4 portrait at 100% scale
 and turn off the browser's own headers and footers. Page counters use the browser's

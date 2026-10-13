@@ -24,7 +24,7 @@ returning users.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
 - Field observations and evaluation endpoints.
-- Saved simulation History, input templates, Excel exports, and printable reports with recorded model/input assumptions.
+- Saved simulation History, input templates, Excel exports, and compact printable reports with orthophoto maps, source evidence, settings and action plans. Optional supporting tables retain the detailed record; see the [report guide](docs/simulation-report.md).
 - Historical validation against BPI Guimaras monitoring records, including calibration/testing splits, confidence intervals, and historical weather coverage reporting.
 - Manual field validation protocol for checking current forecasts against later orchard inspections.
 

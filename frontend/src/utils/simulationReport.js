@@ -253,7 +253,7 @@ export function buildSimulationReport(run, { orchard = {}, selection = 'final', 
 export function escapeReportHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
 }
-export function reportFilename(report, extension = 'html') {
+export function reportFilename(report, extension = 'pdf') {
   return `MangoPoint-${report.orchardName}-${report.runId}-${report.hour == null ? 'final' : `hour-${report.hour}`}`.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 160) + `.${extension}`
 }
 export function simulationReportHtml(report, snapshot, logo = '') {

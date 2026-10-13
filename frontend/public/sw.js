@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'mangopoint-app-v4'
+const CACHE_VERSION = 'mangopoint-app-v5'
 const CORE_ASSETS = [
   '/',
   '/index.html',
@@ -21,7 +21,7 @@ async function buildAssets() {
       // Holding service-worker activation for multi-megabyte images makes the
       // first offline-ready install unreliable on slower connections.
       for (const asset of entry.assets || []) {
-        if (/\.(?:woff2?|ttf|otf)$/i.test(asset)) assets.add(`/${asset}`)
+        if (/\.(?:js|woff2?|ttf|otf)$/i.test(asset)) assets.add(`/${asset}`)
       }
     }
     return [...assets]

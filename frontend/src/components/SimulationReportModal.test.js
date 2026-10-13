@@ -12,6 +12,8 @@ const bundled = await build({
   bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic',
   external: ['react', 'react/jsx-runtime', 'react-dom'],
   plugins: [{ name: 'replace-webgl-map-for-report-tests', setup(builder) {
+    builder.onResolve({ filter: /html2pdf\.bundle\.min\.js\?url$/ }, () => ({ path: 'pdf-engine', namespace: 'report-test-asset' }))
+    builder.onLoad({ filter: /.*/, namespace: 'report-test-asset' }, () => ({ contents: 'export default "/pdf-engine.js"', loader: 'js' }))
     builder.onResolve({ filter: /^\.\/RiskMap$/ }, () => ({ path: 'RiskMap', namespace: 'report-test-map' }))
     builder.onLoad({ filter: /.*/, namespace: 'report-test-map' }, () => ({
       contents: "import { forwardRef } from 'react'; export default forwardRef(() => null)", loader: 'js',
@@ -37,6 +39,7 @@ test('report record fields are bounded, labeled, multiline and disabled during e
   for (const name of Object.keys(details)) {
     assert.match(html, new RegExp(`for="report-${name}"`))
     assert.match(html, new RegExp(`id="report-${name}"`))
+    assert.match(html, new RegExp(`aria-labelledby="report-${name}-label"`))
   }
   assert.match(html, /value="&lt;reviewer&gt;"/)
   assert.match(html, /First line\nSecond line/)
@@ -93,4 +96,7 @@ test('preview labels portrait export and distinguishes frequency from one-run to
   assert.doesNotMatch(html, /A4 landscape|Potential savings with recommendations/)
   assert.match(html, /Record details/)
   assert.match(html, /Planned actions \/ follow-up/)
+  assert.match(html, />Save as PDF<\/button>/)
+  assert.match(html, />Print<\/button>/)
+  assert.doesNotMatch(html, /Download offline report|Print \/ Save PDF/)
 })

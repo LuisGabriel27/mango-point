@@ -13,7 +13,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(',')
 
 export default function SettingsModal({ onClose, tutorialTab = null }) {
-  const { user, updateUser } = useAuth()
+  const { user, updateUser, endSession } = useAuth()
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin'
@@ -38,7 +38,6 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordError, setPasswordError] = useState('')
-  const [passwordNotice, setPasswordNotice] = useState('')
   const busy = profileSaving || emailSaving || passwordSaving
 
   useEffect(() => {
@@ -103,7 +102,6 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
   const handlePasswordSubmit = async (event) => {
     event.preventDefault()
     setPasswordError('')
-    setPasswordNotice('')
     if (newPassword.length < 8) {
       setPasswordError('New password must contain at least 8 characters.')
       return
@@ -119,14 +117,11 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
 
     setPasswordSaving(true)
     try {
-      const response = await api.changePassword({
+      await api.changePassword({
         current_password: currentPassword,
         new_password: newPassword,
       })
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-      setPasswordNotice(response.data.message || 'Password updated successfully.')
+      endSession('Password updated. You have been signed out on all devices. Sign in with your new password.')
     } catch (requestError) {
       setPasswordError(apiErrorMessage(requestError, 'Could not update your password.'))
     } finally {
@@ -282,10 +277,9 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
                         <input id="settings-confirm-password" type="password" className="form-control" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" disabled={passwordSaving} required />
                       </div>
                     </div>
-                    <small className="text-muted">Use at least 8 characters.</small>
+                    <small className="text-muted">Use at least 8 characters. Changing your password signs you out on all devices.</small>
                     <div className="settings-form-feedback" aria-live="polite">
                       {passwordError && <div className="alert alert-danger py-2 mb-0">{passwordError}</div>}
-                      {!passwordError && passwordNotice && <div className="alert alert-success py-2 mb-0">{passwordNotice}</div>}
                     </div>
                     <div className="settings-form-actions">
                       <button type="submit" className="btn btn-success btn-sm" disabled={passwordSaving}>

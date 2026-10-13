@@ -1,46 +1,92 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import api from '../api'
+import { SESSION_ACTIVITY_KEY, SESSION_EXPIRY_KEY, SESSION_NOTICE_KEY, SESSION_INVALID_EVENT,
+  sessionValue, storeSessionValue, startSessionMonitor } from '../utils/sessionMonitor'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => sessionStorage.getItem('access_token'))
+  const [token, setToken] = useState(() => sessionValue(sessionStorage, 'access_token'))
+  const tokenRef = useRef(token)
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [sessionNotice, setSessionNotice] = useState(() => sessionValue(sessionStorage, SESSION_NOTICE_KEY) || '')
+
+  const endSession = useCallback((message = '') => {
+    tokenRef.current = null
+    for (const key of ['access_token', SESSION_ACTIVITY_KEY, SESSION_EXPIRY_KEY]) storeSessionValue(sessionStorage, key, null)
+    storeSessionValue(sessionStorage, SESSION_NOTICE_KEY, message || null)
+    setSessionNotice(message)
+    setToken(null)
+    setUser(null)
+    setLoading(false)
+  }, [])
+
+  const applySession = useCallback((data) => {
+    tokenRef.current = data.access_token
+    storeSessionValue(sessionStorage, 'access_token', data.access_token)
+    const expires = Date.parse(data.expires_at)
+    storeSessionValue(sessionStorage, SESSION_EXPIRY_KEY, Number.isFinite(expires) ? expires : null)
+    setToken(data.access_token)
+    setUser(data.user)
+  }, [])
 
   const login = useCallback(async (usernameOrEmail, password) => {
     const res = await api.login(usernameOrEmail, password)
-    const { access_token, user: userData } = res.data
-    sessionStorage.setItem('access_token', access_token)
-    setToken(access_token)
-    setUser(userData)
-    return userData
-  }, [])
+    storeSessionValue(sessionStorage, SESSION_ACTIVITY_KEY, Date.now())
+    storeSessionValue(sessionStorage, SESSION_NOTICE_KEY, null)
+    setSessionNotice('')
+    applySession(res.data)
+    return res.data.user
+  }, [applySession])
 
   const logout = useCallback(async () => {
-    try { await api.logout() } catch (_) { /* swallow */ }
-    sessionStorage.removeItem('access_token')
-    setToken(null)
-    setUser(null)
-  }, [])
+    // Local cleanup must not wait for an unreachable server.
+    const request = api.logout(tokenRef.current)
+    endSession()
+    try { await request } catch { /* Already signed out locally. */ }
+  }, [endSession])
 
   const updateUser = useCallback((userData) => {
     setUser(userData)
   }, [])
 
   useEffect(() => {
-    if (!token) { setLoading(false); return }
+    const invalid = (event) => {
+      if (event.detail.token === tokenRef.current) endSession(event.detail.message)
+    }
+    window.addEventListener(SESSION_INVALID_EVENT, invalid)
+    return () => window.removeEventListener(SESSION_INVALID_EVENT, invalid)
+  }, [endSession])
+
+  useEffect(() => {
+    const restoredToken = tokenRef.current
+    if (!restoredToken) { setLoading(false); return }
     api.me()
-      .then((res) => setUser(res.data.user ?? res.data))
+      .then((res) => { if (tokenRef.current === restoredToken) setUser(res.data.user ?? res.data) })
       .catch(() => {
-        sessionStorage.removeItem('access_token')
-        setToken(null)
+        if (tokenRef.current === restoredToken) endSession('Please sign in again to restore your session.')
       })
       .finally(() => setLoading(false))
-  }, [token])
+  }, [endSession])
+
+  const signedIn = Boolean(token)
+  useEffect(() => {
+    if (!signedIn) return
+    return startSessionMonitor({
+      storage: sessionStorage, events: window, document, timers: window,
+      onExpire: endSession,
+      onCheck: () => api.me(),
+      onRefresh: async (body) => {
+        const previous = tokenRef.current
+        const response = await api.refreshSession(body)
+        if (previous && tokenRef.current === previous) applySession(response.data)
+      },
+    })
+  }, [signedIn, endSession, applySession])
 
   return (
-    <AuthContext.Provider value={{ token, user, loading, login, logout, updateUser }}>
+    <AuthContext.Provider value={{ token, user, loading, login, logout, updateUser, endSession, sessionNotice }}>
       {children}
     </AuthContext.Provider>
   )

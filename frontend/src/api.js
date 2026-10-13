@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { getConnectionState, localFetchOptions, resolveApiTarget } from './offline/apiRuntime.js'
+import { SESSION_INVALID_EVENT } from './utils/sessionMonitor.js'
 
 const client = axios.create({ adapter: 'fetch' })
 
@@ -10,8 +11,19 @@ client.interceptors.request.use(async (config) => {
     config.fetchOptions = localFetchOptions(config)
   }
   const token = sessionStorage.getItem('access_token')
-  if (token) config.headers['Authorization'] = `Bearer ${token}`
+  if (token && !config.headers['Authorization']) config.headers['Authorization'] = `Bearer ${token}`
   return config
+})
+
+client.interceptors.response.use((response) => response, (error) => {
+  const authorization = error.config?.headers?.Authorization
+  if (error.response?.status === 401 && authorization && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SESSION_INVALID_EVENT, {
+      detail: { token: String(authorization).replace(/^Bearer /, ''),
+        message: error.response.data?.detail || 'Your session ended. Please sign in again.' },
+    }))
+  }
+  return Promise.reject(error)
 })
 
 function formatValidationItem(item) {
@@ -55,8 +67,9 @@ const api = {
   // Auth
   login: (usernameOrEmail, password) =>
     client.post('/auth/login', { username_or_email: usernameOrEmail, password }),
-  logout: () => client.post('/auth/logout'),
+  logout: (token) => client.post('/auth/logout', null, token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
   me: () => client.get('/auth/me'),
+  refreshSession: (body) => client.post('/auth/session/refresh', body),
   updateProfile: (body) => client.patch('/auth/me', body),
   updateAccountEmail: (body) => client.patch('/auth/me/email', body),
   changePassword: (body) => client.post('/auth/password', body),

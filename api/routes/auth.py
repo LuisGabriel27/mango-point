@@ -6,7 +6,8 @@ Login and current-session endpoints for the dashboard.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.database import (
@@ -15,7 +16,7 @@ from api.core.database import (
     is_database_unavailable,
 )
 from api.core.config import settings
-from api.core.security import AuthConfigurationError, get_current_active_user
+from api.core.security import AuthConfigurationError, bearer_scheme, decode_session_token, get_current_active_user
 from api.models.auth import (
     AuthUserResponse,
     AccountEmailUpdateRequest,
@@ -29,6 +30,7 @@ from api.models.auth import (
     PasswordResetConfirmRequest,
     PasswordResetRequest,
     PasswordResetResponse,
+    SessionRefreshRequest,
 )
 from api.services.auth_service import (
     AuthenticationError,
@@ -158,6 +160,21 @@ async def get_current_user_profile(
     return CurrentUserResponse(user=AuthUserResponse.from_user(current_user))
 
 
+@router.post("/session/refresh", response_model=LoginResponse, summary="Renew a session after user interaction")
+async def refresh_current_session(
+    payload: SessionRefreshRequest,
+    response: Response,
+    current_user: UserAccount = Depends(get_current_active_user),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> LoginResponse:
+    """Mint a short-lived token; ordinary background reads never extend it."""
+    claims = decode_session_token(credentials.credentials)
+    response.headers["Cache-Control"] = "no-store"
+    return auth_service.session_response(
+        current_user, claims["session_started_at"], payload.activity_age_seconds
+    )
+
+
 def _require_persisted_account(current_user: UserAccount) -> None:
     if current_user.user_id <= 0:
         raise HTTPException(
@@ -227,7 +244,7 @@ async def change_current_user_password(
     except CurrentPasswordError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     await db.commit()
-    return PasswordChangeResponse(message="Password updated successfully.")
+    return PasswordChangeResponse(message="Password updated. All devices must sign in again.")
 
 
 @router.post("/logout", response_model=LogoutResponse, summary="Acknowledge client-side logout")

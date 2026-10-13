@@ -26,9 +26,9 @@ export function ReportRecordFields({ recordDetails, onChange, disabled = false }
     <div className="simulation-report-fields">
       {RECORD_FIELDS.map(({ name, label, maxLength }) => (
         <label key={name} className="simulation-report-field" htmlFor={`report-${name}`}>
-          <span>{label}</span>
+          <span id={`report-${name}-label`}>{label}</span>
           <input id={`report-${name}`} name={name} type="text" className="form-control form-control-sm"
-            maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
+            aria-labelledby={`report-${name}-label`} maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
             onChange={update(name, maxLength)} />
         </label>
       ))}
@@ -36,9 +36,9 @@ export function ReportRecordFields({ recordDetails, onChange, disabled = false }
     <div className="simulation-report-note-fields">
       {NOTE_FIELDS.map(({ name, label, maxLength }) => (
         <label key={name} className="simulation-report-field" htmlFor={`report-${name}`}>
-          <span>{label}</span>
+          <span id={`report-${name}-label`}>{label}</span>
           <textarea id={`report-${name}`} name={name} className="form-control form-control-sm" rows={3}
-            maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
+            aria-labelledby={`report-${name}-label`} maxLength={maxLength} value={recordDetails[name]} disabled={disabled}
             onChange={update(name, maxLength)} />
         </label>
       ))}
@@ -115,7 +115,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
     // Open synchronously from the click so browser popup protection permits it.
     const printWindow = action === 'print' ? window.open('', '_blank') : null
     if (action === 'print' && !printWindow) {
-      setError('Allow the report tab to open, or download the offline report and print it from there.')
+      setError('Allow the report tab to open, or use Save as PDF to download the report directly.')
       return
     }
     if (printWindow) {
@@ -139,7 +139,10 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
         printWindow.focus()
         printWindow.print()
       } else {
-        const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }))
+        const { simulationReportPdf } = await import('../utils/simulationReportPdf')
+        const pdf = await simulationReportPdf(html, report)
+        if (!activeRef.current) return
+        const url = URL.createObjectURL(pdf)
         const link = document.createElement('a')
         link.href = url
         link.download = reportFilename(report)
@@ -177,7 +180,7 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
               </label>
               <span className="small text-muted">{report.pestLabel} · {report.hours} h simulation</span>
             </div>
-            <p className="simulation-report-intro">A compact A4 portrait report with the orthophoto, pest, starting source evidence, simulation settings and action plan. Add optional notes, then choose <strong>Save as PDF</strong> in the print dialog.</p>
+            <p className="simulation-report-intro">A compact A4 portrait report with the orthophoto, pest, starting source evidence, simulation settings and action plan. Add optional notes, then choose <strong>Save as PDF</strong> to download it or <strong>Print</strong> for a paper copy.</p>
             <label className="d-flex align-items-center gap-2 small mb-2">
               <input type="checkbox" checked={includeDetails} disabled={busy} onChange={(event) => setIncludeDetails(event.target.checked)} />
               Include detailed tables (all sources, zones, weather periods and saved model assumptions)
@@ -229,8 +232,8 @@ export default function SimulationReportModal({ run, orchard, displayed, onClose
         </div>
         <footer className="simulation-report-actions">
           <span className="small text-muted me-auto" role="status">{busy ? 'Preparing the map and report…' : 'A4 portrait · orchard simulation record'}</span>
-          <button type="button" className="btn btn-outline-success" disabled={!report || busy} onClick={() => exportReport('download')}>Download offline report</button>
-          <button type="button" className="btn btn-success" disabled={!report || busy} onClick={() => exportReport('print')}><i className="bi bi-printer me-1" />Print / Save PDF</button>
+          <button type="button" className="btn btn-outline-success" disabled={!report || busy} onClick={() => exportReport('download')}>Save as PDF</button>
+          <button type="button" className="btn btn-success" disabled={!report || busy} onClick={() => exportReport('print')}><i className="bi bi-printer me-1" aria-hidden="true" />Print</button>
         </footer>
       </section>
     </div>

@@ -1,4 +1,4 @@
-// Self-contained HTML used for PDF printing and the offline report.
+// Self-contained report layout used for PDF generation and browser printing.
 function embeddedImage(value) {
   return /^data:image\/(png|jpeg);base64,[a-zA-Z0-9+/=]+$/.test(value || '') ? value : ''
 }
@@ -109,7 +109,7 @@ table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 
 @media print { body { background: #fff; print-color-adjust: exact; -webkit-print-color-adjust: exact; } .toolbar { display: none; } .sheet { width: auto; margin: 0; padding: 0; box-shadow: none; } .sheet + .sheet { break-before: page; } }
 @media screen and (max-width: 820px) { .sheet { width: 100%; padding: 15px; margin: 10px auto; } .record-grid, .settings-grid { gap: 8px; } }
 </style></head><body>
-<div class="toolbar"><button onclick="window.print()">Print / Save PDF</button><span>A4 portrait · disable browser headers and footers</span></div><main>
+<div class="toolbar"><button onclick="window.print()">Print</button><span>A4 portrait · disable browser headers and footers</span></div><main>
 <section class="sheet summary-sheet">${heading('Pest simulation report')}<div class="page-body">
   <h1>${e(report.orchardName)}</h1><p class="subline">${e(report.pestLabel)} · ${value(method)} · ${e(report.label)} · ${value(report.hours)}-hour scenario</p>
   <dl class="record-grid">${pair('Forecast begins · Philippine time', date(report.forecastStart))}${pair('Reported forecast time · Philippine time', date(report.reportedAt))}${pair('Prepared by', details.preparedBy)}${pair('Organization / office', details.organization)}</dl>

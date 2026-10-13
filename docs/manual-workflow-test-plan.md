@@ -133,7 +133,7 @@ fallback. Inspect the saved source list after running.
 
 | ID | Action | Expected result |
 |---|---|---|
-| WF-47 | Select a tree and choose Log field verification; inspect Verify. | Orchard/tree/pest and optional forecast/run link are correct; recording an observation does not fabricate a forecast result. |
+| WF-47 | Open Verify without a result, then load a completed forecast, select a result-map tree and choose Log field verification. Load a different run after starting a draft. | Without a forecast, only a locked message appears. A matching completed forecast unlocks the form; its run link is mandatory and its pest is fixed. Changing runs clears the old draft and prediction context. |
 | WF-48 | Save labelled test observations for Present, Absent and Not inspected; inspect their history. | Date, method, observer, counts and notes persist correctly; Not inspected is not interpreted as pest absence. |
 | WF-49 | Enter affected count greater than inspected count, invalid counts or missing required fields. | Validation prevents invalid observations from being reported as successfully saved. |
 | WF-50 | Open an orchard's forecast alert and apply its suggested simulation setup. | The correct orchard and scenario are prepared; screening is labelled screening and no simulation starts automatically. |
@@ -228,6 +228,18 @@ validation outcomes solely to populate this view.
 | WF-71 | Change filters quickly, leave/reopen Overview, log out, and try Refresh after a storage failure. | No old response replaces the new scope; inactive loading is canceled; errors offer retry; normal navigation and authenticated access remain usable. |
 | WF-72 | Use the date picker, period/orchard dropdowns, bar chart legend and table search/sort/page controls with keyboard and a narrow window. | Controls and tables remain reachable; grouped bars and table counts agree; Present findings are labelled as part of inspections; Overview navigation sends no simulations, notifications, record writes or exports. |
 | WF-73 | With an existing large summary, search/sort Orchard activity; try 10/25/50 rows, the last page, no matches and an automatic/manual refresh. Check long names and horizontal/vertical table scrolling. | Only the selected page renders; all matching rows remain reachable; counts and last/empty pages are correct; headers stay visible and long names do not overflow the page. Same-scope refresh preserves search/sort/page; smaller results clamp the page; failed refresh identifies retained records as last loaded. Mark Blocked if insufficient existing data prevents rehearsal. |
+
+## Session security
+
+Use a dedicated test account. These checks are separate from pest forecast or
+field validation evidence.
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-74 | Sign in and leave the dashboard untouched for 15 minutes with normal background polling active. | Login appears with an inactivity message. The old token is rejected by the API. |
+| WF-75 | Interact at minute 14, continue beyond minute 15, then reload and leave the app untouched. Repeat with a suspended/background tab. | Active use renews the session; reloading and reopening do not erase the elapsed inactivity time. An expired session cannot be revived by the first click. |
+| WF-76 | Sign in to a dedicated test account on two devices. Try an incorrect current password, then change the password successfully. | The failed attempt leaves both logins valid. Success signs out the current device and invalidates both old tokens; the second device returns to Login on its next request/session check. The new password signs in. |
+| WF-77 | Reset the test account password using its recovery mailbox while another device is signed in. | The reset invalidates existing sessions. The old password and tokens cannot authenticate; the replacement password works. |
 
 ## Completion check
 

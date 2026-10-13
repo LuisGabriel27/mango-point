@@ -15,7 +15,7 @@ from api.core.config import settings
 from api.core.database import is_database_unavailable
 from api.core.security import (
     AuthConfigurationError,
-    create_access_token,
+    create_session_token,
     get_password_hash,
     verify_password,
 )
@@ -93,23 +93,19 @@ class AuthService:
             return None
 
         user = self._build_offline_default_admin()
-        token, expires_at = create_access_token(
-            subject=str(user.user_id),
-            extra_claims={
-                "role": user.role.value,
-                "offline_auth": True,
-                "username": user.username,
-                "email": user.email,
-                "full_name": user.full_name,
-                "is_active": user.is_active,
-            },
-        )
+        return self.session_response(user)
 
-        expires_at_utc = expires_at.astimezone(timezone.utc)
+    @staticmethod
+    def session_response(
+        user: UserAccount,
+        session_started_at: int | None = None,
+        activity_age_seconds: float = 0,
+    ) -> LoginResponse:
+        token, expires_at = create_session_token(user, session_started_at, activity_age_seconds)
         return LoginResponse(
             access_token=token,
-            expires_at=expires_at_utc.isoformat().replace("+00:00", "Z"),
-            expires_in_seconds=max(int((expires_at_utc - datetime.now(timezone.utc)).total_seconds()), 0),
+            expires_at=expires_at.isoformat().replace("+00:00", "Z"),
+            expires_in_seconds=max(int((expires_at - datetime.now(timezone.utc)).total_seconds()), 0),
             user=AuthUserResponse.from_user(user),
         )
 
@@ -176,20 +172,8 @@ class AuthService:
                 return fallback
             raise
 
-        token, expires_at = create_access_token(
-            subject=str(user.user_id),
-            extra_claims={"role": user.role.value},
-        )
-
         user.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        expires_at_utc = expires_at.astimezone(timezone.utc)
-        return LoginResponse(
-            access_token=token,
-            expires_at=expires_at_utc.isoformat().replace("+00:00", "Z"),
-            expires_in_seconds=max(int((expires_at_utc - datetime.now(timezone.utc)).total_seconds()), 0),
-            user=AuthUserResponse.from_user(user),
-        )
+        return self.session_response(user)
 
     @staticmethod
     def update_profile(user: UserAccount, full_name: str) -> UserAccount:

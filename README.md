@@ -45,11 +45,15 @@ Surveillance and History views.
    playback show a representative realization. These are modeled outcomes.
 4. **History and reports:** Check that the completed run appears in History.
    **Load Result** opens the saved output; **Use as Template** restores inputs
-   for a new run. Export Excel or print a report, checking its orchard, model
+   for a new run. Export Excel, **Save as PDF** or **Print** a report, checking its orchard, model
    version and final/displayed reporting hour.
-5. **Verify:** Record an actual orchard inspection with the correct tree, pest,
-   date and method. Present, Absent and Not inspected are distinct records;
-   simulated infestation must not be saved as an observed finding.
+5. **Verify:** Run a simulation or use **History → Load Result** for the selected
+   orchard first. Verify shows a locked message until a completed forecast is
+   available. Every inspection is linked to that forecast, with its pest fixed
+   from the saved result. Select a result-map tree to prefill its prediction,
+   then record the actual date, method and finding. Loading another run starts
+   a fresh verification draft. Present, Absent and Not inspected are distinct
+   records; simulated infestation must not be saved as an observed finding.
 
 Use the [manual workflow test plan](docs/manual-workflow-test-plan.md),
 [results sheet](docs/manual-workflow-test-results.csv) and
@@ -512,6 +516,19 @@ Admins can edit contact details, pause or resume delivery, and permanently delet
 recipient records from the same settings section. Every signed-in user can also
 change their displayed name, login/recovery email, and password from **Settings >
 Account**. Changing the recovery email requires the current password.
+
+Sessions end after **15 minutes without user interaction**. Clicking, typing,
+pointer movement, scrolling and touch keep a session active; weather updates,
+alert polling and map playback do not. Reloading preserves the inactivity
+deadline. Password changes and password resets invalidate every existing login,
+including the device making the change. Other connected devices return to Login
+on their next authenticated request or session check (every 30 seconds while
+visible); inactive tabs check when reopened. See the
+[session security guide](docs/session-security.md).
+
+Deploy the frontend and restart the API together for this change. Previously
+issued tokens require a new sign-in. These protections use the existing account
+password hash and require no database schema migration.
 
 Password recovery uses the same Brevo or SMTP transport. **Forgot password?**
 sends a six-digit code only to the email saved on the user account. The code

@@ -67,7 +67,7 @@ export default function Sidebar({
   observationForecastLeadHours = null,
   observationLon = null,
   observationLat = null,
-  currentSimulationRunId = null,
+  verificationForecast = { available: false },
 }) {
   const tour = useTourPresentation()
   const asideRef = useRef(null)
@@ -364,8 +364,10 @@ export default function Sidebar({
               <ObservationForm
                 orchardId={selectedOrchardId}
                 selectedTreeIds={observationTreeIds}
-                defaultPest={selectedPestType}
-                simulationRunId={currentSimulationRunId}
+                defaultPest={verificationForecast.available ? verificationForecast.pest : null}
+                simulationRunId={verificationForecast.available ? verificationForecast.runId : null}
+                unavailableReason={verificationForecast.reason}
+                onOpenSimulation={() => selectWorkflow('simulate')}
                 forecastRisk={observationForecastRisk}
                 forecastLeadHours={observationForecastLeadHours}
                 observationLon={observationLon}

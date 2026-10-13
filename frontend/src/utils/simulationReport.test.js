@@ -83,7 +83,7 @@ test('Cecid final maps use ensemble frequency and keep representative totals lab
   assert.match(simulationReportHtml(report, snapshot), /Infested trees \(representative run\)/)
 })
 
-test('offline HTML embeds the map and logo, preserves attribution, and escapes user content', () => {
+test('the report document embeds the map and logo, preserves attribution, and escapes user content', () => {
   const report = buildSimulationReport(run, { recordDetails: { fieldNotes: 'Inspection pending.' } })
   report.orchardName = '<img src=x onerror=alert(1)>'
   const html = simulationReportHtml(report, snapshot, 'data:image/png;base64,AQID')
@@ -95,6 +95,8 @@ test('offline HTML embeds the map and logo, preserves attribution, and escapes u
   assert.doesNotMatch(html, /(?:src|href)="https?:|@import|url\(/)
   assert.match(html, /size: A4 portrait/)
   assert.match(html, /window.print\(\)/)
+  assert.match(html, /onclick="window.print\(\)">Print<\/button>/)
+  assert.match(reportFilename(report), /\.pdf$/)
   assert.match(html, /run-123/)
   assert.match(html, /Field observations \/ reviewer’s notes/)
   assert.match(html, /Crop impact · scenario planning estimate/)

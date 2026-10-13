@@ -71,6 +71,12 @@ class CurrentUserResponse(BaseModel):
     user: AuthUserResponse
 
 
+class SessionRefreshRequest(BaseModel):
+    """Age of the latest user interaction; background reads do not renew."""
+
+    activity_age_seconds: float = Field(default=0, ge=0, lt=900, allow_inf_nan=False)
+
+
 class CurrentUserUpdateRequest(BaseModel):
     """Editable profile fields for the authenticated account."""
 

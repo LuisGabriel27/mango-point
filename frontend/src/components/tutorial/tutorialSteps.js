@@ -88,7 +88,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
       'History lists completed runs. Load Result opens an old result. Use as Template brings its settings back for a new run.',
       'Loading a result or template does not run a new forecast.', { tab: 'history' }, 'history-heading')
     add('verify', '11. Check the orchard in person',
-      'After field inspection, record the tree, pest, date, method and whether it was Present, Absent or Not inspected.',
+      'Run a simulation or use History → Load Result first. Then record the inspected tree, date, method and whether the forecast pest was Present, Absent or Not inspected.',
       'Only save what was actually observed. Never copy a simulated result into a field record.', { workspace: 'verify' })
     add('recovery-email', '12. Set your recovery email',
       'In Settings > Account, use Login and recovery email to save an address you can access. Enter your current password, then choose Save recovery email after closing the tutorial.',
@@ -235,7 +235,7 @@ export function buildTutorialSteps({ guide = 'workflow', customWeather = false, 
     'Load Result reopens an output. Use as Template restores inputs for another run.',
     'A template does not run automatically. Check its saved assumptions before using it.', { tab: 'history' }, 'history-heading')
   add('verify', 'Verify with a real field check',
-    'Record the tree, pest, date, method and actual finding: Present, Absent or Not inspected.',
+    'Load a completed forecast first, then record the tree, date, method and actual finding: Present, Absent or Not inspected. Every verification stays linked to that forecast.',
     'Do not save simulated infestation as an observation.', { workspace: 'verify' })
   add('overview', 'Other views provide context',
     'Overview summarizes saved activity. Crop Impact contains estimates. Spread & Weather shows modeled spread beside weather.',

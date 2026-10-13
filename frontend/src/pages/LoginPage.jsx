@@ -5,7 +5,7 @@ import { apiErrorMessage } from '../api'
 import AuthLayout from '../components/AuthLayout'
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, sessionNotice } = useAuth()
   const navigate = useNavigate()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
@@ -39,6 +39,7 @@ export default function LoginPage() {
       description="Sign in to your orchard workspace to continue."
       footer={<span className="login-access-note"><i className="bi bi-lock" aria-hidden="true" />Access for authorized orchard personnel</span>}
     >
+      {sessionNotice && <div className="alert alert-info auth-alert" role="status">{sessionNotice}</div>}
       {error && (
         <div id="login-error" className="alert alert-warning auth-alert" role="alert">
           <i className="bi bi-exclamation-circle" aria-hidden="true" />

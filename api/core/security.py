@@ -5,6 +5,9 @@ Password hashing, JWT handling, and FastAPI auth dependencies.
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import secrets
 from typing import Any, Optional
 
 import jwt
@@ -40,6 +43,7 @@ except ModuleNotFoundError:
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+SESSION_IDLE_TIMEOUT_SECONDS = 15 * 60
 
 
 def _role_from_claim(role_value: Any) -> UserRoleEnum:
@@ -132,6 +136,70 @@ def decode_access_token(token: str) -> dict[str, Any]:
     )
 
 
+def session_credential_stamp(user: UserAccount | None = None) -> str:
+    """Bind a session to credentials without exposing their stored hash."""
+    value = (
+        f"account:{user.user_id}:{user.password_hash}" if user is not None
+        else f"offline:{settings.DEFAULT_ADMIN_USERNAME}:{settings.DEFAULT_ADMIN_PASSWORD}"
+    )
+    return hmac.new(
+        _get_secret_key().encode(),
+        f"mangopoint-session-v1:{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def create_session_token(
+    user: UserAccount,
+    session_started_at: int | None = None,
+    activity_age_seconds: float = 0,
+) -> tuple[str, datetime]:
+    """Renew only within the idle window and the original absolute lifetime."""
+    now = datetime.now(timezone.utc)
+    started = session_started_at if session_started_at is not None else int(now.timestamp())
+    absolute_expiry = datetime.fromtimestamp(started, timezone.utc) + timedelta(
+        minutes=settings.AUTH_ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    expiry = min(
+        now + timedelta(seconds=SESSION_IDLE_TIMEOUT_SECONDS - activity_age_seconds),
+        absolute_expiry,
+    )
+    if expiry <= now:
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    offline = user.user_id == 0
+    claims = {
+        "role": user.role.value,
+        "session_started_at": started,
+        "credential_stamp": session_credential_stamp(None if offline else user),
+        "jti": secrets.token_urlsafe(16),
+    }
+    if offline:
+        claims.update(offline_auth=True, username=user.username, email=user.email,
+                      full_name=user.full_name, is_active=user.is_active)
+    return create_access_token(str(user.user_id), expiry - now, claims)
+
+
+def decode_session_token(token: str) -> dict[str, Any]:
+    """Reject legacy sessions as well as expired or malformed session claims."""
+    try:
+        payload = decode_access_token(token)
+        started, issued, expires = (payload.get(key) for key in ("session_started_at", "iat", "exp"))
+        stamp = payload.get("credential_stamp")
+        if (any(type(value) is not int for value in (started, issued, expires))
+                or not isinstance(stamp, str) or len(stamp) != 64
+                or any(char not in '0123456789abcdef' for char in stamp)
+                or started > issued or expires > issued + SESSION_IDLE_TIMEOUT_SECONDS + 1
+                or expires > started + settings.AUTH_ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 1):
+            raise jwt.exceptions.InvalidTokenError("Unsupported session claims")
+        return payload
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except jwt.exceptions.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.") from exc
+    except jwt.exceptions.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Session is no longer valid. Please sign in again.") from exc
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
@@ -143,23 +211,7 @@ async def get_current_user(
             detail="Authentication required.",
         )
 
-    try:
-        payload = decode_access_token(credentials.credentials)
-    except AuthConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
-    except jwt.exceptions.ExpiredSignatureError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired. Please sign in again.",
-        ) from exc
-    except jwt.exceptions.InvalidTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token.",
-        ) from exc
+    payload = decode_session_token(credentials.credentials)
 
     subject = payload.get("sub")
     if subject is None:
@@ -177,6 +229,11 @@ async def get_current_user(
         ) from exc
 
     offline_user = _build_offline_user_from_payload(payload, user_id)
+    if offline_user is not None and (
+        not settings.DEFAULT_ADMIN_ENABLED
+        or not hmac.compare_digest(payload["credential_stamp"], session_credential_stamp())
+    ):
+        raise HTTPException(status_code=401, detail="Session is no longer valid. Please sign in again.")
 
     try:
         result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
@@ -214,6 +271,16 @@ async def get_current_user(
             detail="Authenticated user no longer exists.",
         )
 
+    if offline_user is not None:
+        # A fallback session must never bypass a password changed in the
+        # persisted account while PostgreSQL was unavailable to that device.
+        valid_credentials = bool(user.password_hash) and verify_password(
+            settings.DEFAULT_ADMIN_PASSWORD, user.password_hash
+        )
+    else:
+        valid_credentials = hmac.compare_digest(payload["credential_stamp"], session_credential_stamp(user))
+    if not valid_credentials:
+        raise HTTPException(status_code=401, detail="Your password changed or your session was revoked. Please sign in again.")
     return user
 
 

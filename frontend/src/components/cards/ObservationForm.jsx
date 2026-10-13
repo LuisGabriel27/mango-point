@@ -4,6 +4,7 @@ import 'react-datepicker/dist/react-datepicker.css'
 import CollapsibleCard from '../CollapsibleCard'
 import MpSelect from '../MpSelect'
 import api, { apiErrorMessage } from '../../api'
+import { verificationNumber, verificationPredictionFields } from '../../utils/forecastVerification'
 
 const PRESENCE_OPTIONS = [
   { value: 'present', label: 'Present' },
@@ -42,7 +43,7 @@ function formatObservationTime(value) {
   return parsed.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export default function ObservationForm({
+function LinkedObservationForm({
   orchardId,
   selectedTreeIds = [],
   defaultPest = 'cecid',
@@ -55,7 +56,7 @@ export default function ObservationForm({
   onSubmitted,
 }) {
   const [treeInput, setTreeInput] = useState('')
-  const [pest, setPest] = useState(defaultPest)
+  const pest = defaultPest
   const [presence, setPresence] = useState('present')
   const [severity, setSeverity] = useState(0.5)
   const [affectedCount, setAffectedCount] = useState('')
@@ -65,7 +66,6 @@ export default function ObservationForm({
   const [observedAt, setObservedAt] = useState(localDateTimeValue)
   const [notes, setNotes] = useState('')
   const [imageUrl, setImageUrl] = useState('')
-  const [linkForecast, setLinkForecast] = useState(Boolean(simulationRunId))
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -76,19 +76,13 @@ export default function ObservationForm({
   const affected = optionalInteger(affectedCount)
   const inspected = optionalInteger(inspectedCount)
   const invalidCounts = affected != null && inspected != null && affected > inspected
+  const selectionPrediction = verificationPredictionFields(treeIds, selectedTreeIds, {
+    risk: forecastRisk, hour: forecastLeadHours, lon: observationLon, lat: observationLat,
+  })
 
   useEffect(() => {
-    if (!selectedTreeIds?.length) return
     setTreeInput(selectedTreeIds.map(String).join(', '))
   }, [selectedTreeIds])
-
-  useEffect(() => {
-    setPest(defaultPest || 'cecid')
-  }, [defaultPest])
-
-  useEffect(() => {
-    setLinkForecast(Boolean(simulationRunId))
-  }, [simulationRunId, selectedTreeIds])
 
   const loadHistory = useCallback(async () => {
     if (!orchardId) {
@@ -113,9 +107,12 @@ export default function ObservationForm({
 
   const handleSubmit = async (event) => {
     event.preventDefault()
-    if (!treeIds.length || !orchardId || invalidCounts) return
+    if (!treeIds.length || !orchardId || !simulationRunId || invalidCounts) return
     setLoading(true)
     setResult(null)
+    const prediction = verificationPredictionFields(treeIds, selectedTreeIds, {
+      risk: forecastRisk, hour: forecastLeadHours, lon: observationLon, lat: observationLat,
+    })
     const common = {
       orchard_id: String(orchardId),
       observed_pest: pest,
@@ -128,21 +125,17 @@ export default function ObservationForm({
       observer_id: observer.trim() || null,
       notes: notes.trim() || null,
       image_url: imageUrl.trim() || null,
-      simulation_run_id: linkForecast ? simulationRunId : null,
-      forecast_risk: linkForecast && forecastRisk != null ? Number(forecastRisk) : null,
-      forecast_lead_hours: (
-        linkForecast && Number.isFinite(Number(forecastLeadHours))
-          ? Math.max(0, Math.round(Number(forecastLeadHours)))
-          : null
-      ),
+      simulation_run_id: simulationRunId,
+      forecast_risk: prediction.forecast_risk,
+      forecast_lead_hours: prediction.forecast_lead_hours,
     }
     try {
       if (treeIds.length === 1) {
         await api.submitObservation({
           ...common,
           tree_id: treeIds[0],
-          lon: Number.isFinite(Number(observationLon)) ? Number(observationLon) : null,
-          lat: Number.isFinite(Number(observationLat)) ? Number(observationLat) : null,
+          lon: prediction.lon,
+          lat: prediction.lat,
         })
       } else {
         await api.submitObservationsBulk({ ...common, tree_ids: treeIds })
@@ -178,6 +171,13 @@ export default function ObservationForm({
         Log what field personnel actually inspected. Records are append-only so forecasts can be compared with later ground truth.
       </p>
 
+      <div className="observation-forecast-link mb-2" role="note">
+        <span><strong>Verifying forecast {simulationRunId}</strong><br />
+          {pest === 'cecid' ? 'Fruit-attacking Cecid Fly' : 'Oriental Fruit Fly'}
+          {selectionPrediction.forecast_risk != null && ` · ${Math.round(selectionPrediction.forecast_risk * 100)}% selected-tree map value`}
+          {verificationNumber(selectionPrediction.forecast_lead_hours) != null && ` · Hour ${selectionPrediction.forecast_lead_hours}`}
+        </span>
+      </div>
       <form onSubmit={handleSubmit}>
         <label className="form-label observation-label" htmlFor="observation-tree-ids">
           Tree ID{treeIds.length > 1 ? 's' : ''}
@@ -196,16 +196,9 @@ export default function ObservationForm({
 
         <div className="observation-form-grid mt-2" data-tour="verify">
           <div>
-            <label className="form-label observation-label">Pest</label>
-            <MpSelect
-              small
-              value={pest}
-              onChange={setPest}
-              options={[
-                { value: 'cecid', label: 'Cecid Fly' },
-                { value: 'fruitfly', label: 'Fruit Fly' },
-              ]}
-            />
+            <label className="form-label observation-label" htmlFor="observation-pest">Forecast pest</label>
+            <input id="observation-pest" className="form-control form-control-sm" readOnly
+              value={pest === 'cecid' ? 'Fruit-attacking Cecid Fly' : 'Oriental Fruit Fly'} />
           </div>
           <div>
             <label className="form-label observation-label">Verification</label>
@@ -318,25 +311,10 @@ export default function ObservationForm({
           onChange={(event) => setImageUrl(event.target.value)}
         />
 
-        {simulationRunId && (
-          <label className="observation-forecast-link mt-2">
-            <input
-              type="checkbox"
-              checked={linkForecast}
-              onChange={(event) => setLinkForecast(event.target.checked)}
-            />
-            <span>
-              Link to current forecast <strong>{simulationRunId}</strong>
-              {forecastRisk != null && ` (${Math.round(Number(forecastRisk) * 100)}% tree risk)`}
-              {Number.isFinite(Number(forecastLeadHours)) && ` · Hour ${Math.round(Number(forecastLeadHours))}`}
-            </span>
-          </label>
-        )}
-
         <button
           type="submit"
           className="btn btn-success btn-sm w-100 mt-3"
-          disabled={loading || !orchardId || !treeIds.length || invalidCounts || !observedAt}
+          disabled={loading || !orchardId || !simulationRunId || !treeIds.length || invalidCounts || !observedAt}
         >
           {loading
             ? <><span className="spinner-border spinner-border-sm me-1" />Recording...</>
@@ -406,4 +384,18 @@ export default function ObservationForm({
       </div>
     </CollapsibleCard>
   )
+}
+
+export default function ObservationForm(props) {
+  if (!props.simulationRunId || !props.orchardId || !['cecid', 'fruitfly'].includes(props.defaultPest)) {
+    return <CollapsibleCard iconName="clipboard2-check" title="Field verification" embedded={props.embedded}>
+      <div className="observation-empty" role="status" data-tour="verify">
+        <strong>Load a forecast to verify it</strong>
+        <p className="mb-2">{props.unavailableReason || 'Run a simulation or open History → Load Result before recording forecast verification.'}</p>
+        <button type="button" className="btn btn-sm btn-outline-success" onClick={props.onOpenSimulation}>Open Simulate</button>
+        <p className="small text-muted mt-2 mb-0">Every verification record must identify the orchard, pest and forecast being checked.</p>
+      </div>
+    </CollapsibleCard>
+  }
+  return <LinkedObservationForm key={`${props.orchardId}:${props.simulationRunId}:${props.defaultPest}`} {...props} />
 }

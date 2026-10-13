@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { verificationForecast } from './fixtures/verificationForecast.js'
 
 const alertRecipients = [
   { recipient_id: 1, name: 'Wisz', email: 'wiszgabriel@example.com', is_active: true },
@@ -9,7 +10,7 @@ const alertRecipients = [
 ]
 
 // Isolated browser fixtures: never sent to the backend or saved as farm evidence.
-async function openDashboard(page, { failures = false, storageBlocked = false, role = 'scout' } = {}) {
+async function openDashboard(page, { failures = false, storageBlocked = false, role = 'scout', forecast = null } = {}) {
   const requests = []
   await page.addInitScript(({ storageBlocked }) => {
     sessionStorage.setItem('access_token', 'isolated-browser-test')
@@ -22,12 +23,17 @@ async function openDashboard(page, { failures = false, storageBlocked = false, r
     const path = new URL(request.url()).pathname
     requests.push({ method: request.method(), path })
     if (path === '/auth/me') return route.fulfill({ json: { user: { user_id: 'tutorial-test', username: 'test', role } } })
+    if (path === '/auth/session/refresh') return route.fulfill({ json: {
+      access_token: 'isolated-browser-test', expires_at: new Date(Date.now() + 900000).toISOString(),
+      user: { user_id: 'tutorial-test', username: 'test', role },
+    } })
     if (path === '/orchards') return route.fulfill({ json: { orchards: [] } })
     if (path === '/weather/live' && !failures) return route.fulfill({ json: { current: {
       temperature_c: 27, humidity: 75, wind_speed_ms: 1, wind_direction_deg: 90,
       source: 'synthetic', cloud_cover_pct: 80,
     } } })
-    if (path === '/simulation/runs' && !failures) return route.fulfill({ json: { runs: [] } })
+    if (path === '/simulation/runs' && !failures) return route.fulfill({ json: { runs: forecast ? [forecast] : [] } })
+    if (forecast && path === `/simulation/runs/${forecast.run_id}`) return route.fulfill({ json: forecast })
     if (path === '/alerts/email/recipients') return route.fulfill({ json: role === 'admin' ? alertRecipients : [] })
     if (path === '/alerts') return route.fulfill({ json: { alerts: [] } })
     if (path === '/observations/list') return route.fulfill({ json: { observations: [] } })
@@ -63,7 +69,8 @@ async function finish(page, inspectStep = null) {
 }
 
 function expectReadOnly(requests) {
-  expect(requests.filter(({ method, path }) => method !== 'GET' || /export|\/sync\/run/.test(path))).toEqual([])
+  // Session renewal after the user's own clicks does not write account or farm records.
+  expect(requests.filter(({ method, path }) => (method !== 'GET' && path !== '/auth/session/refresh') || /export|\/sync\/run/.test(path))).toEqual([])
 }
 
 async function expectTooltipInsideViewport(page) {
@@ -79,8 +86,11 @@ async function expectTooltipInsideViewport(page) {
 for (const pest of ['Cecid Fly', 'Fruit Fly']) {
   for (const engine of ['Grid (CA)', 'Tree Graph']) {
     test(`${pest} / ${engine}: full tour preserves inputs and makes no write requests`, async ({ page }) => {
-      const requests = await openDashboard(page)
+      const forecast = verificationForecast({ pest: pest === 'Cecid Fly' ? 'cecid' : 'fruitfly', mode: engine === 'Grid (CA)' ? 'grid' : 'tree_graph' })
+      const requests = await openDashboard(page, { forecast })
       await page.getByRole('button', { name: 'Maybe later' }).click()
+      await page.getByRole('button', { name: 'History', exact: true }).click()
+      await page.getByRole('button', { name: /Load Result/ }).click()
       await page.locator('#sidebar-tab-simulate').click()
       await page.locator('[data-tour="pest"] button', { hasText: pest }).click()
       await page.getByRole('button', { name: /Model & Neighbor Pressure/ }).click()
@@ -96,7 +106,7 @@ for (const pest of ['Cecid Fly', 'Fruit Fly']) {
       await page.locator('.workflow-tour-tooltip [data-action="back"]').click()
       await expect(page.locator('#workflow-tour-title')).toHaveText('Welcome to MangoPoint')
       const titles = await finish(page)
-      expect(titles).toContain('9. Results appear here')
+      expect(titles).toContain('9. Read the result')
       await expect(page.locator('#sidebar-tab-verify')).toHaveAttribute('aria-selected', 'true')
       await expect(page.locator('#observation-notes')).toHaveValue('Unsaved inspection draft; do not submit')
       await expect(page.getByRole('button', { name: 'Tutorial', exact: true })).toBeFocused()

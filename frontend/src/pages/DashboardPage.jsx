@@ -13,6 +13,7 @@ import { isUncertainSourceStatus, sourcePresenceOverrides, sourceProbability } f
 import api from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
 import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
+import { forecastVerificationContext, verificationNumber } from '../utils/forecastVerification'
 import { summarizeCecidResult } from '../utils/cecidResultSummary'
 import { selectableTreeStatus, simulationEnsembleRuns } from '../utils/simulationMapInterpretation'
 import { calculateSimulationEconomicImpact } from '../utils/economicImpact'
@@ -465,7 +466,7 @@ export default function DashboardPage() {
     setObservationPrefill({
       treeIds: [], forecastRisk: null, forecastLeadHours: null, lon: null, lat: null,
     })
-  }, [selectedOrchardId])
+  }, [selectedOrchardId, simData?.run_id, simData?.metadata?.run_id])
 
   useEffect(() => {
     fetch('/trees.geojson')
@@ -662,6 +663,10 @@ export default function DashboardPage() {
     [alerts, selectedOrchardId],
   )
   const currentSimulationRunId = simData?.run_id ?? simData?.metadata?.run_id ?? null
+  const verificationForecast = useMemo(
+    () => forecastVerificationContext(simData, selectedOrchardId),
+    [simData, selectedOrchardId],
+  )
   const mapAlerts = useMemo(
     () => activeOrchardAlerts.filter((alert) => (
       isCurrentSimulationRiskAlert(alert, currentSimulationRunId)
@@ -1065,6 +1070,10 @@ export default function DashboardPage() {
 
   // ── Simulation complete handler ───────────────────────────────────────
   const applySimulationResult = useCallback((data, options = {}) => {
+    setSelectedTree(null)
+    setObservationPrefill({
+      treeIds: [], forecastRisk: null, forecastLeadHours: null, lon: null, lat: null,
+    })
     setSimData(data)
     if (data?.pest_type) setSelectedPestType(data.pest_type)
     const frames = Array.isArray(data.time_series) ? data.time_series : []
@@ -1238,15 +1247,13 @@ export default function DashboardPage() {
   }, [])
 
   const handleOpenTreeVerification = useCallback(() => {
-    if (!selectedTree?.tree_id) return
+    if (!verificationForecast.available || !selectedTree?.tree_id) return
     setObservationPrefill({
       treeIds: [String(selectedTree.tree_id)],
       forecastRisk: selectedTree.display_risk == null ? null : Number(selectedTree.display_risk),
-      forecastLeadHours: Number.isFinite(Number(displayedFrame?.hour ?? displayedFrame?.timestep))
-        ? Number(displayedFrame?.hour ?? displayedFrame?.timestep)
-        : null,
-      lon: Number.isFinite(Number(selectedTree.lon)) ? Number(selectedTree.lon) : null,
-      lat: Number.isFinite(Number(selectedTree.lat)) ? Number(selectedTree.lat) : null,
+      forecastLeadHours: verificationNumber(displayedFrame?.hour ?? displayedFrame?.timestep),
+      lon: verificationNumber(selectedTree.lon),
+      lat: verificationNumber(selectedTree.lat),
     })
     setSidebarWorkflow((current) => sidebarWorkflowForEvent('tree-verification', current))
     setSidebarCollapsed(false)
@@ -1254,7 +1261,7 @@ export default function DashboardPage() {
       setSidebarMobileOpen(true)
     }
     setSelectedTree(null)
-  }, [displayedFrame, selectedTree])
+  }, [displayedFrame, selectedTree, verificationForecast.available])
 
   const handleStageZoneStart = useCallback(() => {
     setTreeEditSaveState('idle')
@@ -1999,7 +2006,7 @@ export default function DashboardPage() {
           observationForecastLeadHours={observationPrefill.forecastLeadHours}
           observationLon={observationPrefill.lon}
           observationLat={observationPrefill.lat}
-          currentSimulationRunId={currentSimulationRunId}
+          verificationForecast={verificationForecast}
         />
       </div>
 
@@ -2074,6 +2081,8 @@ export default function DashboardPage() {
                   type="button"
                   className="btn btn-outline-success btn-sm w-100 mb-3"
                   onClick={handleOpenTreeVerification}
+                  disabled={!verificationForecast.available}
+                  title={verificationForecast.available ? 'Record an inspection linked to this forecast' : verificationForecast.reason}
                 >
                   <i className="bi bi-clipboard2-check me-1" />
                   Log field verification for this tree

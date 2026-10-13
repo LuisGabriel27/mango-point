@@ -13,7 +13,6 @@ import {
   historyPage,
   historyMonthKey,
   historyMonthLabel,
-  historyMonthParts,
 } from '../../utils/historyPeriod'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
@@ -58,22 +57,6 @@ function modeLabel(value) {
   if (v === 'tree_graph') return 'Tree Graph'
   if (v === 'grid') return 'Grid (CA)'
   return value || '--'
-}
-
-function filenameFromDisposition(header, fallback) {
-  const match = /filename="?([^"]+)"?/i.exec(header || '')
-  return match?.[1] || fallback
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
 }
 
 function runTime(value) {
@@ -164,8 +147,6 @@ export default function SimulationHistoryTab({
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(false)
   const [loadingRunId, setLoadingRunId] = useState(null)
-  const [exportingRunId, setExportingRunId] = useState(null)
-  const [exportingHistory, setExportingHistory] = useState(false)
   const [syncingToSupabase, setSyncingToSupabase] = useState(false)
   const [historyOrchardId, setHistoryOrchardId] = useState(ALL_ORCHARDS)
   const [historyPeriod, setHistoryPeriod] = useState(HISTORY_PERIOD_MONTH)
@@ -312,31 +293,6 @@ export default function SimulationHistoryTab({
     if (data) onPrintRun?.(data)
   }
 
-  const handleExportHistory = async () => {
-    setExportingHistory(true)
-    setStatus(null)
-    try {
-      const selectedMonth = historyMonthParts(historyMonth)
-      const params = historyPeriod === HISTORY_PERIOD_ALL_HISTORY
-        ? { period: 'all', limit: 5000 }
-        : {
-            period: 'month',
-            year: selectedMonth?.year,
-            month: selectedMonth?.month,
-            limit: 5000,
-          }
-      if (historyOrchardId !== ALL_ORCHARDS) params.orchard_id = historyOrchardId
-      const res = await api.exportSimulationRuns(params)
-      const fallback = 'mangopoint_simulation_history.xlsx'
-      downloadBlob(res.data, filenameFromDisposition(res.headers['content-disposition'], fallback))
-      setStatus({ type: 'success', msg: 'History export downloaded.' })
-    } catch (err) {
-      setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not export simulation history.') })
-    } finally {
-      setExportingHistory(false)
-    }
-  }
-
   const handleSyncToSupabase = async () => {
     setSyncingToSupabase(true)
     setStatus(null)
@@ -372,20 +328,6 @@ export default function SimulationHistoryTab({
       setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not sync with Supabase.') })
     } finally {
       setSyncingToSupabase(false)
-    }
-  }
-
-  const handleExportRun = async (runId) => {
-    setExportingRunId(runId)
-    setStatus(null)
-    try {
-      const res = await api.exportSimulationRun(runId)
-      downloadBlob(res.data, filenameFromDisposition(res.headers['content-disposition'], `mangopoint_simulation_${runId}.xlsx`))
-      setStatus({ type: 'success', msg: 'Simulation export downloaded.' })
-    } catch (err) {
-      setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not export saved simulation.') })
-    } finally {
-      setExportingRunId(null)
     }
   }
 
@@ -448,15 +390,6 @@ export default function SimulationHistoryTab({
                   options={HISTORY_GROUP_OPTIONS}
                 />
               </div>
-              <button
-                type="button"
-                className="btn btn-success btn-sm"
-                onClick={handleExportHistory}
-                disabled={exportingHistory}
-              >
-                {exportingHistory ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
-                Export History
-              </button>
               <button
                 type="button"
                 className="btn btn-outline-secondary btn-sm"
@@ -522,7 +455,6 @@ export default function SimulationHistoryTab({
                       )}
                       {group.runs.map((run) => {
                         const busy = loadingRunId === run.run_id
-                        const exporting = exportingRunId === run.run_id
                         return (
                           <tr key={run.run_id}>
                             <td>
@@ -557,15 +489,6 @@ export default function SimulationHistoryTab({
                                 >
                                   <i className="bi bi-sliders me-1" />
                                   Use as Template
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-outline-success btn-sm"
-                                  disabled={exporting}
-                                  onClick={() => handleExportRun(run.run_id)}
-                                >
-                                  {exporting ? <span className="spinner-border spinner-border-sm me-1" /> : <i className="bi bi-file-earmark-excel me-1" />}
-                                  Export Excel
                                 </button>
                                 {onPrintRun && (
                                   <button type="button" className="btn btn-outline-success btn-sm" disabled={busy} onClick={() => handlePrint(run.run_id)}>

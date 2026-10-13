@@ -62,10 +62,6 @@ const api = {
   runSimulation: (body) => client.post('/simulation/run-simulation', body, { timeout: 180000 }),
   getSimulationRuns: (params = {}) => client.get('/simulation/runs', { params }),
   getSimulationRun: (runId) => client.get(`/simulation/runs/${runId}`),
-  exportSimulationRuns: (params = {}) =>
-    client.get('/simulation/runs/export', { params, responseType: 'blob', timeout: 180000 }),
-  exportSimulationRun: (runId) =>
-    client.get(`/simulation/runs/${runId}/export`, { responseType: 'blob', timeout: 180000 }),
 
   // Monitoring
   getMonitoringMetrics: () => client.get('/monitoring/metrics'),
@@ -74,7 +70,7 @@ const api = {
   triggerAlertScan: (params = {}) => client.post('/monitoring/alerts/scan', null, { params }),
 
   // Alerts
-  getAlerts: (params = {}) => client.get('/alerts', { params }),
+  getAlerts: (params = {}, signal) => client.get('/alerts', { params, signal }),
   getAlertStats: () => client.get('/alerts/stats/summary'),
   acknowledgeAlert: (alertId, body) => client.post(`/alerts/${alertId}/acknowledge`, body),
   resolveAlert: (alertId, notes = null) =>

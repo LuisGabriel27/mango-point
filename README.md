@@ -6,7 +6,7 @@ The pest scope is **fruit-attacking Cecid** and **Oriental Fruit Fly
 (*Bactrocera dorsalis*)**. The current reviewed model is
 `2026.10-source-progression-v17`; its source rules and remaining assumptions are
 documented in the [v17 model review](docs/v17-model-readiness-review.md).
-The dashboard includes a replayable React Joyride tutorial for first-time and
+The dashboard includes a replayable React Joyride guide for first-time and
 returning users.
 
 ## Current Capabilities
@@ -24,7 +24,7 @@ returning users.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
 - Field observations and evaluation endpoints.
-- Saved simulation History, input templates, Excel exports, and printable reports with recorded model/input assumptions.
+- Saved simulation History, input templates, and printable reports with recorded model/input assumptions.
 - Historical validation against BPI Guimaras monitoring records, including calibration/testing splits, confidence intervals, and historical weather coverage reporting.
 - Manual field validation protocol for checking current forecasts against later orchard inspections.
 
@@ -45,7 +45,7 @@ Surveillance and History views.
    playback show a representative realization. These are modeled outcomes.
 4. **History and reports:** Check that the completed run appears in History.
    **Load Result** opens the saved output; **Use as Template** restores inputs
-   for a new run. Export Excel or print a report, checking its orchard, model
+   for a new run. Print a report, checking its orchard, model
    version and final/displayed reporting hour.
 5. **Verify:** Record an actual orchard inspection with the correct tree, pest,
    date and method. Present, Absent and Not inspected are distinct records;
@@ -92,9 +92,9 @@ action; a failed refresh labels any retained records as the last loaded data.
 Individual forecast outcomes remain in Results, Crop Impact,
 Spread & Weather, and History.
 
-## Guided Tutorial
+## Guides
 
-The top-bar **Tutorial** button is always available after sign-in. First-time
+The top-bar **Guide** button is always available after sign-in. First-time
 users also see a dismissible invitation. Choose the guide that matches the task:
 
 | Guide | Purpose |
@@ -110,7 +110,7 @@ matters**, displays the workflow position and provides Back, Next, Skip, Close
 and progress feedback. The guides use beginner wording; for example, a pest
 “gate” is introduced as a condition that must be suitable.
 
-Tutorial navigation may show a dashboard tab or open a control panel for the
+Guide navigation may show a dashboard tab or open a control panel for the
 current explanation. It does not change orchard/scenario inputs, start a
 simulation, create a result, save a field observation, acknowledge an alert,
 send a notification, change an account or initiate an export. Closing,
@@ -118,8 +118,8 @@ skipping or finishing restores the ordinary dashboard view and preserves
 unsaved inputs. Missing controls are skipped rather than trapping the user.
 
 The first-use preference is stored in the browser for the signed-in user and
-tutorial version. Browser storage failure does not remove the manual Tutorial
-button. Tutorial text explains missing/loading/error and no-result states; it
+guide version. Browser storage failure does not remove the manual Guide
+button. Guide text explains missing/loading/error and no-result states; it
 does not manufacture a demonstration forecast or field finding.
 
 The frontend uses `react-joyride` 3.2.0, whose peer range includes React 18.
@@ -297,6 +297,16 @@ Restart the API after changing `.env`. Then sign in as an administrator and use
 `POST /alerts/email/test` in `http://localhost:8000/docs`. Non-secret diagnostics
 are available from `GET /alerts/email/status`. Successful alert deliveries are
 marked `email_sent=true` and show an **Emailed** badge in the notification list.
+
+The notification bell loads active alerts for the selected orchard every minute
+while the dashboard is visible, when the browser returns to the dashboard, and
+when the bell is opened. Its **Refresh** control reloads the list immediately.
+Failed refreshes show an error with **Retry** and retain any previously loaded
+alerts. These read-only checks do not create alerts or send emails. Repeated
+warnings for the same active condition remain deduplicated.
+
+Each alert shows its saved notification date, including the year, and time in
+Philippine time (PHT), so older unresolved alerts remain identifiable.
 
 Administrators can manage the live recipient list from **Settings > Notification
 emails**. The first time that section is opened, addresses from

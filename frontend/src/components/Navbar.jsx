@@ -15,6 +15,7 @@ const TABS = [
 export default function Navbar({
   alerts = [],
   alertLoading = false,
+  alertError = '',
   activeTab,
   onTabChange,
   onAlertRefresh,
@@ -23,23 +24,12 @@ export default function Navbar({
   tutorialProps,
 }) {
   const { user, logout } = useAuth()
-  const [clock, setClock] = useState('')
   const [bellOpen, setBellOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const bellRef = useRef(null)
   const tutorialPanel = tutorialProps?.presentation?.navbarPanel
   const bellDisplayed = bellOpen || tutorialPanel === 'notifications'
   const settingsDisplayed = settingsOpen || tutorialPanel === 'settings'
-
-  useEffect(() => {
-    const tick = () => {
-      const now = new Date()
-      setClock(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
-    }
-    tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [])
 
   useEffect(() => {
     const handler = (event) => {
@@ -78,11 +68,9 @@ export default function Navbar({
 
       <div className="navbar-controls">
         {tutorialProps && <WorkflowTutorial user={user} {...tutorialProps} />}
-        <span className="navbar-clock d-none d-md-inline">{clock}</span>
         {user && (
           <div className="navbar-user d-none d-lg-flex">
             <span className="navbar-username">{user.full_name || user.username}</span>
-            <span className="navbar-userrole">{user.role?.toUpperCase()}</span>
           </div>
         )}
 
@@ -115,7 +103,10 @@ export default function Navbar({
           <button
             type="button"
             className={`navbar-bell-btn${bellDisplayed ? ' is-open' : ''}`}
-            onClick={() => setBellOpen((open) => !open)}
+            onClick={() => {
+              if (!bellOpen) onAlertRefresh?.()
+              setBellOpen((open) => !open)
+            }}
             data-tour="alerts"
             aria-label="Notifications"
             aria-expanded={bellDisplayed}
@@ -131,12 +122,18 @@ export default function Navbar({
             >
               <div className="navbar-bell-header">
                 <span><i className="bi bi-bell-fill me-1" />Alerts</span>
-                <span className="navbar-bell-count">{active.length} active</span>
+                <div className="d-flex align-items-center gap-2">
+                  <span className="navbar-bell-count">{active.length} active</span>
+                  <button type="button" className="btn btn-sm btn-outline-light py-0 px-1" aria-label="Refresh notifications" onClick={onAlertRefresh} disabled={alertLoading}>
+                    <i className={`bi ${alertLoading ? 'bi-hourglass-split' : 'bi-arrow-clockwise'}`} aria-hidden="true" />
+                  </button>
+                </div>
               </div>
               <div className="navbar-bell-list navbar-alert-action-list">
                 <AlertList
                   alerts={alerts}
                   loading={alertLoading}
+                  error={alertError}
                   onRefresh={onAlertRefresh}
                   onApplySuggested={handleApplySuggested}
                 />

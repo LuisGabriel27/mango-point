@@ -31,7 +31,7 @@ visible message and relevant failed request, without credentials or access token
 ## Pass 1: ordinary workflow
 
 Login → choose orchard → inspect/edit inputs → set weather → select pest/model
-→ run → inspect results/playback → reopen from History → export → Verify → logout.
+→ run → inspect results/playback → reopen from History → print a report → Verify → logout.
 
 Run that sequence for these four combinations, keeping a separate record for each:
 
@@ -121,11 +121,11 @@ fallback. Inspect the saved source list after running.
 | ID | Action | Expected result |
 |---|---|---|
 | WF-39 | Find the completed run in History; refresh and revisit after signing in again. | The run is retained in the available storage path; browser-cache fallback is clearly identified if server storage is unavailable. |
-| WF-40 | Filter History by orchard and run date/month; change grouping and export the filtered history. | Displayed/exported entries match the chosen filters and scope; execution date is not confused with custom forecast start date. |
+| WF-40 | Filter History by orchard and run date/month; change grouping. | Displayed entries match the chosen filters and scope; execution date is not confused with custom forecast start date. |
 | WF-41 | Choose Load Result while current controls/map belong to another setup. | The original saved output, orchard, metadata and frames load; this action does not create a new simulation. |
 | WF-42 | Choose Use as Template, inspect restored inputs, and rerun without New random seed. | For the same model version and exact saved inputs/weather, outputs reproduce. Loading controls alone does not start a run. |
 | WF-43 | Open a v16 result/template if available. | Stored results retain v16 identification; a newly executed v17 run is identified as v17 and is not promised to reproduce the old engine. |
-| WF-44 | Export Excel for one run and Export History for several runs; open both files. | Files open, identify the correct run/orchard/model, and contain consistent values and weather/seed metadata where supplied. |
+| WF-44 | Open History with saved runs and inspect the header and row actions. | Excel export controls are absent; Load Result, Use as Template and Print report are available. |
 | WF-45 | Print a final-result report while playback displays an earlier hour; also choose displayed-hour reporting. | The default report uses final results; displayed-hour reporting uses its selected frame/map/weather and labels that hour. |
 | WF-46 | Add report notes/name, export portrait PDF, cancel once, then retry. | Map/orthophoto, text, legend and saved model assumptions are legible; notes do not break layout; cancelling permits retry. |
 

@@ -237,13 +237,18 @@ export function CustomWeatherEditor({
   useEffect(() => {
     if (!periodsOpen) return undefined
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setPeriodsOpen(false)
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        setPeriodsOpen(false)
+      }
     }
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    document.addEventListener('keydown', handleKeyDown)
+    // Close this dialog before Escape reaches the mobile workspace behind it.
+    document.addEventListener('keydown', handleKeyDown, true)
     return () => {
-      document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('keydown', handleKeyDown, true)
       document.body.style.overflow = previousOverflow
     }
   }, [periodsOpen])
@@ -311,18 +316,19 @@ export function CustomWeatherEditor({
         </button>
       </div>
 
-      <div className="weather-period-general-preview" role="status" aria-label="Weather periods general preview">
+      <button type="button" className="weather-period-general-preview" onClick={openPeriods}
+        aria-label="Review weather periods" aria-haspopup="dialog" aria-expanded={visiblePeriodsOpen}>
         <span className="weather-period-general-preview-icon" aria-hidden="true">
           <i className="bi bi-calendar3-range" />
         </span>
-        <div className="weather-period-general-preview-content">
+        <span className="weather-period-general-preview-content">
           <strong>{blocks.length ? 'Schedule ready to review' : 'No weather periods configured'}</strong>
           <span>{blocks.length
             ? `${rainyPeriodCount} rainy · ${dryPeriodCount} dry · Hour 0–${hours}`
             : 'Use Edit periods to add a weather period.'}</span>
-        </div>
+        </span>
         <i className="bi bi-chevron-right weather-period-general-preview-arrow" aria-hidden="true" />
-      </div>
+      </button>
 
       {visiblePeriodsOpen && (
         <div className="weather-periods-modal-backdrop" role="presentation" onMouseDown={() => setPeriodsOpen(false)}>
@@ -461,10 +467,12 @@ export function CustomWeatherEditor({
             <span className="weather-period-general-preview-icon weather-cecid-settings-icon" aria-hidden="true">
               <i className="bi bi-moisture" />
             </span>
-            <strong className="weather-cecid-settings-title">Soil &amp; Cecid test preset</strong>
-            <small>{isCecid ? (timeline.manual_soil_context?.preset === 'recently_wet' ? 'Recently wet' :
-              timeline.manual_soil_context?.preset === 'moist' ? 'Moist at Hour 0' :
-              timeline.manual_soil_context?.preset === 'custom' ? 'Custom soil' : 'Dry soil') : 'Available for Cecid Fly'}</small>
+            <span className="weather-cecid-settings-content">
+              <strong className="weather-cecid-settings-title">Soil &amp; Cecid test preset</strong>
+              <small>{isCecid ? (timeline.manual_soil_context?.preset === 'recently_wet' ? 'Recently wet' :
+                timeline.manual_soil_context?.preset === 'moist' ? 'Moist at Hour 0' :
+                timeline.manual_soil_context?.preset === 'custom' ? 'Custom soil' : 'Dry soil') : 'Available for Cecid Fly'}</small>
+            </span>
             <i className="bi bi-chevron-down weather-cecid-settings-chevron" aria-hidden="true" />
           </summary>
           <SoilContextEditor timeline={timeline} onChange={onChange} />

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import CollapsibleCard from '../CollapsibleCard'
 import MpSelect from '../MpSelect'
+import HelpTooltip from '../HelpTooltip'
 import { apiErrorMessage } from '../../api'
 
 const DEFAULT_ORCHARD_ID = 'default-orchard'
@@ -187,9 +188,12 @@ export default function OrchardSwitcher({
             {treeCount} tree{treeCount !== 1 ? 's' : ''}
             {selected.location && <> &middot; {selected.location}</>}
           </div>
-          <label className="small fw-medium mb-1 d-block">
-            <i className="bi bi-flower1 me-1" />Current monitoring stage
-          </label>
+          <div className="control-label-row small fw-medium mb-1">
+            <span><i className="bi bi-flower1 me-1" />Current monitoring stage</span>
+            <HelpTooltip label="Current monitoring stage">
+              Cecid live alerts require Fruitlets; Fruit Fly live alerts require green mature through ripening fruit.
+            </HelpTooltip>
+          </div>
           <MpSelect
             value={selected.orchard_stage ?? 'mature'}
             onChange={handleStageChange}
@@ -202,9 +206,6 @@ export default function OrchardSwitcher({
             disabled={stageSaving}
             small
           />
-          <small className="d-block text-muted mt-1">
-            Cecid live alerts require Fruitlets; Fruit Fly live alerts require green mature through ripening fruit.
-          </small>
         </>
       )}
     </CollapsibleCard>

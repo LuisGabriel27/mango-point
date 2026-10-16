@@ -1330,6 +1330,69 @@ body {
 /* ── Global form controls ─────────────────────── */
 h1,h2,h3,h4,h5,h6 { color: var(--mp-text); }
 .text-muted { color: var(--mp-muted) !important; }
+
+/* Compact help for setup and simulation controls. */
+.control-label-row {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+.control-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mp-muted);
+  font-size: .9rem;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+}
+.section-label .control-help-button { margin-left: .25rem; }
+.control-help-button:hover,
+.control-help-button[aria-expanded="true"] {
+  background: var(--mp-primary-light, #eaf3ee);
+  color: var(--mp-primary);
+}
+.control-help-button:focus-visible {
+  outline: 2px solid var(--mp-primary);
+  outline-offset: 2px;
+}
+.control-help-tooltip {
+  position: fixed;
+  z-index: 3500;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: min(440px, calc(100dvh - 24px));
+  overflow-y: auto;
+  padding: .8rem .9rem;
+  border: 1px solid var(--mp-border, #dbe5de);
+  border-radius: .65rem;
+  background: var(--mp-card);
+  box-shadow: 0 5px 20px rgb(20 55 40 / 16%);
+  color: var(--mp-text);
+  font-family: inherit;
+  font-size: .8rem;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: normal;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+.control-help-title {
+  display: block;
+  margin-bottom: .35rem;
+  color: var(--mp-primary);
+  font-size: .8rem;
+}
+.control-help-tooltip p { margin: 0 0 .6rem; }
+.control-help-tooltip p:last-child { margin-bottom: 0; }
 hr { border-top: 1px solid var(--mp-border); opacity: 1; }
 
 .form-control, .form-select, textarea.form-control {
@@ -2374,6 +2437,24 @@ input[type="range"]::-moz-range-progress {
 .orchard-modal-title { margin: .1rem 0 0; font-family: "Manrope", sans-serif; font-size: 1.05rem; }
 .orchard-modal-form { max-height: calc(100dvh - 9rem); overflow-y: auto; padding: 1rem; }
 .orchard-modal-actions { display: flex; gap: .5rem; margin-top: .8rem; padding-top: .8rem; border-top: 1px solid var(--mp-border); }
+
+.logout-confirmation-backdrop { z-index: 3200; }
+.logout-confirmation-dialog { width: min(420px, 100%); overflow-y: auto; }
+.logout-confirmation-body { display: flex; align-items: center; gap: .9rem; padding: 1.25rem 1rem; }
+.logout-confirmation-body > i {
+  display: grid;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 12px;
+  background: #eaf3ee;
+  color: var(--mp-primary);
+  font-size: 1.25rem;
+}
+.logout-confirmation-body p { margin: 0; color: var(--mp-muted); font-size: .85rem; }
+.logout-confirmation-actions { display: flex; justify-content: flex-end; gap: .5rem; padding: .85rem 1rem; border-top: 1px solid var(--mp-border); }
+.logout-confirmation-actions .btn { min-width: 96px; font-size: .8rem; font-weight: 600; }
 
 .zone-clear-modal-backdrop { z-index: 3200; }
 .zone-clear-modal-dialog { width: min(440px, 100%); }

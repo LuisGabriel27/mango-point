@@ -87,8 +87,7 @@ test('soil controls expose moist now as a labeled scenario rather than invented 
   assert.match(html, /Moist at Hour 0/)
   assert.match(html, /Moisture strength/)
   assert.match(html, /value="80"/)
-  assert.match(html, /without adding earlier rain/)
-  assert.match(html, /not a measured soil-water percentage/)
+  assert.match(html, /aria-label="Help: Starting soil" aria-expanded="false"/)
 })
 
 test('custom daylight controls separate outdoor light and evidence from cloud cover and canopy shade', () => {
@@ -102,7 +101,7 @@ test('custom daylight controls separate outdoor light and evidence from cloud co
   assert.match(html, /value="bright_sunshine" selected=""/)
   assert.match(html, /value="observed" selected=""/)
   assert.match(html, /Assumed scenario/)
-  assert.match(html, /Tree-canopy shade alone does not enable Cecid emergence or movement/)
+  assert.match(html, /aria-label="Help: Daylight light condition" aria-expanded="false"/)
 })
 
 test('live weather displays zero radiation and leaves missing sunlight unavailable', () => {

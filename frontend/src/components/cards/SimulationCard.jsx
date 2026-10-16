@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useTourPresentation } from '../tutorial/TourPresentation'
 import CollapsibleCard from '../CollapsibleCard'
+import HelpTooltip from '../HelpTooltip'
 import api, { apiErrorMessage } from '../../api'
 import {
   customWeatherBlocks,
@@ -141,11 +142,12 @@ function treatmentApplicationPayload(type, efficacy) {
   }]
 }
 
-function SectionLabel({ iconName, text }) {
+function SectionLabel({ iconName, text, help }) {
   return (
     <div className="section-label">
-      <i className={`bi bi-${iconName} me-1`} />
+      {iconName && <i className={`bi bi-${iconName} me-1`} />}
       <span>{text}</span>
+      {help && <HelpTooltip label={text}>{help}</HelpTooltip>}
     </div>
   )
 }
@@ -189,12 +191,13 @@ function BtnGroup({ options, value, onChange, small = false, tourId }) {
   )
 }
 
-function Slider({ id, label, iconName, min, max, step, value, marks, onChange, percent = false }) {
+function Slider({ id, label, iconName, min, max, step, value, marks, onChange, percent = false, help }) {
   return (
     <div className="mb-2">
-      <label className="small fw-medium mb-1 d-block" htmlFor={id}>
-        {iconName && <i className={`bi bi-${iconName} me-1`} />}{label}
-      </label>
+      <div className="control-label-row small fw-medium mb-1">
+        <label htmlFor={id}>{iconName && <i className={`bi bi-${iconName} me-1`} />}{label}</label>
+        {help && <HelpTooltip label={label}>{help}</HelpTooltip>}
+      </div>
       <input
         id={id} type="range" className="form-range w-100"
         min={min} max={max} step={step} value={value}
@@ -718,7 +721,10 @@ export default function SimulationCard({
           { value: 'fruitfly', label: 'Fruit Fly', icon: 'bug' },
         ]}
       />
-      <label className="small fw-medium mb-1 d-block mt-2"><i className="bi bi-flower1 me-1" />Orchard Stage</label>
+      <div className="control-label-row small fw-medium mb-1 mt-2">
+        <span><i className="bi bi-flower1 me-1" />Orchard Stage</span>
+        <HelpTooltip label="Orchard Stage">Fruitlets are susceptible to Cecid Fly; green mature through ripening fruit is susceptible to Fruit Fly.</HelpTooltip>
+      </div>
       <BtnGroup
         tourId="stage"
         value={orchardStage}
@@ -726,7 +732,6 @@ export default function SimulationCard({
         options={STAGE_OPTIONS}
         small
       />
-      <small className="text-muted d-block mb-2 mt-1">Fruitlets are susceptible to Cecid Fly; green mature through ripening fruit is susceptible to Fruit Fly.</small>
 
       {treeStageOverrides && Object.keys(treeStageOverrides).length > 0 && (
         <div className="alert alert-success py-1 px-2 mb-2 d-flex align-items-center gap-2" style={{ fontSize: '.78rem' }}>
@@ -745,8 +750,8 @@ export default function SimulationCard({
         min={0} max={120} step={5} value={daysFlowering}
         marks={[{label:'0d'},{label:'30d'},{label:'60d'},{label:'90d'},{label:'120d'}]}
         onChange={setDaysFlowering}
+        help="Higher = riper fruit = stronger Fruit Fly attraction."
       />
-      <small className="text-muted d-block mb-0">Higher = riper fruit = stronger Fruit Fly attraction.</small>
       </div>
 
       <SectionLabel iconName="clock-history" text="Forecast Duration" />
@@ -770,7 +775,10 @@ export default function SimulationCard({
         open={showModelPressure || tour?.panel === 'model'}
         onToggle={() => setShowModelPressure((value) => !value)}
       >
-      <SectionLabel iconName="diagram-3" text="Spread Model" />
+      <SectionLabel iconName="diagram-3" text="Spread Model" help={(simMode === 'tree_graph' || pestType === 'cecid') && <>
+        {simMode === 'tree_graph' && <p>Tree Graph uses crown-to-crown distances. Supply <code>crown_radius_m</code> in GeoJSON properties or set a global fallback.</p>}
+        {pestType === 'cecid' && <p>Without observed, historical, suspected, or selected source evidence, each realization assumes 1–3 soil anchors. They are shown on the map but do not start as infected fruit.</p>}
+      </>} />
       <BtnGroup
         tourId="engine"
         value={simMode}
@@ -780,38 +788,23 @@ export default function SimulationCard({
           { value: 'tree_graph', label: 'Tree Graph', icon: 'diagram-3' },
         ]}
       />
-      {simMode === 'tree_graph' && (
-        <div className="alert alert-info py-1 px-2 mt-1 mb-0" style={{ fontSize: '.78rem' }}>
-          <i className="bi bi-info-circle me-1" />
-          Tree Graph uses crown-to-crown distances. Supply <code>crown_radius_m</code> in GeoJSON properties or set a global fallback.
-        </div>
-      )}
-
-      {pestType === 'cecid' && (
-        <>
-          <div className="alert alert-info py-1 px-2 mt-2 mb-2" style={{ fontSize: '.76rem' }}>
-            <i className="bi bi-geo-alt me-1" />
-            Without observed, historical, suspected, or selected source evidence, each realization assumes 1–3 soil anchors. They are shown on the map but do not start as infected fruit.
-          </div>
-        </>
-      )}
-
-      <SectionLabel iconName="dice-5" text="Repeated Runs" />
-      {pestType === 'fruitfly' && (
-        <small className="text-muted d-block mt-2 mb-2">
+      <SectionLabel iconName="dice-5" text="Repeated Runs" help={<>
+        {pestType === 'fruitfly' && <p>
           Fruit Fly pressure acts around the initial source locations. Newly infested fruit does not create more adult sources during this forecast.
           Individual adult flight paths and egg-to-adult development are not simulated.
-        </small>
-      )}
+        </p>}
+        <p>Across runs shows how often infestation is present. Playback shows one reproducible run.
+        Weather, tree stages and management stay fixed; uncertain source presence and establishment can vary.</p>
+      </>} />
       <BtnGroup tourId="repeated-runs" value={uncertaintyRuns} onChange={setUncertaintyRuns} small options={[
         { value: '1', label: 'Single run' }, { value: '5', label: '5 runs' }, { value: '9', label: '9 runs' },
       ]} />
-      <small className="text-muted d-block mt-1 mb-2">
-        Across runs shows how often infestation is present. Playback shows one reproducible run.
-        Weather, tree stages and management stay fixed; uncertain source presence and establishment can vary.
-      </small>
-
-      <SectionLabel iconName="question-circle" text="Default Source Presence" />
+      <SectionLabel text="Default Source Presence" help={<>
+        <p>These defaults apply to History Infected or Suspect unless you set a percentage in a status zone or individual tree override.
+        History can contain a latent soil or adult reservoir without starting as infested fruit; Suspect may start with a current infestation in a run.</p>
+        <p>The 50% defaults are scenario placeholders. Set them from your evidence; they are not field-calibrated probabilities.
+        Infected records current infestation and is used as an initial source scenario; fruit damage alone does not measure adult presence.</p>
+      </>} />
       <div data-tour="source-presence">
       <Slider id="history-source-probability" label="History Infected: reservoir present" iconName="clock-history"
         percent
@@ -823,17 +816,15 @@ export default function SimulationCard({
         min={0} max={1} step={0.05} value={suspectSourceProbability}
         marks={[{ label: '0%' }, { label: '50%' }, { label: '100%' }]}
         onChange={setSuspectSourceProbability} />
-      <small className="text-muted d-block mb-2">
-        These defaults apply to History Infected or Suspect unless you set a percentage in a status zone or individual tree override.
-        History can contain a latent soil or adult reservoir
-        without starting as infested fruit; Suspect may start with a current infestation in a run.
-        The 50% defaults are scenario placeholders. Set them from your evidence; they are not field-calibrated probabilities.
-        Infected records current infestation and is used as an initial source scenario; fruit damage alone does not measure adult presence.
-      </small>
 
       </div>
       <div data-tour="neighbors">
-      <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" />
+      <SectionLabel iconName="exclamation-triangle" text="Neighbor Pressure" help={<>
+        <p>Add each nearby orchard with its own direction and threat level. Local pressures combine up to 100% before wind adjusts each source.</p>
+        <p>{pestType === 'cecid'
+          ? 'Optional, uncalibrated estimate of outside adult exposure. Direction means where that source lies. Suitable fruitlets, light, rain and wind are required. Boundary crossings, adult age, eggs and travel time are not tracked; distant trees can receive exposure in the first suitable hour.'
+          : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}</p>
+      </>} />
       {neighborSources.map((source, index) => (
         <div key={index} className="border rounded p-2 mb-2" role="group" aria-label={`Neighbor ${index + 1}`}>
           <div className="d-flex align-items-center gap-2 mb-2">
@@ -867,12 +858,6 @@ export default function SimulationCard({
         <i className="bi bi-plus-lg me-1" />Add neighbor
       </button>
       {neighborSources.length === 0 && <small className="text-muted d-block mb-1">No outside neighbor pressure included.</small>}
-      <small className="text-muted d-block mb-1">Add each nearby orchard with its own direction and threat level. Local pressures combine up to 100% before wind adjusts each source.</small>
-      <small className="text-muted d-block mb-0">
-        {pestType === 'cecid'
-          ? 'Optional, uncalibrated estimate of outside adult exposure. Direction means where that source lies. Suitable fruitlets, light, rain and wind are required. Boundary crossings, adult age, eggs and travel time are not tracked; distant trees can receive exposure in the first suitable hour.'
-          : 'Pressure from unmanaged orchards (historical ~2× higher CPTD).'}
-      </small>
 
       </div>
       </AdvancedPanel>
@@ -895,7 +880,18 @@ export default function SimulationCard({
       </label>
       {treatmentEnabled && (
         <div>
-          <label className="small fw-medium mb-1 d-block"><i className="bi bi-capsule me-1" />Treatment type</label>
+          <div className="control-label-row small fw-medium mb-1">
+            <span><i className="bi bi-capsule me-1" />Treatment type</span>
+            <HelpTooltip label="Treatment type">
+              {{
+                protective_spray: 'Whole living orchard: reduces incoming infestation pressure. Source output is unchanged.',
+                targeted_spray: 'Initial active source locations only: reduces source output and incoming pressure at those locations, including active historical reservoirs.',
+                sanitation: 'Initial active source locations only: reduces source output, including active historical reservoirs. Incoming susceptibility is unchanged.',
+                combined: 'Whole living orchard: reduces incoming infestation pressure and source output.',
+              }[treatmentType]}
+              {' '}Applied once at the start and held constant for this forecast; existing infestation is not removed.
+            </HelpTooltip>
+          </div>
           <BtnGroup
             value={treatmentType}
             onChange={setTreatmentType}
@@ -912,15 +908,6 @@ export default function SimulationCard({
             marks={[{label:'0%'},{label:'50%'},{label:'95%'}]}
             onChange={setTreatmentEfficacy}
           />
-          <small className="text-muted d-block mb-2">
-            {{
-              protective_spray: 'Whole living orchard: reduces incoming infestation pressure. Source output is unchanged.',
-              targeted_spray: 'Initial active source locations only: reduces source output and incoming pressure at those locations, including active historical reservoirs.',
-              sanitation: 'Initial active source locations only: reduces source output, including active historical reservoirs. Incoming susceptibility is unchanged.',
-              combined: 'Whole living orchard: reduces incoming infestation pressure and source output.',
-            }[treatmentType]}
-            {' '}Applied once at the start and held constant for this forecast; existing infestation is not removed.
-          </small>
         </div>
       )}
       </AdvancedPanel>
@@ -981,12 +968,12 @@ export default function SimulationCard({
               </div>
             ))}
           </div>
-          <label className="small fw-medium mb-1 d-block">
-            <i className="bi bi-cash-stack me-1" />Pesticide cost (PHP/ha)
-          </label>
-          <input type="number" className="form-control form-control-sm mb-1" min={0} step={50}
+          <div className="control-label-row small fw-medium mb-1">
+            <label htmlFor="impact-pesticide-cost"><i className="bi bi-cash-stack me-1" />Pesticide cost (PHP/ha)</label>
+            <HelpTooltip label="Crop Impact Assumptions">Updates Crop Impact and Economic Impact estimates.</HelpTooltip>
+          </div>
+          <input id="impact-pesticide-cost" type="number" className="form-control form-control-sm mb-1" min={0} step={50}
             value={impact.pesticide_cost_per_ha} onChange={(e) => setImpactField('pesticide_cost_per_ha', +e.target.value)} />
-          <small className="text-muted d-block">Updates Crop Impact and Economic Impact estimates.</small>
         </div>
       )}
 
@@ -1011,17 +998,17 @@ export default function SimulationCard({
         <div className="border rounded p-2 mb-2" style={{ fontSize: '.82rem' }}>
 
           {/* Observation seeding */}
-          <label className="sim-toggle-row mb-1" htmlFor="obs-seeds">
-            <div className="sim-toggle-body">
-              <i className="bi bi-geo-alt sim-toggle-icon" />
-              <span className="sim-toggle-label">Start from field observations</span>
-            </div>
-            <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="obs-seeds"
-              checked={useObsSeeds} onChange={(e) => setUseObsSeeds(e.target.checked)} />
-          </label>
-          <small className="text-muted d-block mb-2">
-            Uses scout reports as the starting point instead of a random guess.
-          </small>
+          <div className="control-label-row mb-2">
+            <label className="sim-toggle-row flex-grow-1 mb-0" htmlFor="obs-seeds">
+              <div className="sim-toggle-body">
+                <i className="bi bi-geo-alt sim-toggle-icon" />
+                <span className="sim-toggle-label">Start from field observations</span>
+              </div>
+              <input className="form-check-input flex-shrink-0" type="checkbox" role="switch" id="obs-seeds"
+                checked={useObsSeeds} onChange={(e) => setUseObsSeeds(e.target.checked)} />
+            </label>
+            <HelpTooltip label="Start from field observations">Uses scout reports as the starting point instead of a random guess.</HelpTooltip>
+          </div>
           {useObsSeeds && (
             <div className="mb-3 ms-1">
               <label className="small mb-1 d-block">Include observations from the last:</label>
@@ -1045,15 +1032,17 @@ export default function SimulationCard({
           </div>
           <div className="d-flex flex-column gap-1 mb-2">
             {Object.entries(SENSITIVITY_PRESETS).map(([key, preset]) => (
-              <button
-                key={key} type="button"
-                className={`btn btn-sm text-start py-1 px-2 ${sensitivity === key ? 'btn-primary' : 'btn-outline-secondary'}`}
-                onClick={() => setSensitivity(key)}
-              >
-                <i className={`bi bi-${preset.icon} me-1`} />
-                <strong>{preset.label}</strong>
-                <span className="ms-1 fw-normal" style={{ fontSize: '.75rem', opacity: 0.85 }}>— {preset.description}</span>
-              </button>
+              <div className="control-label-row" key={key}>
+                <button
+                  type="button"
+                  className={`btn btn-sm text-start py-1 px-2 flex-grow-1 ${sensitivity === key ? 'btn-primary' : 'btn-outline-secondary'}`}
+                  onClick={() => setSensitivity(key)}
+                >
+                  <i className={`bi bi-${preset.icon} me-1`} aria-hidden="true" />
+                  <strong>{preset.label}</strong>
+                </button>
+                <HelpTooltip label={`${preset.label} sensitivity`}>{preset.description}</HelpTooltip>
+              </div>
             ))}
           </div>
 

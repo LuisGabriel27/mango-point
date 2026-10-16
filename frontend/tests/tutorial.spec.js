@@ -204,6 +204,8 @@ test('first-use dismissal survives reload, manual replay remains available and l
   await page.getByRole('button', { name: /^Understand results/ }).click()
   await page.locator('.workflow-tour-tooltip [data-action="skip"]').click()
   await page.getByRole('button', { name: 'Logout' }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Log out', exact: true }).click()
+  await expect(page.locator('#login-identifier')).toBeVisible()
   await expect(page.locator('.workflow-tour-tooltip')).toHaveCount(0)
   await expect(page.locator('[inert]')).toHaveCount(0)
 })

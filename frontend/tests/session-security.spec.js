@@ -57,7 +57,7 @@ async function signIn(page, password = 'old-password') {
   await page.locator('#login-identifier').fill('session-test')
   await page.locator('#login-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'History', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const invitation = page.getByRole('button', { name: 'Maybe later', exact: true })
   if (await invitation.isVisible()) await invitation.click()
 }
@@ -134,6 +134,7 @@ test('an in-flight renewal cannot restore a session after logout', async ({ page
   await page.getByRole('button', { name: 'History', exact: true }).click()
   await expect.poll(() => Boolean(release)).toBe(true)
   await page.getByRole('button', { name: /Logout/ }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Log out', exact: true }).click()
   await expect(page.locator('#login-identifier')).toBeVisible()
   const finished = page.waitForResponse((response) => response.url().endsWith('/auth/session/refresh'))
   release()
@@ -141,3 +142,57 @@ test('an in-flight renewal cannot restore a session after logout', async ({ page
   await expect(page.locator('#login-identifier')).toBeVisible()
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
 })
+
+for (const width of [1440, 390]) {
+  test(`logout requires confirmation and cancellation preserves the session at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 })
+    const api = server()
+    await api.connect(page)
+    let logoutRequests = 0
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/auth/logout') logoutRequests++
+    })
+    await signIn(page)
+    if (width < 768) await page.getByRole('button', { name: 'Open simulation workspace', exact: true }).click()
+    await page.locator('#sidebar-tab-simulate').click()
+    await page.locator('#days-flowering').fill('75')
+    const token = await page.evaluate(() => sessionStorage.getItem('access_token'))
+    const logout = page.getByRole('button', { name: 'Logout', exact: true })
+    const dialog = page.getByRole('alertdialog', { name: 'Log out of MangoPoint?', exact: true })
+
+    for (const dismiss of ['cancel', 'escape', 'close', 'backdrop']) {
+      await logout.click()
+      await expect(dialog).toBeVisible()
+      await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused()
+      expect(logoutRequests).toBe(0)
+      if (dismiss === 'cancel') {
+        // Focus stays within the dialog, and Enter on the initial button is safe.
+        await page.keyboard.press('Shift+Tab')
+        await expect(dialog.getByRole('button', { name: 'Close logout confirmation', exact: true })).toBeFocused()
+        await page.keyboard.press('Shift+Tab')
+        await expect(dialog.getByRole('button', { name: 'Log out', exact: true })).toBeFocused()
+        await page.keyboard.press('Tab')
+        await expect(dialog.getByRole('button', { name: 'Close logout confirmation', exact: true })).toBeFocused()
+        await page.keyboard.press('Tab')
+        await page.keyboard.press('Enter')
+      } else if (dismiss === 'escape') await page.keyboard.press('Escape')
+      else if (dismiss === 'close') await dialog.getByRole('button', { name: 'Close logout confirmation', exact: true }).click()
+      else await page.locator('.logout-confirmation-backdrop').click({ position: { x: 4, y: 4 } })
+      await expect(dialog).toHaveCount(0)
+      await expect(logout).toBeFocused()
+      await expect(page.locator('#days-flowering')).toHaveValue('75')
+      expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBe(token)
+      expect(logoutRequests).toBe(0)
+    }
+
+    await logout.click()
+    const box = await dialog.boundingBox()
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(width)
+    await page.screenshot({ path: testInfo.outputPath('logout-confirmation.png') })
+    await dialog.getByRole('button', { name: 'Log out', exact: true }).click()
+    await expect(page.locator('#login-identifier')).toBeVisible()
+    expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+    await expect.poll(() => logoutRequests).toBe(1)
+  })
+}

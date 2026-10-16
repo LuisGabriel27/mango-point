@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import SettingsModal from './SettingsModal'
+import LogoutConfirmationModal from './LogoutConfirmationModal'
 import WorkflowTutorial from './tutorial/WorkflowTutorial'
 import { AlertList } from './cards/AlertPanel'
 
@@ -26,6 +27,7 @@ export default function Navbar({
   const { user, logout } = useAuth()
   const [bellOpen, setBellOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [logoutOpen, setLogoutOpen] = useState(false)
   const bellRef = useRef(null)
   const tutorialPanel = tutorialProps?.presentation?.navbarPanel
   const bellDisplayed = bellOpen || tutorialPanel === 'notifications'
@@ -142,11 +144,22 @@ export default function Navbar({
           )}
         </div>
 
-        <button type="button" className="navbar-logout-btn" onClick={logout}>
-          <i className="bi bi-box-arrow-right me-1" />Logout
+        <button type="button" className="navbar-logout-btn" aria-label="Logout" aria-haspopup="dialog"
+          onClick={() => {
+            setBellOpen(false)
+            setLogoutOpen(true)
+          }}>
+          <i className="bi bi-box-arrow-right me-1" aria-hidden="true" />Logout
         </button>
       </div>
       </nav>
+      {logoutOpen && <LogoutConfirmationModal
+        onClose={() => setLogoutOpen(false)}
+        onConfirm={() => {
+          setLogoutOpen(false)
+          void logout()
+        }}
+      />}
       {settingsDisplayed && <SettingsModal
         key={tutorialPanel === 'settings' ? tutorialProps?.presentation?.settingsTab : 'manual'}
         tutorialTab={tutorialPanel === 'settings' ? tutorialProps?.presentation?.settingsTab : null}

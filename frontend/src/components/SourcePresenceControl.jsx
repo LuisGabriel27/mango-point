@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import HelpTooltip from './HelpTooltip'
 import { isUncertainSourceStatus, sourceProbability } from '../utils/sourcePresence.js'
 
 export default function SourcePresenceControl({ status, value = null, onChange, className = '' }) {
@@ -8,14 +9,19 @@ export default function SourcePresenceControl({ status, value = null, onChange, 
   if (status === 'infected') {
     return (
       <div className={`source-presence-control ${className}`}>
-        <strong className="small">Source presence: 100% (confirmed)</strong>
-        <small className="text-muted d-block">Infected starts as a known current source in every run.</small>
+        <div className="control-label-row">
+          <strong className="small">Source presence: 100% (confirmed)</strong>
+          <HelpTooltip label="Confirmed source presence">Infected starts as a known current source in every run.</HelpTooltip>
+        </div>
       </div>
     )
   }
   return (
     <div className={`source-presence-control ${className}`}>
-      <label className="small fw-semibold d-block mb-1" htmlFor={`${id}-mode`}>Assumed source presence</label>
+      <div className="control-label-row small fw-semibold mb-1">
+        <label htmlFor={`${id}-mode`}>Assumed source presence</label>
+        <HelpTooltip label="Assumed source presence">Chance this source is present in each run; separate from predicted infestation risk.</HelpTooltip>
+      </div>
       <select id={`${id}-mode`} className="form-select form-select-sm mb-2"
         value={probability == null ? 'default' : 'custom'}
         onChange={(event) => onChange?.(event.target.value === 'default' ? null : 0.5)}>
@@ -33,7 +39,6 @@ export default function SourcePresenceControl({ status, value = null, onChange, 
             onChange={(event) => onChange?.(Number(event.target.value) / 100)} />
         </>
       )}
-      <small className="text-muted d-block">Chance this source is present in each run; separate from predicted infestation risk.</small>
     </div>
   )
 }

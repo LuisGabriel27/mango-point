@@ -3,6 +3,7 @@ import { useTourPresentation } from '../tutorial/TourPresentation'
 import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import CollapsibleCard from '../CollapsibleCard'
+import HelpTooltip from '../HelpTooltip'
 import {
   addCustomWeatherPeriod,
   createCecidGateTestPreset,
@@ -82,9 +83,12 @@ function WindDirectionField({ value, onChange }) {
 export function DaylightConditionField({ block, onChange }) {
   return (
     <div className="weather-preset-field" data-tour="weather-light">
-      <label className="weather-number-field">
-        <span>Daylight light condition</span>
-        <select className="form-select form-select-sm" value={block.daylight_condition || ''}
+      <div className="control-label-row mb-1">
+        <span className="small fw-medium">Daylight light condition</span>
+        <HelpTooltip label="Daylight light condition">Describes outdoor daylight for this period, separately from cloud percentage. Observed locally means your reported condition. Tree-canopy shade alone does not enable Cecid emergence or movement. Applies during daylight; rain, wind, fruit stage and soil checks still apply.</HelpTooltip>
+      </div>
+      <div className="weather-number-field">
+        <select aria-label="Daylight light condition" className="form-select form-select-sm" value={block.daylight_condition || ''}
           onChange={(event) => onChange({ daylight_condition: event.target.value || null,
             daylight_condition_basis: event.target.value ? block.daylight_condition_basis || 'assumed' : null })}>
           <option value="">Not specified (radiation needed)</option>
@@ -92,7 +96,7 @@ export function DaylightConditionField({ block, onChange }) {
             <option key={value} value={value}>{condition.label}</option>
           ))}
         </select>
-      </label>
+      </div>
       {block.daylight_condition && (
         <label className="weather-number-field mt-2">
           <span>Light condition source</span>
@@ -103,7 +107,6 @@ export function DaylightConditionField({ block, onChange }) {
           </select>
         </label>
       )}
-      <small className="text-muted d-block mt-1">Describes outdoor daylight for this period, separately from cloud percentage. Observed locally means your reported condition. Tree-canopy shade alone does not enable Cecid emergence or movement. Applies during daylight; rain, wind, fruit stage and soil checks still apply.</small>
     </div>
   )
 }
@@ -119,7 +122,16 @@ function SoilContextEditor({ timeline, onChange }) {
   })
   return (
     <div className="weather-soil-settings">
-      <div className="small fw-semibold mb-2">Starting soil</div>
+      <div className="control-label-row small fw-semibold mb-2">
+        <span>Starting soil</span>
+        {context.preset !== 'custom' && <HelpTooltip label="Starting soil">
+          {context.preset === 'moist'
+            ? "Assumed moist soil at Hour 0 without adding earlier rain. 100% is the model's moisture scale, not a measured soil-water percentage. Moisture decreases over time unless rain adds to it."
+            : context.preset === 'recently_wet'
+              ? '8 mm of rain over 4 hours, ending 6 hours before Hour 0.'
+              : 'No rainfall in the 72 hours before the simulation.'}
+        </HelpTooltip>}
+      </div>
       <div className="btn-group btn-group-sm w-100 mb-2" role="group" aria-label="Starting soil condition">
         {[['dry', 'Dry'], ['moist', 'Moist now'], ['recently_wet', 'Recently wet'], ['custom', 'Custom']].map(([value, label]) => (
           <button
@@ -130,17 +142,12 @@ function SoilContextEditor({ timeline, onChange }) {
           >{label}</button>
         ))}
       </div>
-      {context.preset === 'dry' && <small className="text-muted">No rainfall in the 72 hours before the simulation.</small>}
       {context.preset === 'moist' && (
         <div>
           <NumberField label="Moisture strength" value={(context.initial_moisture_score ?? 1) * 100}
             max={100} suffix="%" step={1}
             onChange={(value) => update({ initial_moisture_score: Math.max(0, Math.min(1, value / 100)) })} />
-          <small className="text-muted">Assumed moist soil at Hour 0 without adding earlier rain. 100% is the model's moisture scale, not a measured soil-water percentage. Moisture decreases over time unless rain adds to it.</small>
         </div>
-      )}
-      {context.preset === 'recently_wet' && (
-        <small className="text-muted">8 mm of rain over 4 hours, ending 6 hours before Hour 0.</small>
       )}
       {context.preset === 'custom' && (
         <div className="weather-soil-grid">
@@ -292,7 +299,10 @@ export function CustomWeatherEditor({
   return (
     <div className="custom-weather-editor">
       <div className="weather-start-field" data-tour="weather-schedule">
-        <label className="weather-start-label" htmlFor="custom-weather-start">Start date &amp; time</label>
+        <div className="control-label-row mb-1">
+          <label className="weather-start-label mb-0" htmlFor="custom-weather-start">Start date &amp; time</label>
+          <HelpTooltip label="Start date & time">Guimaras time. Hour 0 begins here.</HelpTooltip>
+        </div>
         <DatePicker
           id="custom-weather-start"
           selected={timeline.start_datetime ? new Date(timeline.start_datetime) : null}
@@ -303,7 +313,6 @@ export function CustomWeatherEditor({
           className="form-control form-control-sm mp-datepicker-input"
           calendarClassName="mp-datepicker" popperPlacement="bottom-start" isClearable
         />
-        <small className="text-muted">Guimaras time. Hour 0 begins here.</small>
       </div>
 
       <div className="weather-periods-toolbar" data-tour="weather-periods">
@@ -478,15 +487,17 @@ export function CustomWeatherEditor({
           <SoilContextEditor timeline={timeline} onChange={onChange} />
           <div className="weather-cecid-test" data-testid="cecid-gate-test-preset">
             <div>
-              <strong>Dawn + dusk test</strong>
-              <small>Seven days of 4 rainy hours, then 20 dry hours, repeated. Loading it selects Cecid Fly and a 7-day simulation.</small>
+              <div className="control-label-row">
+                <strong>Dawn + dusk test</strong>
+                <HelpTooltip label="Dawn + dusk test">
+                  <p>Seven days of 4 rainy hours, then 20 dry hours, repeated. Loading it selects Cecid Fly and a 7-day simulation.</p>
+                  <p>This preset changes weather only. Soil moisture affects emergence; rain, wind and dawn/dusk or cloudy daylight affect adult movement;
+                  weed and wind coefficients remain research assumptions for BPI calibration.</p>
+                </HelpTooltip>
+              </div>
             </div>
             <button type="button" className="btn btn-sm btn-outline-primary" onClick={loadCecidPreset}>Use preset</button>
           </div>
-          <small className="text-muted d-block">
-            This preset changes weather only. Soil moisture affects emergence; rain, wind and dawn/dusk or cloudy daylight affect adult movement;
-            weed and wind coefficients remain research assumptions for BPI calibration.
-          </small>
       </details>
     </div>
   )
@@ -546,7 +557,13 @@ export default function WeatherCard({
         <div className="mb-2">
           <div className="d-flex justify-content-between align-items-center mb-1">
             <span className="fw-semibold" style={{ fontSize: '1.1rem' }}>{current.temperature_c?.toFixed(1)}°C</span>
-            <span className="text-muted small">{current.source}</span>
+            <div className="control-label-row">
+              <span className="text-muted small">{current.source}</span>
+              <HelpTooltip label="Live weather">
+                <p>Cloud and sunlight are forecast estimates. Shade beneath trees alone does not enable Cecid activity.</p>
+                <p>Auto-refreshes every 60 s</p>
+              </HelpTooltip>
+            </div>
           </div>
           <div className="row g-1 small text-muted">
             <div className="col-6"><i className="bi bi-droplet me-1" />Humidity: {current.humidity}%</div>
@@ -561,12 +578,10 @@ export default function WeatherCard({
             </div>
             <div className="col-12">Direct sunlight: {current.direct_normal_irradiance_wm2 != null ? `${current.direct_normal_irradiance_wm2.toFixed(0)} W/m²` : 'Unavailable'}</div>
           </div>
-          <small className="text-muted">Cloud and sunlight are forecast estimates. Shade beneath trees alone does not enable Cecid activity.</small>
         </div>
       ) : (
         <div className="text-muted small mb-2"><span className="spinner-border spinner-border-sm me-1" />Fetching weather…</div>
       )}
-      <small className="text-muted d-block mb-2"><i className="bi bi-arrow-repeat me-1" />Auto-refreshes every 60 s</small>
 
       <div data-tour="weather-source" className="weather-source-switch" role="group" aria-label="Simulation weather source">
         <button type="button" className={'btn btn-sm ' + (!weatherOverrideActive ? 'btn-primary' : 'btn-outline-secondary')}

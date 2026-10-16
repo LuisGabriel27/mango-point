@@ -101,3 +101,29 @@ function Start-MangoPointTailscaleFunnel([bool]$CheckOnly, [string]$ExpectedUrl,
     Write-Host "[OK] Stable HTTPS server address: $url"
     return $url
 }
+
+function Restart-MangoPointTailscaleFunnel([string]$ExpectedUrl) {
+    $status = Invoke-MangoPointTailscale -Arguments @('status', '--json') | ConvertFrom-Json
+    $url = Get-MangoPointTailscaleUrl $status
+    if ($ExpectedUrl -ne $url) { throw 'The saved Tailscale device name changed; automatic Funnel recovery was stopped.' }
+    $config = Invoke-MangoPointTailscale -Arguments @('funnel', 'status', '--json') | ConvertFrom-Json
+    $hostPort = ([uri]$url).Host + ':443'
+    if (-not (Test-MangoPointTailscaleFunnel $config $url) -or
+        $config.Foreground -or $config.Services -or
+        @($config.Web.PSObject.Properties).Count -ne 1 -or
+        @($config.TCP.PSObject.Properties).Count -ne 1 -or
+        @($config.AllowFunnel.PSObject.Properties).Count -ne 1 -or
+        @($config.Web.PSObject.Properties[$hostPort].Value.Handlers.PSObject.Properties).Count -ne 1) {
+        throw 'Automatic recovery requires only the MangoPoint Funnel on HTTPS 443; another Serve/Funnel configuration was left untouched.'
+    }
+    Write-Host '[INFO] Reconnecting the public MangoPoint Funnel once...'
+    try {
+        Invoke-MangoPointTailscale -Arguments @('funnel', '--bg', '--https=443', 'off') | Out-Null
+    } finally {
+        # Re-enable our verified mapping even if disabling it reports a failure.
+        Invoke-MangoPointTailscale -Arguments @('funnel', '--bg', '--https=443', 'http://127.0.0.1:8000') | Out-Null
+    }
+    $config = Invoke-MangoPointTailscale -Arguments @('funnel', 'status', '--json') | ConvertFrom-Json
+    if (-not (Test-MangoPointTailscaleFunnel $config $url)) { throw 'The public MangoPoint Funnel could not be restored.' }
+    return $url
+}

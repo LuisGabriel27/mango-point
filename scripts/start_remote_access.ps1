@@ -43,6 +43,12 @@ function Get-RunningTunnelUrls {
 }
 
 function Assert-TunnelReady([string]$Url, [int]$TimeoutSeconds = 90) {
+    if ($Url -match '^https://[a-z0-9-]+\.trycloudflare\.com$') {
+        $publicStatus = Wait-MangoPointAccessStatus -Probe { Get-MangoPointApiStatus $Url } -TimeoutSeconds $TimeoutSeconds
+        if (-not $publicStatus.ready) { throw "Public backup API verification failed: $($publicStatus.reason)" }
+        Assert-MangoPointPublicLoginCors -Url $Url -SiteUrl $siteUrl
+        return
+    }
     Wait-MangoPointApiReady $Url -TimeoutSeconds $TimeoutSeconds
     $headers = @{ Origin = $siteUrl; 'Access-Control-Request-Method' = 'POST'; 'Access-Control-Request-Headers' = 'content-type' }
     $cors = Invoke-WebRequest -UseBasicParsing -Method Options -Uri "$Url/auth/login" -Headers $headers -TimeoutSec 20
@@ -52,17 +58,7 @@ function Assert-TunnelReady([string]$Url, [int]$TimeoutSeconds = 90) {
 }
 
 function Invoke-Vercel([string[]]$VercelArgs) {
-    $previousPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        $output = @(& npx.cmd --yes vercel@63.1.2 @VercelArgs --non-interactive --no-color 2>&1)
-        $exitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousPreference
-    }
-    $message = ($output | ForEach-Object { "$_" }) -join "`n"
-    if ($exitCode -ne 0) { throw "Vercel command failed. $message" }
-    return $message
+    return Invoke-MangoPointVercel -VercelArgs $VercelArgs -ProjectLink $vercelLink -WorkingDirectory $frontendFolder
 }
 
 function Start-MangoPointServer {
@@ -104,7 +100,7 @@ except Exception:
 
 function Set-MangoPointApiRoute([string]$ApiUrl) {
     Write-Host '[INFO] Checking the published Vercel /api route...'
-    $link = Get-Content (Join-Path $frontendFolder '.vercel\project.json') -Raw | ConvertFrom-Json
+    $link = $vercelLink
     $endpoint = "/v1/projects/$($link.projectId)/routes?teamId=$($link.orgId)"
     $state = Convert-VercelJson (Invoke-Vercel -VercelArgs @('api', $endpoint))
     $versions = Convert-VercelJson (Invoke-Vercel -VercelArgs @('api', "/v1/projects/$($link.projectId)/routes/versions?teamId=$($link.orgId)"))
@@ -139,6 +135,9 @@ try {
     if ($CheckOnly -and ($StartServer -or $RememberConnection -or $ForceDeploy)) {
         throw 'Use .\start_remote_access.bat -CheckOnly for a read-only check, without startup or setup options.'
     }
+    Write-Host '[INFO] Checking the local Vercel project link...'
+    $vercelLink = Get-MangoPointVercelLink -ProjectFolder $projectFolder
+    . (Join-Path $PSScriptRoot 'public_access_helpers.ps1')
     $savedConnection = $null
     if (-not $UseTailscale -and -not $PublicApiUrl -and (Test-Path -LiteralPath $connectionConfigPath)) {
         $savedConnection = Get-Content -LiteralPath $connectionConfigPath -Raw | ConvertFrom-Json
@@ -185,29 +184,27 @@ try {
     if ($publicReadinessTimeout -eq 600) {
         Write-Host '[INFO] Checking stable HTTPS access; first-time DNS/certificate setup can take several minutes...'
     }
-    Write-Host '[INFO] Checking public API health and browser access...'
-    Assert-TunnelReady $tunnelUrl -TimeoutSeconds $publicReadinessTimeout
-    Write-Host "[OK] Public API and browser access are ready: $tunnelUrl"
-    Set-MangoPointApiRoute $tunnelUrl
-    Write-Host '[INFO] Checking the deployed /api connection...'
-    Wait-MangoPointApiReady "$siteUrl/api" -TimeoutSeconds $publicReadinessTimeout
+    Write-Host '[INFO] Checking public API health, browser access and the deployed /api route...'
+    # Keep the configured stable URL for -RememberConnection. A runtime backup
+    # changes only the Vercel rewrite and must never become the saved primary.
+    $activeTunnelUrl = Confirm-MangoPointPublicAccess -Provider $connection.provider -PrimaryUrl $tunnelUrl -SiteUrl $siteUrl -ProjectFolder $projectFolder -CheckOnly $CheckOnly -PublishRoute { param($url) Set-MangoPointApiRoute $url } -CheckBrowserAccess { param($url) Assert-TunnelReady $url -TimeoutSeconds $publicReadinessTimeout }
     if ($liveApi -eq '/api' -and -not $ForceDeploy) {
         Write-Host '[OK] Vercel uses the fixed /api address. No deployment is needed.'
     } elseif ($CheckOnly) {
         throw "Vercel uses a different tunnel ($liveApi). Run .\start_remote_access.bat without -CheckOnly to update it."
     } else {
         Get-Command npx.cmd -ErrorAction Stop | Out-Null
-        $link = Get-Content (Join-Path $frontendFolder '.vercel\project.json') -Raw | ConvertFrom-Json
+        $link = $vercelLink
         $projectName = $link.projectName
         $project = Convert-VercelJson (Invoke-Vercel -VercelArgs @('project', 'inspect', $projectName, '--json'))
         $previousRoot = $project.rootDirectory
-        Write-Host '[INFO] Installing the fixed /api address in the frontend. This first rebuild may take a few minutes.'
+        Write-Host '[INFO] Rebuilding the frontend with the fixed /api address. This may take a few minutes.'
         Invoke-Vercel -VercelArgs @('env', 'update', 'VITE_API_BASE', 'production', '--value', '/api', '--yes') | Out-Null
         Push-Location $frontendFolder
         try {
-            Invoke-Vercel -VercelArgs @('project', 'update', $projectName, '--auto-detect', 'root-directory', '--yes') | Out-Null
             try {
-                $deployment = Convert-VercelJson (Invoke-Vercel -VercelArgs @('--prod', '--yes', '--force'))
+                Invoke-Vercel -VercelArgs @('project', 'update', $projectName, '--auto-detect', 'root-directory', '--yes') | Out-Null
+                $deployment = Convert-VercelJson (Invoke-Vercel -VercelArgs @('--prod', '--yes', '--force', '--json'))
                 if ($deployment.status -ne 'ok' -or $deployment.deployment.readyState -ne 'READY') {
                     throw 'The new Vercel deployment did not become ready.'
                 }

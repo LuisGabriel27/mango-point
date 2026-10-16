@@ -1,4 +1,49 @@
-# Read-only readiness checks and route planning, shared by the launcher and tests.
+# Production access helpers shared by the launcher and isolated tests.
+function Get-MangoPointVercelLink([string]$ProjectFolder, [string]$ExpectedProjectName = 'mango-point') {
+    $repairCommand = "npx.cmd --yes vercel@63.1.2 link --cwd frontend --project $ExpectedProjectName --yes"
+    $linkPaths = @(
+        (Join-Path $ProjectFolder 'frontend\.vercel\project.json'),
+        (Join-Path $ProjectFolder '.vercel\project.json')
+    )
+    foreach ($linkPath in $linkPaths) {
+        if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) { continue }
+        try {
+            $link = Get-Content -LiteralPath $linkPath -Raw | ConvertFrom-Json
+        } catch {
+            throw "The local Vercel project link is invalid JSON: $linkPath. From the project folder, run: $repairCommand"
+        }
+        if (-not $link -or $link.projectId -notmatch '^prj_[A-Za-z0-9]+$' -or
+            $link.orgId -notmatch '^(team|user)_[A-Za-z0-9]+$' -or
+            $link.projectName -ne $ExpectedProjectName) {
+            throw "The local Vercel link does not identify the $ExpectedProjectName app: $linkPath. From the project folder, run: $repairCommand"
+        }
+        return $link
+    }
+    throw "The local Vercel project link is missing. From the project folder, run: $repairCommand. This links the existing app; it does not deploy it."
+}
+
+function Invoke-MangoPointVercel([string[]]$VercelArgs, $ProjectLink, [string]$WorkingDirectory) {
+    $previousPreference = $ErrorActionPreference
+    $previousOrgId = $env:VERCEL_ORG_ID
+    $previousProjectId = $env:VERCEL_PROJECT_ID
+    try {
+        # Use the validated main-app link even when only root metadata exists,
+        # or the caller's current folder/environment belongs to another site.
+        $env:VERCEL_ORG_ID = $ProjectLink.orgId
+        $env:VERCEL_PROJECT_ID = $ProjectLink.projectId
+        $ErrorActionPreference = 'Continue'
+        $output = @(& npx.cmd --yes vercel@63.1.2 @VercelArgs --cwd $WorkingDirectory --scope $ProjectLink.orgId --non-interactive --no-color 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+        $env:VERCEL_ORG_ID = $previousOrgId
+        $env:VERCEL_PROJECT_ID = $previousProjectId
+    }
+    $message = ($output | ForEach-Object { "$_" }) -join "`n"
+    if ($exitCode -ne 0) { throw "Vercel command failed. $message" }
+    return $message
+}
+
 function Get-MangoPointBundleApiBase([string]$Bundle) {
     # An explicit build setting takes precedence over an unused /api fallback.
     $setting = [regex]::Match($Bundle, '["'']?VITE_API_BASE["'']?\s*:\s*["'']([^"'']*)["'']')

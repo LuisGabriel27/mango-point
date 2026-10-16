@@ -296,6 +296,16 @@ elapsed startup time remain visible. Public API/database/login checks still
 run every time. `-CheckOnly` does not write the cache; `-ForceDeploy` refreshes
 the bundle check and explicitly rebuilds the frontend.
 
+Normal startup does not publish new frontend code. After pulling frontend
+changes, such as an updated PDF report layout, release them with:
+
+```powershell
+.\start_production.bat -ForceDeploy
+```
+
+This rebuilds the frontend and updates the shared production URL. A successful
+Vercel preview deployment alone does not update that URL.
+
 If the API and database are already running, this command only prepares the
 public connection:
 
@@ -318,6 +328,23 @@ The server laptop needs Node/npm, the existing Vercel project link, Vercel CLI
 authentication, and Tailscale for stable access or `cloudflared` for temporary
 access. If required, authenticate with
 `npx.cmd --yes vercel@63.1.2 login` before running the helper.
+
+The launcher checks the local Vercel project link before starting services.
+It accepts `frontend/.vercel/project.json` or the repository root's
+`.vercel/project.json`, and verifies that it identifies the `mango-point` app.
+These files are ignored by Git, so a fresh checkout or removal of ignored files
+can leave them missing. Restore the existing project's link from the project
+folder, then rerun `start_production.bat`:
+
+```powershell
+npx.cmd --yes vercel@63.1.2 link --cwd frontend --project mango-point --yes
+```
+
+Use the Vercel account/team that owns the main MangoPoint application.
+Linking restores local project metadata without deploying the app.
+The helper runs Vercel commands against `frontend/` and the validated project
+and team IDs. If manually restoring `project.json`, save it as UTF-8 without
+a byte-order mark; Vercel's JSON parser rejects that encoding header.
 
 #### Stable laptop address without buying a domain
 
@@ -367,6 +394,33 @@ service's existing Serve/Funnel configuration. An explicit
 `setup_stable_access.bat` run registers a deliberately changed device name.
 The launcher must still run after a laptop restart to start the MangoPoint API;
 unattended mode keeps the Tailscale connection available across Windows logout.
+
+Startup checks the Funnel's **public** relay addresses using public DNS and
+normal HTTPS certificate validation. A successful connection through this
+laptop's private Tailscale DNS alone does not establish public access. If the
+local API/database are healthy but public transport fails, the launcher
+reconnects only MangoPoint's verified HTTPS 443 Funnel once. It then retries
+public access for a bounded period.
+
+Install `cloudflared` on the server laptop as well as Tailscale to enable
+automatic backup. If the public connection still fails, it supplies a verified
+backup to the same local API. The launcher checks health and browser
+access before updating the main app's `/api` rewrite, then checks that route
+through Vercel. The shared website URL stays the same. The saved Tailscale
+configuration in `connection.json` is retained; temporary backup process/address
+metadata is stored separately in ignored `outputs/remote-access/backup-tunnel.json`.
+New backup hostnames are checked through public DNS too, so a stale Windows DNS
+cache does not incorrectly report a healthy new tunnel as unavailable.
+Later starts reuse a healthy managed backup and return to Tailscale when its
+public connection works again. Other cloudflared processes are not adopted.
+`-CheckOnly` can verify an already active backup but never starts one, reconnects
+a Funnel, or changes routing. Invalid Tailscale login/device configuration and
+unrelated staged Vercel edits still stop startup rather than being hidden.
+
+Run `start_production.bat` again after an outage or laptop restart to perform
+these recovery checks. Recovery runs during startup; it is not a continuous
+background monitor. Both tunnel providers still depend on internet access and
+the server laptop staying awake. Backup logs are in `outputs/remote-access/`.
 
 For an existing permanent Cloudflare Tunnel hostname or hosted API instead,
 save its already configured HTTPS origin with:

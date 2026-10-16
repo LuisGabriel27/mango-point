@@ -24,6 +24,164 @@ def run_helper(code):
     return json.loads(result.stdout)
 
 
+def write_vercel_link(path, project_id="prj_main", project_name="mango-point"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"projectId": project_id, "orgId": "team_test", "projectName": project_name}
+    path.write_text(json.dumps(data))
+    return data
+
+
+def test_frontend_vercel_link_takes_precedence_over_another_root_project(tmp_path):
+    expected = write_vercel_link(tmp_path / "frontend/.vercel/project.json", "prj_frontend")
+    write_vercel_link(tmp_path / ".vercel/project.json", "prj_other", "mangopoint-access")
+    folder = str(tmp_path).replace("'", "''")
+    assert run_helper(f"Get-MangoPointVercelLink '{folder}' | ConvertTo-Json -Compress") == expected
+
+
+def test_missing_frontend_link_reuses_root_metadata_without_writing(tmp_path):
+    link_path = tmp_path / ".vercel/project.json"
+    expected = write_vercel_link(link_path)
+    before = link_path.read_bytes()
+    folder = str(tmp_path).replace("'", "''")
+    assert run_helper(f"Get-MangoPointVercelLink '{folder}' | ConvertTo-Json -Compress") == expected
+    assert not (tmp_path / "frontend").exists()
+    assert link_path.read_bytes() == before
+
+
+def test_missing_vercel_links_explain_how_to_restore_the_existing_project(tmp_path):
+    folder = str(tmp_path).replace("'", "''")
+    result = run_helper(f"""
+        try {{ Get-MangoPointVercelLink '{folder}' | Out-Null; $blocked = $false; $message = '' }}
+        catch {{ $blocked = $true; $message = $_.Exception.Message }}
+        @{{ blocked = $blocked; message = $message }} | ConvertTo-Json -Compress
+    """)
+    assert result["blocked"] is True
+    assert "link --cwd frontend --project mango-point --yes" in result["message"]
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("contents", [
+    "{bad-json",
+    json.dumps({"projectId": "prj_main", "projectName": "mango-point"}),
+    json.dumps({"projectId": "prj_other", "orgId": "team_test", "projectName": "mangopoint-access"}),
+])
+def test_invalid_frontend_links_fail_without_silently_selecting_the_root(tmp_path, contents):
+    link_path = tmp_path / "frontend/.vercel/project.json"
+    link_path.parent.mkdir(parents=True)
+    link_path.write_text(contents)
+    write_vercel_link(tmp_path / ".vercel/project.json")
+    folder = str(tmp_path).replace("'", "''")
+    result = run_helper(f"""
+        try {{ Get-MangoPointVercelLink '{folder}' | Out-Null; $blocked = $false }}
+        catch {{ $blocked = $true }}
+        @{{ blocked = $blocked }} | ConvertTo-Json -Compress
+    """)
+    assert result == {"blocked": True}
+    assert link_path.read_text() == contents
+
+
+def test_missing_link_stops_production_startup_before_starting_services(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for filename in ("start_remote_access.ps1", "remote_access_helpers.ps1"):
+        shutil.copyfile(ROOT / "scripts" / filename, scripts / filename)
+    (scripts / "stable_access_helpers.ps1").write_text("")
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(scripts / "start_remote_access.ps1"), "-StartServer"],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 1
+    assert "link --cwd frontend --project mango-point --yes" in result.stdout
+    assert "Checking the local API and database" not in result.stdout
+    assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize("link_folder", ["frontend", "root"])
+@pytest.mark.parametrize("arguments", [
+    ["env", "update", "VITE_API_BASE", "production", "--value", "/api", "--yes"],
+    ["api", "/v1/projects/prj_main/routes?teamId=team_test"],
+    ["--prod", "--yes", "--force", "--json"],
+])
+def test_vercel_calls_use_frontend_and_validated_ids_despite_root_bom_and_other_context(
+    tmp_path, link_folder, arguments,
+):
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    root_link = tmp_path / ".vercel/project.json"
+    if link_folder == "frontend":
+        write_vercel_link(frontend / ".vercel/project.json")
+        write_vercel_link(root_link, "prj_other", "mangopoint-access")
+    else:
+        write_vercel_link(root_link)
+    root_link.write_bytes(b"\xef\xbb\xbf" + root_link.read_bytes())
+    original_link = root_link.read_bytes()
+    folder = str(tmp_path).replace("'", "''")
+    working_folder = str(frontend).replace("'", "''")
+    ps_arguments = ",".join(f"'{argument}'" for argument in arguments)
+    result = run_helper(f"""
+        $env:VERCEL_ORG_ID = 'team_other'
+        $env:VERCEL_PROJECT_ID = 'prj_other'
+        $script:vercelCalls = @()
+        function npx.cmd {{
+            $script:vercelCalls += @{{
+                arguments = @($args); orgId = $env:VERCEL_ORG_ID;
+                projectId = $env:VERCEL_PROJECT_ID
+            }}
+            $global:LASTEXITCODE = 0
+            'Fixture Vercel success'
+        }}
+        Push-Location '{folder}'
+        try {{
+            $link = Get-MangoPointVercelLink '{folder}'
+            $output = Invoke-MangoPointVercel -VercelArgs @({ps_arguments}) -ProjectLink $link -WorkingDirectory '{working_folder}'
+            @{{
+                output = $output; calls = @($script:vercelCalls);
+                restoredOrg = $env:VERCEL_ORG_ID; restoredProject = $env:VERCEL_PROJECT_ID;
+                restoredFolder = (Get-Location).Path; restoredPreference = "$ErrorActionPreference"
+            }} | ConvertTo-Json -Depth 5 -Compress
+        }} finally {{ Pop-Location }}
+    """)
+    assert result["output"] == "Fixture Vercel success"
+    assert result["calls"] == [{
+        "arguments": ["--yes", "vercel@63.1.2", *arguments, "--cwd", str(frontend),
+                      "--scope", "team_test", "--non-interactive", "--no-color"],
+        "orgId": "team_test", "projectId": "prj_main",
+    }]
+    assert result["restoredOrg"] == "team_other"
+    assert result["restoredProject"] == "prj_other"
+    assert result["restoredFolder"] == str(tmp_path)
+    assert result["restoredPreference"] == "Stop"
+    assert root_link.read_bytes() == original_link
+
+
+@pytest.mark.parametrize("existing_context", [True, False])
+def test_failed_vercel_command_restores_environment_and_reports_failure(existing_context):
+    result = run_helper(f"""
+        $env:VERCEL_ORG_ID = {'"team_other"' if existing_context else '$null'}
+        $env:VERCEL_PROJECT_ID = {'"prj_other"' if existing_context else '$null'}
+        function npx.cmd {{
+            $global:LASTEXITCODE = 1
+            'Fixture Vercel failure'
+        }}
+        $link = @{{ projectId = 'prj_main'; orgId = 'team_test'; projectName = 'mango-point' }}
+        try {{
+            Invoke-MangoPointVercel -VercelArgs @('env', 'ls') -ProjectLink $link -WorkingDirectory '.' | Out-Null
+            $blocked = $false; $message = ''
+        }} catch {{ $blocked = $true; $message = $_.Exception.Message }}
+        @{{
+            blocked = $blocked; message = $message;
+            orgId = $env:VERCEL_ORG_ID; projectId = $env:VERCEL_PROJECT_ID;
+            preference = "$ErrorActionPreference"
+        }} | ConvertTo-Json -Compress
+    """)
+    assert result["blocked"] is True
+    assert "Vercel command failed. Fixture Vercel failure" in result["message"]
+    assert result["orgId"] == ("team_other" if existing_context else None)
+    assert result["projectId"] == ("prj_other" if existing_context else None)
+    assert result["preference"] == "Stop"
+
+
 def test_new_tunnel_edits_route_and_same_tunnel_requires_no_publication():
     result = run_helper("""
         $state = [pscustomobject]@{

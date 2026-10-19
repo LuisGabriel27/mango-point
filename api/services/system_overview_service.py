@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import SIMULATION_MODEL_VERSION
 from db.models import Alert, AlertStatus, InfestationRecord, Orchard, Pest, SimulationRun, Tree
+from api.services.simulation_history_service import visible_simulation_runs
 from utils.datetime_utils import format_rfc3339, utcnow_aware
 
 OverviewPeriod = Literal["day", "week", "month", "year"]
@@ -55,6 +56,7 @@ def overview_queries(period, local_start, local_end, orchard_id=None):
         SimulationRun.weather_source, func.count().label("count"),
     ).where(
         SimulationRun.started_at >= start, SimulationRun.started_at <= end,
+        visible_simulation_runs(),
     ).group_by(
         run_bucket, SimulationRun.orchard_id, SimulationRun.pest_type, SimulationRun.status,
         SimulationRun.simulation_mode, version, SimulationRun.weather_source,

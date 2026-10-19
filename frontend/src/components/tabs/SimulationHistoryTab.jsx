@@ -1,10 +1,12 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import api, { apiErrorMessage } from '../../api'
 import MpSelect from '../MpSelect'
+import ConfirmationModal from '../ConfirmationModal'
 import {
   getSimulationRunFromHistory,
   listSimulationRunsFromHistory,
   saveSimulationRunToHistory,
+  setSimulationHistoryDeleted,
 } from '../../utils/simulationHistoryStore'
 import {
   HISTORY_PERIOD_ALL_HISTORY,
@@ -129,6 +131,7 @@ function mergeRuns(apiRuns = [], cachedRuns = []) {
       ...cached,
       ...run,
       cached_locally: Boolean(cached?.cached_locally),
+      server_saved: true,
     })
   }
 
@@ -143,6 +146,7 @@ export default function SimulationHistoryTab({
   onLoadRun,
   onUseTemplate,
   onPrintRun,
+  onRunVisibilityChange,
 }) {
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(false)
@@ -154,6 +158,13 @@ export default function SimulationHistoryTab({
   const [historyGrouping, setHistoryGrouping] = useState('all')
   const [requestedPage, setRequestedPage] = useState(0)
   const [status, setStatus] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [lastDeleted, setLastDeleted] = useState(null)
+  const [restoring, setRestoring] = useState(false)
+  const fetchVersion = useRef(0)
+  const mutationInFlight = useRef(false)
   const currentMonthKey = useMemo(() => historyMonthKey(), [])
   const selectedMonthLabel = useMemo(() => historyMonthLabel(historyMonth), [historyMonth])
 
@@ -210,6 +221,7 @@ export default function SimulationHistoryTab({
   }
 
   const fetchRuns = useCallback(async () => {
+    const version = ++fetchVersion.current
     setRequestedPage(0)
     setLoading(true)
     setStatus(null)
@@ -219,7 +231,7 @@ export default function SimulationHistoryTab({
 
     try {
       cachedRuns = await listSimulationRunsFromHistory({ orchardId: selectedOrchardId, limit: 1000 })
-      if (cachedRuns.length) setRuns(cachedRuns)
+      if (cachedRuns.length && version === fetchVersion.current) setRuns(cachedRuns)
     } catch (_) {
       cachedRuns = []
     }
@@ -228,8 +240,18 @@ export default function SimulationHistoryTab({
       const params = { limit: 1000 }
       if (selectedOrchardId) params.orchard_id = selectedOrchardId
       const res = await api.getSimulationRuns(params)
-      setRuns(mergeRuns(res.data?.runs ?? [], cachedRuns))
+      if (version !== fetchVersion.current) return
+      const deletedIds = new Set(res.data?.deleted_run_ids ?? [])
+      const serverRuns = (res.data?.runs ?? []).filter((run) => !deletedIds.has(run.run_id))
+      try {
+        await setSimulationHistoryDeleted([...deletedIds], true)
+        if (version !== fetchVersion.current) return
+        await setSimulationHistoryDeleted(serverRuns.map((run) => run.run_id), false)
+      } catch (_) { /* Server filtering still applies when browser storage is unavailable. */ }
+      if (version !== fetchVersion.current) return
+      setRuns(mergeRuns(serverRuns, cachedRuns.filter((run) => !deletedIds.has(run.run_id))))
     } catch (err) {
+      if (version !== fetchVersion.current) return
       if (cachedRuns.length) {
         setStatus({
           type: 'warning',
@@ -239,12 +261,13 @@ export default function SimulationHistoryTab({
         setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not load simulation history.') })
       }
     } finally {
-      setLoading(false)
+      if (version === fetchVersion.current) setLoading(false)
     }
   }, [historyOrchardId])
 
   useEffect(() => {
     fetchRuns()
+    return () => { fetchVersion.current++ }
   }, [fetchRuns, refreshKey])
 
   const fetchRunDetails = async (runId) => {
@@ -255,6 +278,17 @@ export default function SimulationHistoryTab({
       saveSimulationRunToHistory(res.data).catch(() => {})
       return res.data
     } catch (err) {
+      // An authoritative missing/deleted run must never fall back to old output.
+      if ([404, 410].includes(err?.response?.status)) {
+        await setSimulationHistoryDeleted([runId], true).catch(() => {})
+        setRuns((current) => current.filter((run) => run.run_id !== runId))
+        setStatus({ type: 'warning', msg: 'This saved simulation is no longer available in History.' })
+        return null
+      }
+      if ([401, 403].includes(err?.response?.status)) {
+        setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Please sign in again.') })
+        return null
+      }
       const cached = await getSimulationRunFromHistory(runId)
       if (cached) {
         setStatus({ type: 'warning', msg: 'Loaded this simulation from saved browser history.' })
@@ -291,6 +325,48 @@ export default function SimulationHistoryTab({
   const handlePrint = async (runId) => {
     const data = await fetchRunDetails(runId)
     if (data) onPrintRun?.(data)
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget || mutationInFlight.current) return
+    mutationInFlight.current = true
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      await api.deleteSimulationRun(deleteTarget.run_id)
+      fetchVersion.current++
+      setLoading(false)
+      let cacheUpdated = true
+      try { await setSimulationHistoryDeleted([deleteTarget.run_id], true) }
+      catch (_) { cacheUpdated = false }
+      setRuns((current) => current.filter((run) => run.run_id !== deleteTarget.run_id))
+      setLastDeleted(deleteTarget)
+      setDeleteTarget(null)
+      setStatus({ type: cacheUpdated ? 'success' : 'warning',
+        msg: cacheUpdated ? 'Simulation removed from History. Its stored data and linked observations are preserved.'
+          : 'Simulation deleted on the server. Browser storage could not be updated; reconnect before using cached History.' })
+      onRunVisibilityChange?.(deleteTarget.run_id, true)
+    } catch (err) {
+      setDeleteError(apiErrorMessage(err, 'Could not delete this simulation. Please try again.'))
+    } finally { mutationInFlight.current = false; setDeleting(false) }
+  }
+
+  const handleUndo = async () => {
+    if (!lastDeleted || mutationInFlight.current) return
+    mutationInFlight.current = true
+    setRestoring(true)
+    try {
+      await api.restoreSimulationRun(lastDeleted.run_id)
+      fetchVersion.current++
+      setLoading(false)
+      await setSimulationHistoryDeleted([lastDeleted.run_id], false).catch(() => {})
+      setRuns((current) => mergeRuns([lastDeleted], current))
+      onRunVisibilityChange?.(lastDeleted.run_id, false)
+      setLastDeleted(null)
+      setStatus({ type: 'success', msg: 'Simulation restored to History.' })
+    } catch (err) {
+      setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not restore this simulation. Please try again.') })
+    } finally { mutationInFlight.current = false; setRestoring(false) }
   }
 
   const handleSyncToSupabase = async () => {
@@ -417,6 +493,8 @@ export default function SimulationHistoryTab({
           {status && (
             <div className={`alert alert-${status.type} py-2 mb-3`} style={{ fontSize: '.86rem' }}>
               {status.msg}
+              {lastDeleted && <button type="button" className="btn btn-link btn-sm py-0 ms-2"
+                disabled={restoring} onClick={handleUndo}>{restoring ? 'Restoring…' : 'Undo delete'}</button>}
             </div>
           )}
 
@@ -471,7 +549,7 @@ export default function SimulationHistoryTab({
                             <td className="text-end">{run.n_infested_final ?? '--'}</td>
                             <td className="text-capitalize">{run.weather_source ?? '--'}</td>
                             <td>
-                              <div className="d-flex justify-content-end gap-2">
+                              <div className="d-flex flex-wrap justify-content-end gap-2">
                                 <button
                                   type="button"
                                   className="btn btn-success btn-sm"
@@ -495,6 +573,13 @@ export default function SimulationHistoryTab({
                                     <i className="bi bi-printer me-1" />Print report
                                   </button>
                                 )}
+                                <button type="button" className="btn btn-outline-danger btn-sm"
+                                  aria-label={`Delete simulation ${run.run_id}`}
+                                  disabled={loading || Boolean(loadingRunId) || deleting || restoring || !run.server_saved}
+                                  title={run.server_saved ? 'Delete this saved simulation' : 'Connect to the API and refresh History to delete this run.'}
+                                  onClick={() => { setDeleteTarget(run); setDeleteError('') }}>
+                                  <i className="bi bi-trash3 me-1" aria-hidden="true" />Delete
+                                </button>
                               </div>
                             </td>
                           </tr>
@@ -537,6 +622,15 @@ export default function SimulationHistoryTab({
           )}
         </div>
       </div>
+      {deleteTarget && <ConfirmationModal title="Delete saved simulation?" confirmLabel="Delete simulation" danger showIcon={false}
+        closeLabel="Close simulation deletion confirmation" busy={deleting} error={deleteError}
+        onClose={() => { if (!deleting) setDeleteTarget(null) }} onConfirm={handleDelete}>
+        <p>Remove this simulation from shared History? Its stored data and linked field observations will be kept. You can undo this deletion.</p>
+        <p className="mt-2"><strong>{orchardLabel(deleteTarget.orchard_id)}</strong><br />
+          {pestLabel(deleteTarget.pest_type)} · {modeLabel(deleteTarget.simulation_mode)} · {deleteTarget.hours} h<br />
+          {formatDate(deleteTarget.started_at)}<br />
+          <span className="small text-break">{deleteTarget.run_id}</span></p>
+      </ConfirmationModal>}
     </div>
   )
 }

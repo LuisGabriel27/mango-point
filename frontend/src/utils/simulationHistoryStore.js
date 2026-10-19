@@ -117,21 +117,28 @@ function readFallbackHistory() {
   }
 }
 
-function writeFallbackHistory(records) {
+function writeFallbackHistory(records, { strict = false } = {}) {
   const win = browserWindow()
-  if (!win?.localStorage) return
+  if (!win?.localStorage) {
+    if (strict) throw new Error('Browser history storage is unavailable.')
+    return
+  }
 
-  const sorted = [...records].sort(sortNewestFirst).slice(0, FALLBACK_LIMIT)
+  const deleted = records.filter((run) => run.status === 'deleted')
+  const sorted = [...deleted, ...records.filter((run) => run.status !== 'deleted').sort(sortNewestFirst).slice(0, FALLBACK_LIMIT)]
   let next = sorted
 
-  while (next.length) {
+  while (true) {
     try {
       win.localStorage.setItem(FALLBACK_KEY, JSON.stringify(next))
       return
     } catch (_) {
+      // Never discard deletion markers to make room for ordinary cache entries.
+      if (next.length <= deleted.length) break
       next = next.slice(0, -1)
     }
   }
+  if (strict) throw new Error('Browser history storage could not be updated.')
 }
 
 function inferWeatherSource(run, requestPayload) {
@@ -260,12 +267,24 @@ export function simulationRunSummaryFromDetail(detail) {
 }
 
 export async function saveSimulationRunToHistory(run) {
-  const detail = normalizeSimulationRunForHistory(run)
+  let detail = normalizeSimulationRunForHistory(run)
+  const fallbackDeleted = readFallbackHistory().find((item) => item.run_id === detail.run_id && item.status === 'deleted')
+  if (fallbackDeleted) return simulationRunSummaryFromDetail(fallbackDeleted)
 
   try {
-    await txStore('readwrite', (store) => store.put(detail))
+    await txStore('readwrite', (store) => {
+      const request = store.get(detail.run_id)
+      request.onsuccess = () => {
+        if (request.result?.status === 'deleted') detail = request.result
+        else store.put(detail)
+      }
+      return request
+    })
   } catch (_) {
-    const existing = readFallbackHistory().filter((item) => item.run_id !== detail.run_id)
+    const records = readFallbackHistory()
+    const deleted = records.find((item) => item.run_id === detail.run_id && item.status === 'deleted')
+    if (deleted) return simulationRunSummaryFromDetail(deleted)
+    const existing = records.filter((item) => item.run_id !== detail.run_id)
     writeFallbackHistory([detail, ...existing])
   }
 
@@ -282,16 +301,55 @@ export async function listSimulationRunsFromHistory({ orchardId, limit = 50 } = 
   }
 
   const normalizedOrchardId = orchardId ? normalizeId(orchardId) : null
+  const fallbackDeleted = new Set(readFallbackHistory().filter((run) => run.status === 'deleted').map((run) => run.run_id))
   return (records || [])
     .map(normalizeSimulationRunForHistory)
+    .filter((run) => run.status !== 'deleted' && !fallbackDeleted.has(run.run_id))
     .filter((run) => !normalizedOrchardId || run.orchard_id === normalizedOrchardId)
     .sort(sortNewestFirst)
     .slice(0, limit)
     .map(simulationRunSummaryFromDetail)
 }
 
+// Keep the cached output intact. Markers also prevent an older in-flight detail
+// response from reintroducing a run after the server has deleted it.
+export async function setSimulationHistoryDeleted(runIds, deleted) {
+  const ids = [...new Set(runIds.filter(Boolean))]
+  if (!ids.length) return
+  const update = (record, runId) => {
+    if (!deleted && record?.status !== 'deleted') return record
+    if (deleted) return {
+      ...record, run_id: runId, status: 'deleted',
+      history_previous_status: record?.history_previous_status ?? record?.status ?? 'completed',
+    }
+    return { ...record, status: record.history_previous_status || 'completed' }
+  }
+  let indexedUpdated = false
+  try {
+    await txStore('readwrite', (store) => {
+      for (const runId of ids) {
+        const request = store.get(runId)
+        request.onsuccess = () => {
+          const record = update(request.result, runId)
+          if (record) store.put(record)
+        }
+      }
+    })
+    indexedUpdated = true
+  } catch (_) { /* Use the fallback store if IndexedDB cannot commit. */ }
+  const records = readFallbackHistory()
+  if (indexedUpdated && !records.some((record) => ids.includes(record.run_id))) return
+  const byId = new Map(records.map((record) => [record.run_id, record]))
+  for (const runId of ids) {
+    const record = update(byId.get(runId), runId)
+    if (record) byId.set(runId, record)
+  }
+  writeFallbackHistory([...byId.values()], { strict: true })
+}
+
 export async function getSimulationRunFromHistory(runId) {
   if (!runId) return null
+  if (readFallbackHistory().some((run) => run.run_id === runId && run.status === 'deleted')) return null
 
   let detail = null
   try {
@@ -300,7 +358,7 @@ export async function getSimulationRunFromHistory(runId) {
     detail = readFallbackHistory().find((item) => item.run_id === runId) ?? null
   }
 
-  if (!detail) return null
+  if (!detail || detail.status === 'deleted') return null
   const normalized = normalizeSimulationRunForHistory(detail)
   return {
     ...normalized,

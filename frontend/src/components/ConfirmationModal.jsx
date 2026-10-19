@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 
 export default function ConfirmationModal({ title, children, confirmLabel, onConfirm, onClose,
-  busy = false, error = '', danger = false, className = '', closeLabel = 'Close confirmation' }) {
+  busy = false, error = '', danger = false, showIcon = true, className = '', closeLabel = 'Close confirmation' }) {
   const dialogRef = useRef(null)
   const cancelRef = useRef(null)
   useEffect(() => {
@@ -53,7 +53,7 @@ export default function ConfirmationModal({ title, children, confirmLabel, onCon
           <button type="button" className="btn-close" aria-label={closeLabel} onClick={onClose} disabled={busy} />
         </header>
         <div className="logout-confirmation-body">
-          <i className={`bi bi-${danger ? 'trash3' : 'box-arrow-right'}`} aria-hidden="true" />
+          {showIcon && <i className={`bi bi-${danger ? 'trash3' : 'box-arrow-right'}`} aria-hidden="true" />}
           <div id="confirmation-description">{children}</div>
         </div>
         {error && <div className="alert alert-danger mx-3 py-2" role="alert">{error}</div>}

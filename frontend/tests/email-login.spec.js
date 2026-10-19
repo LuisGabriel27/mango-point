@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test'
 // are sent to the application server.
 async function emailServer(page) {
   await page.clock.install()
-  const state = { local: true, delivery: true, legacy: false, verifyUnavailable: false, requests: [], sequence: 0, challenge: null, holdVerify: null }
+  const state = { local: true, delivery: true, legacy: false, verifyUnavailable: false, validCode: '123456', requests: [], sequence: 0, challenge: null, holdVerify: null }
   const user = { user_id: 7, username: 'email-test', full_name: 'Email Test', email: 'owner@example.test', role: 'operator' }
   const issue = async () => {
     state.challenge = `00000000-0000-0000-0000-${String(++state.sequence).padStart(12, '0')}`
@@ -24,7 +24,7 @@ async function emailServer(page) {
     if (path === '/auth/login/resend') return route.fulfill({ json: await issue() })
     if (path === '/auth/login/verify') {
       if (state.verifyUnavailable) return route.abort()
-      if (body.challenge_id !== state.challenge || body.code !== '123456') {
+      if (body.challenge_id !== state.challenge || body.code !== state.validCode) {
         return route.fulfill({ status: 400, json: { detail: 'Incorrect verification code. 4 attempts remaining.' } })
       }
       const response = { access_token: 'isolated-email-verified-token', user,
@@ -57,11 +57,12 @@ test('password and incorrect code grant no session; the verified code completes 
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
   await expect(page.locator('#login-password')).toHaveCount(0)
   await page.getByLabel('Email verification code').fill('000000')
-  await page.getByRole('button', { name: 'Verify and sign in' }).click()
   await expect(page.getByRole('alert')).toContainText('Incorrect verification code')
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+  await expect(page.getByLabel('Email verification code')).toBeFocused()
+  await page.clock.fastForward(2000)
+  expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(1)
   await page.getByLabel('Email verification code').fill('123456')
-  await page.getByRole('button', { name: 'Verify and sign in' }).click()
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBe('isolated-email-verified-token')
   expect(state.requests.filter((request) => request.method !== 'GET').map((request) => request.path))
@@ -73,6 +74,7 @@ test('resend waits for cooldown, replaces the challenge and start again clears t
   await enterPassword(page)
   await expect(page.getByRole('button', { name: /Resend code in/ })).toBeDisabled()
   await page.getByLabel('Email verification code').fill('654321')
+  await expect(page.getByRole('alert')).toContainText('Incorrect verification code')
   const first = state.challenge
   await page.clock.fastForward(61000)
   await page.getByRole('button', { name: 'Resend code', exact: true }).click()
@@ -115,7 +117,6 @@ test('code verification stays on its issuing API when companion availability cha
   state.local = false
   await page.evaluate(() => window.dispatchEvent(new Event('online')))
   await page.getByLabel('Email verification code').fill('123456')
-  await page.getByRole('button', { name: 'Verify and sign in' }).click()
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const auth = state.requests.filter((request) => ['/auth/login', '/auth/login/verify'].includes(request.path))
   expect(auth.map((request) => request.host)).toEqual(['127.0.0.1:8000', '127.0.0.1:8000'])
@@ -130,7 +131,6 @@ test('a verification response cannot sign in after leaving the login screen', as
   }
   await enterPassword(page)
   await page.getByLabel('Email verification code').fill('123456')
-  await page.getByRole('button', { name: 'Verify and sign in' }).click()
   await expect.poll(() => Boolean(release)).toBe(true)
   await page.evaluate(() => { history.pushState({}, '', '/forgot-password'); dispatchEvent(new PopStateEvent('popstate')) })
   await expect(page.getByRole('heading', { name: 'Reset your password' })).toBeVisible()
@@ -149,22 +149,82 @@ test('an unreachable issuing API leaves the user signed out without retrying ano
   state.verifyUnavailable = true
   await page.evaluate(() => window.dispatchEvent(new Event('online')))
   await page.getByLabel('Email verification code').fill('123456')
-  await page.getByRole('button', { name: 'Verify and sign in' }).click()
   await expect(page.getByRole('alert')).toContainText('Cannot reach MangoPoint on this device')
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
   expect(state.requests.filter((request) => request.path === '/auth/login/verify').map((request) => request.host))
     .toEqual(['127.0.0.1:8000'])
+  await page.clock.fastForward(2000)
+  expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(1)
+  state.verifyUnavailable = false
+  await page.getByRole('button', { name: 'Verify and sign in', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+  expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(2)
 })
 
-test('email verification supports keyboard use on a narrow screen', async ({ page }) => {
+test('only digits are kept and completing the code sends one request even with repeated submissions', async ({ page }) => {
+  const state = await emailServer(page)
+  let release
+  state.holdVerify = async (route, response) => {
+    await new Promise((resolve) => { release = resolve })
+    await route.fulfill({ json: response })
+  }
+  await enterPassword(page)
+  const input = page.getByLabel('Email verification code')
+  await expect(input).toHaveAttribute('maxlength', '6')
+  await expect(input).toHaveAttribute('inputmode', 'numeric')
+  await input.fill('ab12')
+  await expect(input).toHaveValue('12')
+  await input.fill('12345')
+  await input.pressSequentially('x-')
+  await expect(input).toHaveValue('12345')
+  expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(0)
+  await input.pressSequentially('6')
+  await expect.poll(() => Boolean(release)).toBe(true)
+  try {
+    await expect(input).toBeDisabled()
+    await page.locator('.login-form').evaluate((form) => { form.requestSubmit(); form.requestSubmit() })
+    await page.clock.fastForward(2000)
+    expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(1)
+  } finally { release() }
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+})
+
+test('pasted codes retain leading zeros and discard formatting and extra characters', async ({ page }) => {
+  const state = await emailServer(page)
+  state.validCode = '001234'
+  await enterPassword(page)
+  await page.getByLabel('Email verification code').evaluate((input) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData('text/plain', 'Code: 001 234 567')
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  })
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+  const requests = state.requests.filter((request) => request.path === '/auth/login/verify')
+  expect(requests).toHaveLength(1)
+  expect(requests[0].body.code).toBe('001234')
+})
+
+test('autofilled values are capped at six digits before automatic verification', async ({ page }) => {
+  const state = await emailServer(page)
+  await enterPassword(page)
+  await page.getByLabel('Email verification code').evaluate((input) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '123456789')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+  const requests = state.requests.filter((request) => request.path === '/auth/login/verify')
+  expect(requests).toHaveLength(1)
+  expect(requests[0].body.code).toBe('123456')
+})
+
+test('typing the sixth digit signs in automatically on a narrow screen', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await emailServer(page)
   await enterPassword(page)
   await expect(page.getByLabel('Email verification code')).toBeFocused()
-  await page.keyboard.type('123456')
-  await page.keyboard.press('Tab')
-  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeFocused()
+  await page.keyboard.type('12345')
+  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeDisabled()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-  await page.keyboard.press('Enter')
+  await page.keyboard.type('6')
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
 })

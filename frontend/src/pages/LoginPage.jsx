@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { apiErrorMessage } from '../api'
@@ -18,6 +18,8 @@ export default function LoginPage() {
   const [resendAt, setResendAt] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [notice, setNotice] = useState('')
+  const requestInFlight = useRef(false)
+  const codeInput = useRef(null)
 
   useEffect(() => () => cancelLogin(), [cancelLogin])
   useEffect(() => {
@@ -25,6 +27,9 @@ export default function LoginPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [challenge])
+  useEffect(() => {
+    if (challenge && error && !loading) codeInput.current?.focus()
+  }, [challenge, error, loading])
 
   const acceptChallenge = (next) => {
     setChallenge(next)
@@ -37,7 +42,8 @@ export default function LoginPage() {
   const expired = challenge && Date.parse(challenge.expires_at) <= now
 
   const handleResend = async () => {
-    if (loading || resendSeconds || expired) return
+    if (requestInFlight.current || loading || resendSeconds || expired) return
+    requestInFlight.current = true
     setLoading(true)
     setError(null)
     setNotice('')
@@ -49,18 +55,19 @@ export default function LoginPage() {
       if (err?.response?.status === 429) {
         setResendAt(Date.now() + Number(err.response.headers['retry-after'] || 60) * 1000)
       }
-    } finally { setLoading(false) }
+    } finally { requestInFlight.current = false; setLoading(false) }
   }
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
-    if (loading) return
+  const submit = async (verificationCode = code) => {
+    if (requestInFlight.current || loading) return
+    if (challenge && (!/^[0-9]{6}$/.test(verificationCode) || Date.parse(challenge.expires_at) <= Date.now())) return
+    requestInFlight.current = true
     setError(null)
     setNotice('')
     setLoading(true)
     try {
       if (challenge) {
-        await verifyLogin(challenge, code)
+        await verifyLogin(challenge, verificationCode)
         navigate('/')
       } else {
         acceptChallenge(await login(identifier, password))
@@ -71,8 +78,15 @@ export default function LoginPage() {
       else if (status === 404) setError('Sign-in verification is unavailable. Ask the administrator to update the API.')
       else setError(apiErrorMessage(err, 'Unable to connect to MangoPoint.'))
     } finally {
+      requestInFlight.current = false
       setLoading(false)
     }
+  }
+
+  const updateCode = (value) => {
+    const nextCode = value.replace(/\D/g, '').slice(0, 6)
+    setCode(nextCode)
+    if (nextCode.length === 6 && nextCode !== code) void submit(nextCode)
   }
 
   return (
@@ -92,20 +106,21 @@ export default function LoginPage() {
         </div>
       )}
 
-      <form key={challenge ? 'verification' : 'password'} onSubmit={handleSubmit} className="login-form" aria-busy={loading}>
+      <form key={challenge ? 'verification' : 'password'} onSubmit={(event) => { event.preventDefault(); void submit() }} className="login-form" aria-busy={loading}>
         {challenge ? (
           <>
             <div className="login-field">
               <label className="form-label" htmlFor="login-code">Email verification code</label>
-              <input id="login-code" type="text" className="form-control" inputMode="numeric"
+              <input ref={codeInput} id="login-code" type="text" className="form-control" inputMode="numeric"
                 autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6}
-                value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
+                value={code} onChange={(event) => updateCode(event.target.value)}
+                onPaste={(event) => { event.preventDefault(); updateCode(event.clipboardData.getData('text')) }}
                 aria-describedby="login-code-help" required autoFocus disabled={loading || expired} />
               <p id="login-code-help" className="auth-password-hint mt-2" role={expired ? 'status' : undefined}>
-                {expired ? 'This code has expired. Start again to request a new code.' : 'Check your inbox or spam folder. Never share your code.'}
+                {expired ? 'This code has expired. Start again to request a new code.' : 'Enter all six digits to sign in automatically. Never share your code.'}
               </p>
             </div>
-            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired}>
+            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired || code.length !== 6}>
               {loading ? 'Verifying…' : 'Verify and sign in'}
             </button>
             <div className="d-flex flex-wrap gap-3 justify-content-between mt-3">

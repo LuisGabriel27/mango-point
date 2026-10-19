@@ -72,7 +72,6 @@ async function signIn(page, password = 'old-password') {
   await page.locator('#login-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await page.getByLabel('Email verification code').fill('123456')
-  await page.getByRole('button', { name: 'Verify and sign in', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const invitation = page.getByRole('button', { name: 'Maybe later', exact: true })
   if (await invitation.isVisible()) await invitation.click()
@@ -185,7 +184,7 @@ for (const width of [1440, 390]) {
     await page.locator('#days-flowering').fill('75')
     const token = await page.evaluate(() => sessionStorage.getItem('access_token'))
     const logout = page.getByRole('button', { name: 'Logout', exact: true })
-    const dialog = page.getByRole('alertdialog', { name: 'Log out of MangoPoint?', exact: true })
+    const dialog = page.getByRole('alertdialog', { name: 'Confirm logout', exact: true })
 
     for (const dismiss of ['cancel', 'escape', 'close', 'backdrop']) {
       await logout.click()

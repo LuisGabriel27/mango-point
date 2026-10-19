@@ -125,20 +125,15 @@ export default function LoginPage() {
                 </button>
               </div>
               <p id="login-code-help" className="auth-password-hint" role={expired ? 'status' : undefined}>
-                {expired ? 'This code has expired. Start again to request a new code.' : 'Enter all six digits to sign in automatically. Never share your code.'}
+                {expired ? 'This code has expired. Refresh this page to sign in again.' : 'Enter all six digits to sign in automatically. Never share your code.'}
               </p>
             </div>
             {loading && <div className="login-code-progress" role="status">
               <span className="spinner-border spinner-border-sm" aria-hidden="true" />Verifying…
             </div>}
-            <div className="login-code-actions">
-              {error && code.join('').length === 6 && !expired && <button type="submit"
-                className="btn btn-link p-0 auth-inline-link" disabled={loading}>Verify and sign in</button>}
-              <button type="button" className="btn btn-link p-0 auth-inline-link" disabled={loading}
-                onClick={() => { cancelLogin(); setChallenge(null); setCode(emptyCode()); setError(null); setNotice('') }}>
-                Start again
-              </button>
-            </div>
+            {error && code.join('').length === 6 && !expired && <div className="login-code-actions">
+              <button type="submit" className="btn btn-link p-0 auth-inline-link" disabled={loading}>Verify and sign in</button>
+            </div>}
           </>
         ) : (
           <>
@@ -199,7 +194,6 @@ export default function LoginPage() {
             <>Sign in<i className="bi bi-arrow-right" aria-hidden="true" /></>
           )}
         </button>
-        <p className="auth-password-hint mt-3 mb-0">We’ll email a verification code after checking your password. Internet access is required.</p>
           </>
         )}
       </form>

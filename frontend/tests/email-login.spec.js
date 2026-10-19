@@ -71,7 +71,7 @@ test('password and incorrect code grant no session; the verified code completes 
     .toEqual(['/auth/login', '/auth/login/verify', '/auth/login/verify'])
 })
 
-test('resend waits for cooldown, replaces the challenge and start again clears the code', async ({ page }) => {
+test('resend waits for cooldown, replaces the challenge and clears the code', async ({ page }) => {
   const state = await emailServer(page)
   await enterPassword(page)
   await expect(page.getByRole('button', { name: /Resend code in/ })).toBeDisabled()
@@ -83,12 +83,11 @@ test('resend waits for cooldown, replaces the challenge and start again clears t
   await expect(page.getByRole('status').filter({ hasText: 'A new code was sent' })).toBeVisible()
   expect(state.challenge).not.toBe(first)
   await expect(page.getByRole('textbox', { name: 'Digit 1 of 6', exact: true })).toHaveValue('')
-  await page.getByRole('button', { name: 'Start again' }).click()
-  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('')
+  await expect(page.getByRole('textbox', { name: 'Digit 1 of 6', exact: true })).toBeFocused()
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
 })
 
-test('expired challenges require starting again and a refresh restores no partial session', async ({ page }) => {
+test('expired challenges explain the sign-in refresh and restore no partial session', async ({ page }) => {
   await emailServer(page)
   await enterPassword(page)
   await expect(page.getByRole('textbox', { name: 'Digit 1 of 6', exact: true })).toBeVisible()
@@ -245,7 +244,7 @@ test('Backspace, Delete and arrow keys edit individual positions without shiftin
   await page.keyboard.press('End')
   await expect(boxes.last()).toBeFocused()
   await page.keyboard.press('Tab')
-  await expect(page.getByRole('button', { name: 'Start again', exact: true })).toBeFocused()
+  await expect(page.getByRole('button', { name: 'Terms and Conditions', exact: true })).toBeFocused()
   expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(0)
 })
 

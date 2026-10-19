@@ -107,9 +107,8 @@ function txStore(mode, action) {
 
 function readFallbackHistory() {
   const win = browserWindow()
-  if (!win?.localStorage) return []
-
   try {
+    if (!win?.localStorage) return []
     const stored = JSON.parse(win.localStorage.getItem(FALLBACK_KEY) || '[]')
     return Array.isArray(stored) ? stored : []
   } catch (_) {
@@ -119,7 +118,9 @@ function readFallbackHistory() {
 
 function writeFallbackHistory(records, { strict = false } = {}) {
   const win = browserWindow()
-  if (!win?.localStorage) {
+  let storage
+  try { storage = win?.localStorage } catch (_) { /* Browser privacy settings can deny access. */ }
+  if (!storage) {
     if (strict) throw new Error('Browser history storage is unavailable.')
     return
   }
@@ -130,8 +131,8 @@ function writeFallbackHistory(records, { strict = false } = {}) {
 
   while (true) {
     try {
-      win.localStorage.setItem(FALLBACK_KEY, JSON.stringify(next))
-      return
+      storage.setItem(FALLBACK_KEY, JSON.stringify(next))
+      return next
     } catch (_) {
       // Never discard deletion markers to make room for ordinary cache entries.
       if (next.length <= deleted.length) break
@@ -262,11 +263,11 @@ export function simulationRunSummaryFromDetail(detail) {
     weather_source: detail.weather_source,
     has_time_series: detail.has_time_series,
     local_saved_at: detail.local_saved_at,
-    cached_locally: true,
+    cached_locally: Boolean(detail.risk_geojson || detail.response_payload?.risk_geojson),
   }
 }
 
-export async function saveSimulationRunToHistory(run) {
+export async function saveSimulationRunToHistory(run, { requirePersistence = false } = {}) {
   let detail = normalizeSimulationRunForHistory(run)
   const fallbackDeleted = readFallbackHistory().find((item) => item.run_id === detail.run_id && item.status === 'deleted')
   if (fallbackDeleted) return simulationRunSummaryFromDetail(fallbackDeleted)
@@ -285,7 +286,10 @@ export async function saveSimulationRunToHistory(run) {
     const deleted = records.find((item) => item.run_id === detail.run_id && item.status === 'deleted')
     if (deleted) return simulationRunSummaryFromDetail(deleted)
     const existing = records.filter((item) => item.run_id !== detail.run_id)
-    writeFallbackHistory([detail, ...existing])
+    const retained = writeFallbackHistory([detail, ...existing], { strict: requirePersistence })
+    if (requirePersistence && !retained?.some((item) => item.run_id === detail.run_id)) {
+      throw new Error('Browser storage is full. Some results could not be saved for offline use.')
+    }
   }
 
   return simulationRunSummaryFromDetail(detail)
@@ -301,8 +305,13 @@ export async function listSimulationRunsFromHistory({ orchardId, limit = 50 } = 
   }
 
   const normalizedOrchardId = orchardId ? normalizeId(orchardId) : null
-  const fallbackDeleted = new Set(readFallbackHistory().filter((run) => run.status === 'deleted').map((run) => run.run_id))
-  return (records || [])
+  const fallback = readFallbackHistory()
+  const fallbackDeleted = new Set(fallback.filter((run) => run.status === 'deleted').map((run) => run.run_id))
+  // IndexedDB can remain readable when a quota/write failure sends a new run
+  // to localStorage. Include those fallback-only results in offline History.
+  const byId = new Map(fallback.map((run) => [run.run_id, run]))
+  for (const run of records || []) byId.set(run.run_id, run)
+  return [...byId.values()]
     .map(normalizeSimulationRunForHistory)
     .filter((run) => run.status !== 'deleted' && !fallbackDeleted.has(run.run_id))
     .filter((run) => !normalizedOrchardId || run.orchard_id === normalizedOrchardId)
@@ -355,8 +364,9 @@ export async function getSimulationRunFromHistory(runId) {
   try {
     detail = await txStore('readonly', (store) => store.get(runId))
   } catch (_) {
-    detail = readFallbackHistory().find((item) => item.run_id === runId) ?? null
+    // A readable fallback may still contain this run.
   }
+  detail ??= readFallbackHistory().find((item) => item.run_id === runId) ?? null
 
   if (!detail || detail.status === 'deleted') return null
   const normalized = normalizeSimulationRunForHistory(detail)

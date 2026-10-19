@@ -257,6 +257,20 @@ All fresh logins in the workflow now include the email-code step.
 | WF-82 | Change local companion availability during verification; separately change the test account password/email or deactivate it before confirming a pending code. | Verification stays on its issuing API; a missing API produces a useful error. Changed credentials/inbox and inactive accounts cannot use the pending challenge. The two-session limit still applies after code verification. |
 | WF-83 | Complete the code screen using only the keyboard at desktop and narrow widths; leave it while verification is pending. | Code field receives focus, controls remain usable and no horizontal page overflow occurs. A late response cannot authenticate after leaving the screen. |
 
+## Automatic offline History preparation
+
+Use existing saved results without opening them first. For an isolated browser
+rehearsal, label every result and API response as a test fixture; those checks
+do not establish real account, database or deployed-device behavior. See the
+[implementation and browser evidence](offline-history-cache-2026-10-19.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-84 | Sign in with saved completed runs for both pests and engines, including another orchard and an older month. Stay on Live Map until preparation finishes, then disconnect and load each result through History. Repeat at a narrow width. | Opening individual results is unnecessary for caching. All dates/orchards are prepared. Available offline labels match durable data. Saved maps, playback, weather, inputs and model metadata are preserved. No simulation or farm-record writes are sent by preparation. |
+| WF-85 | Interrupt a result download, inspect History, then reconnect or use Refresh. | Incomplete preparation and Online only results are explicit. Already saved results remain usable; retry requests missing results without downloading complete cached results again. |
+| WF-86 | End the signed-in session while a result download is pending. | Login appears; the pending download cannot save its delayed response or request another result. Ordinary session rules still apply. |
+| WF-87 | Make IndexedDB writes fail while reads still work, then prepare results and inspect their cached copies. Separately deny browser storage or fill its quota. | Fallback-only results remain readable; denied/full storage cannot claim all results are ready. The small fallback may retain fewer results. Browser preparation does not change hosted schema or trigger cloud backup. |
+
 ## Completion check
 
 - All four ordinary run combinations complete through results, saved history

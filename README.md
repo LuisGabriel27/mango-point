@@ -204,6 +204,26 @@ user's device. In this mode, the browser prefers the loopback FastAPI companion
 at `http://127.0.0.1:8000`; if no companion is available and internet access is
 working, it uses the configured remote API instead.
 
+After sign-in, the dashboard automatically prepares completed saved simulation
+results for offline viewing, including results you have never opened. It reads
+every History page across all orchards and dates, then downloads missing full
+results in the background. History filters do not limit this preparation.
+**History** shows the preparation count and an **Available offline** label for
+each result stored in this browser. Wait for preparation to finish before
+disconnecting. **Load Result**, **Use as Template** and the printable report can
+then use these saved copies when the API is unreachable, within the existing
+signed-in session. Saved maps, playback, weather, inputs and model metadata are
+retained; preparing History does not run a simulation or change farm records.
+
+Preparation resumes when the browser reconnects; **History → Refresh** also
+checks for new results and retries missing downloads. Browser storage limits or
+download failures are shown as incomplete preparation. IndexedDB is used for
+full results; if unavailable, the smaller browser-storage fallback retains at
+most 25 runs and may retain fewer when space is limited. Cache availability is
+specific to this browser and device, and clearing browser data removes it.
+Fresh sign-in, uncached results and server-generated Excel exports still need
+a reachable API. Reloading the dashboard also needs API session validation.
+
 New sign-ins now require an emailed verification code. Prepare and sign in
 while online, with a reachable account inbox and working mail delivery on the
 local API. Offline use is limited to an existing unexpired verified session;

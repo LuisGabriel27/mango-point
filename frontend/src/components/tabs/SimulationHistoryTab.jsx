@@ -4,10 +4,10 @@ import MpSelect from '../MpSelect'
 import ConfirmationModal from '../ConfirmationModal'
 import {
   getSimulationRunFromHistory,
-  listSimulationRunsFromHistory,
   saveSimulationRunToHistory,
   setSimulationHistoryDeleted,
 } from '../../utils/simulationHistoryStore'
+import { mergeHistoryRuns as mergeRuns, syncSimulationHistory } from '../../utils/simulationHistorySync'
 import {
   HISTORY_PERIOD_ALL_HISTORY,
   HISTORY_PERIOD_MONTH,
@@ -61,11 +61,6 @@ function modeLabel(value) {
   return value || '--'
 }
 
-function runTime(value) {
-  const time = new Date(value ?? 0).getTime()
-  return Number.isFinite(time) ? time : 0
-}
-
 function validRunDate(run) {
   if (!run?.started_at) return null
   const date = new Date(run.started_at)
@@ -117,29 +112,6 @@ function groupRuns(runs, grouping) {
   return [...groups.values()]
 }
 
-function mergeRuns(apiRuns = [], cachedRuns = []) {
-  const byId = new Map()
-
-  for (const run of cachedRuns) {
-    if (run?.run_id) byId.set(run.run_id, run)
-  }
-
-  for (const run of apiRuns) {
-    if (!run?.run_id) continue
-    const cached = byId.get(run.run_id)
-    byId.set(run.run_id, {
-      ...cached,
-      ...run,
-      cached_locally: Boolean(cached?.cached_locally),
-      server_saved: true,
-    })
-  }
-
-  return [...byId.values()].sort((a, b) => (
-    runTime(b.started_at || b.local_saved_at) - runTime(a.started_at || a.local_saved_at)
-  ))
-}
-
 export default function SimulationHistoryTab({
   orchards = [],
   refreshKey = 0,
@@ -150,6 +122,7 @@ export default function SimulationHistoryTab({
 }) {
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(false)
+  const [offlineCache, setOfflineCache] = useState({ phase: 'checking' })
   const [loadingRunId, setLoadingRunId] = useState(null)
   const [syncingToSupabase, setSyncingToSupabase] = useState(false)
   const [historyOrchardId, setHistoryOrchardId] = useState(ALL_ORCHARDS)
@@ -164,6 +137,7 @@ export default function SimulationHistoryTab({
   const [lastDeleted, setLastDeleted] = useState(null)
   const [restoring, setRestoring] = useState(false)
   const fetchVersion = useRef(0)
+  const cacheController = useRef(null)
   const mutationInFlight = useRef(false)
   const currentMonthKey = useMemo(() => historyMonthKey(), [])
   const selectedMonthLabel = useMemo(() => historyMonthLabel(historyMonth), [historyMonth])
@@ -190,9 +164,13 @@ export default function SimulationHistoryTab({
   )
 
   const displayedRuns = useMemo(
-    () => filterRunsByHistoryPeriod(runs, historyPeriod, historyMonth),
-    [historyMonth, historyPeriod, runs],
+    () => filterRunsByHistoryPeriod(runs.filter((run) => (
+      historyOrchardId === ALL_ORCHARDS || run.orchard_id === historyOrchardId
+    )), historyPeriod, historyMonth),
+    [historyMonth, historyOrchardId, historyPeriod, runs],
   )
+  const completedRuns = runs.filter((run) => run.status === 'completed')
+  const offlineReadyCount = completedRuns.filter((run) => run.cached_locally).length
 
   const historyView = useMemo(
     () => historyPage(displayedRuns, requestedPage, HISTORY_PAGE_SIZE),
@@ -220,38 +198,36 @@ export default function SimulationHistoryTab({
       ?? '--'
   }
 
-  const fetchRuns = useCallback(async () => {
+  const fetchRuns = useCallback(async ({ preserveStatus = false } = {}) => {
+    cacheController.current?.abort()
+    const controller = new AbortController()
+    cacheController.current = controller
     const version = ++fetchVersion.current
     setRequestedPage(0)
     setLoading(true)
-    setStatus(null)
+    if (!preserveStatus) setStatus(null)
     setRuns([])
-    let cachedRuns = []
-    const selectedOrchardId = historyOrchardId === ALL_ORCHARDS ? undefined : historyOrchardId
-
+    setOfflineCache({ phase: 'checking' })
+    let lastRuns = []
     try {
-      cachedRuns = await listSimulationRunsFromHistory({ orchardId: selectedOrchardId, limit: 1000 })
-      if (cachedRuns.length && version === fetchVersion.current) setRuns(cachedRuns)
-    } catch (_) {
-      cachedRuns = []
-    }
-
-    try {
-      const params = { limit: 1000 }
-      if (selectedOrchardId) params.orchard_id = selectedOrchardId
-      const res = await api.getSimulationRuns(params)
-      if (version !== fetchVersion.current) return
-      const deletedIds = new Set(res.data?.deleted_run_ids ?? [])
-      const serverRuns = (res.data?.runs ?? []).filter((run) => !deletedIds.has(run.run_id))
-      try {
-        await setSimulationHistoryDeleted([...deletedIds], true)
+      await syncSimulationHistory({ api, signal: controller.signal, onUpdate: (snapshot) => {
         if (version !== fetchVersion.current) return
-        await setSimulationHistoryDeleted(serverRuns.map((run) => run.run_id), false)
-      } catch (_) { /* Server filtering still applies when browser storage is unavailable. */ }
-      if (version !== fetchVersion.current) return
-      setRuns(mergeRuns(serverRuns, cachedRuns.filter((run) => !deletedIds.has(run.run_id))))
+        lastRuns = snapshot.runs
+        setRuns(snapshot.runs)
+        setOfflineCache(snapshot)
+        setLoading(snapshot.phase === 'checking')
+      } })
     } catch (err) {
-      if (version !== fetchVersion.current) return
+      if (controller.signal.aborted || version !== fetchVersion.current) return
+      if ([401, 403].includes(err?.response?.status)) {
+        setRuns([])
+        setOfflineCache({ phase: 'unavailable' })
+        setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Please sign in again.') })
+        return
+      }
+      const cachedRuns = lastRuns.filter((run) => run.cached_locally)
+      setRuns(cachedRuns)
+      setOfflineCache({ phase: 'unavailable' })
       if (cachedRuns.length) {
         setStatus({
           type: 'warning',
@@ -263,18 +239,24 @@ export default function SimulationHistoryTab({
     } finally {
       if (version === fetchVersion.current) setLoading(false)
     }
-  }, [historyOrchardId])
+  }, [])
 
   useEffect(() => {
     fetchRuns()
-    return () => { fetchVersion.current++ }
+    return () => { fetchVersion.current++; cacheController.current?.abort() }
   }, [fetchRuns, refreshKey])
+
+  useEffect(() => {
+    const resume = () => { if (!mutationInFlight.current) fetchRuns() }
+    window.addEventListener('online', resume)
+    return () => window.removeEventListener('online', resume)
+  }, [fetchRuns])
 
   const fetchRunDetails = async (runId) => {
     setLoadingRunId(runId)
     setStatus(null)
     try {
-      const res = await api.getSimulationRun(runId)
+      const res = await api.getSimulationRun(runId, { timeout: 20000 })
       saveSimulationRunToHistory(res.data).catch(() => {})
       return res.data
     } catch (err) {
@@ -334,8 +316,10 @@ export default function SimulationHistoryTab({
     setDeleteError('')
     try {
       await api.deleteSimulationRun(deleteTarget.run_id)
+      cacheController.current?.abort()
       fetchVersion.current++
       setLoading(false)
+      setOfflineCache({ phase: 'partial' })
       let cacheUpdated = true
       try { await setSimulationHistoryDeleted([deleteTarget.run_id], true) }
       catch (_) { cacheUpdated = false }
@@ -346,6 +330,7 @@ export default function SimulationHistoryTab({
         msg: cacheUpdated ? 'Simulation removed from History. Its stored data and linked observations are preserved.'
           : 'Simulation deleted on the server. Browser storage could not be updated; reconnect before using cached History.' })
       onRunVisibilityChange?.(deleteTarget.run_id, true)
+      fetchRuns({ preserveStatus: true })
     } catch (err) {
       setDeleteError(apiErrorMessage(err, 'Could not delete this simulation. Please try again.'))
     } finally { mutationInFlight.current = false; setDeleting(false) }
@@ -357,6 +342,7 @@ export default function SimulationHistoryTab({
     setRestoring(true)
     try {
       await api.restoreSimulationRun(lastDeleted.run_id)
+      cacheController.current?.abort()
       fetchVersion.current++
       setLoading(false)
       await setSimulationHistoryDeleted([lastDeleted.run_id], false).catch(() => {})
@@ -364,6 +350,7 @@ export default function SimulationHistoryTab({
       onRunVisibilityChange?.(lastDeleted.run_id, false)
       setLastDeleted(null)
       setStatus({ type: 'success', msg: 'Simulation restored to History.' })
+      fetchRuns({ preserveStatus: true })
     } catch (err) {
       setStatus({ type: 'danger', msg: apiErrorMessage(err, 'Could not restore this simulation. Please try again.') })
     } finally { mutationInFlight.current = false; setRestoring(false) }
@@ -490,6 +477,17 @@ export default function SimulationHistoryTab({
         </div>
 
         <div className="card-body">
+          <div className="small text-muted mb-3" role="status" aria-live="polite" data-testid="history-offline-status">
+            {offlineCache.phase === 'checking' ? 'Checking saved results for offline use...'
+              : offlineCache.phase === 'downloading'
+                ? `Preparing results for offline use: ${offlineReadyCount} of ${completedRuns.length} ready across all orchards.`
+                : offlineCache.phase === 'unavailable'
+                  ? `${offlineReadyCount} results available offline in this browser. Reconnect and refresh to check for more saved results.`
+                  : `${offlineReadyCount} of ${completedRuns.length} results available offline in this browser across all orchards.`}
+            {offlineCache.phase === 'partial' && (
+              <span> Some results could not be prepared. {offlineCache.error ? apiErrorMessage(offlineCache.error) : ''} Use Refresh to retry.</span>
+            )}
+          </div>
           {status && (
             <div className={`alert alert-${status.type} py-2 mb-3`} style={{ fontSize: '.86rem' }}>
               {status.msg}
@@ -538,6 +536,9 @@ export default function SimulationHistoryTab({
                             <td>
                               <div className="fw-medium">{formatDate(run.started_at)}</div>
                               <div className="text-muted" style={{ fontSize: '.72rem' }}>{run.run_id}</div>
+                              <div className={`small ${run.cached_locally ? 'text-success' : 'text-muted'}`}>
+                                {run.cached_locally ? 'Available offline' : 'Online only'}
+                              </div>
                             </td>
                             <td>{orchardLabel(run.orchard_id)}</td>
                             <td>{pestLabel(run.pest_type)}</td>

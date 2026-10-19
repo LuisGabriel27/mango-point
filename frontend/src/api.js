@@ -91,8 +91,8 @@ const api = {
 
   // Simulation
   runSimulation: (body) => client.post('/simulation/run-simulation', body, { timeout: 180000 }),
-  getSimulationRuns: (params = {}) => client.get('/simulation/runs', { params }),
-  getSimulationRun: (runId) => client.get(`/simulation/runs/${runId}`),
+  getSimulationRuns: (params = {}, config = {}) => client.get('/simulation/runs', { ...config, params }),
+  getSimulationRun: (runId, config = {}) => client.get(`/simulation/runs/${encodeURIComponent(runId)}`, config),
   deleteSimulationRun: (runId) => client.delete(`/simulation/runs/${encodeURIComponent(runId)}`),
   restoreSimulationRun: (runId) => client.post(`/simulation/runs/${encodeURIComponent(runId)}/restore`),
 

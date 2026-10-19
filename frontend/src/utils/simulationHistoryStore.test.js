@@ -66,6 +66,24 @@ test('cache deletion reports unavailable durable browser storage', async () => {
   finally { globalThis.window = originalWindow }
 })
 
+test('offline preparation reports unavailable, denied, full and capped fallback storage honestly', async () => {
+  const originalWindow = globalThis.window
+  const storage = new Map()
+  try {
+    globalThis.window = {}
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'unavailable' }, { requirePersistence: true }), /storage is unavailable/)
+    globalThis.window = { get localStorage() { throw new Error('Denied') } }
+    assert.deepEqual(await listSimulationRunsFromHistory(), [])
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'denied' }, { requirePersistence: true }), /storage is unavailable/)
+    globalThis.window = { localStorage: { getItem: () => null, setItem: () => { throw new Error('Quota exceeded') } } }
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'full' }, { requirePersistence: true }), /storage|offline/)
+    globalThis.window = { localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) } }
+    for (let i = 0; i < 25; i++) await saveSimulationRunToHistory({ run_id: `recent-${i}`, started_at: '2026-10-19T00:00:00Z' })
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'older', started_at: '2020-01-01T00:00:00Z' }, { requirePersistence: true }), /storage is full/)
+    assert.equal(await getSimulationRunFromHistory('older'), null)
+  } finally { globalThis.window = originalWindow }
+})
+
 test('frontend simulation model version matches the backend release', () => {
   assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-source-progression-v17')
 })

@@ -1131,6 +1131,21 @@ body {
   border-collapse: separate;
   border-spacing: 0;
 }
+.simulation-history-table .history-actions-column { width: 1%; }
+.history-run-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+  width: 22rem;
+  margin-left: auto;
+}
+.history-run-actions > .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  white-space: nowrap;
+}
 .history-period-filter {
   display: inline-flex;
   align-items: stretch;

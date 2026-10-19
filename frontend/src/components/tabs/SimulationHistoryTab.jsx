@@ -514,7 +514,7 @@ export default function SimulationHistoryTab({
                     <th className="text-end">Peak Risk</th>
                     <th className="text-end">Infested</th>
                     <th>Weather</th>
-                    <th className="text-end">Actions</th>
+                    <th className="text-center history-actions-column">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -548,8 +548,8 @@ export default function SimulationHistoryTab({
                             <td className="text-end">{percent(run.peak_risk)}</td>
                             <td className="text-end">{run.n_infested_final ?? '--'}</td>
                             <td className="text-capitalize">{run.weather_source ?? '--'}</td>
-                            <td>
-                              <div className="d-flex flex-wrap justify-content-end gap-2">
+                            <td className="history-actions-column">
+                              <div className="history-run-actions">
                                 <button
                                   type="button"
                                   className="btn btn-success btn-sm"

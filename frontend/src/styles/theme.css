@@ -1669,20 +1669,35 @@ input[type="range"]::-moz-range-progress {
 .login-code-inputs {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: clamp(.35rem, 1.2vw, .65rem);
+  gap: .5rem;
   width: 100%;
-  max-width: 24rem;
+  max-width: 19rem;
+  margin: 0 auto;
 }
 .login-card .form-control.login-code-digit {
   min-width: 0;
-  height: 3.5rem;
-  padding: .5rem 0;
-  font-size: clamp(1.15rem, 4vw, 1.5rem) !important;
+  min-height: 0;
+  height: auto;
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: 5px !important;
+  border-color: #dce0e4 !important;
+  background: #f8f9fa !important;
+  color: #1f2937 !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+  font-size: 1.2rem !important;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: center;
   caret-color: var(--mp-primary);
 }
+.login-verification-field { text-align: center; }
+.login-card .login-verification-field .form-label { font-weight: 500; margin-bottom: .75rem; }
+.login-code-resend { margin-top: .65rem; color: var(--mp-muted); font-size: .75rem; }
+.login-code-resend .auth-inline-link { font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.login-verification-field .auth-password-hint { margin: .85rem auto 0; max-width: 19rem; font-size: .72rem; }
+.login-code-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 1rem; }
+.login-code-progress { display: flex; justify-content: center; align-items: center; gap: .5rem; color: var(--mp-primary); font-size: .83rem; }
 .login-submit-btn {
   display: flex;
   align-items: center;

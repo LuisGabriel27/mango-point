@@ -113,22 +113,27 @@ export default function LoginPage() {
       <form key={challenge ? 'verification' : 'password'} onSubmit={(event) => { event.preventDefault(); void submit() }} className="login-form" aria-busy={loading}>
         {challenge ? (
           <>
-            <div className="login-field">
-              <label id="login-code-label" className="form-label" htmlFor="login-code-1">Email verification code</label>
+            <div className="login-field login-verification-field">
+              <label id="login-code-label" className="form-label" htmlFor="login-code-1">Please enter the authentication code</label>
               <SignInCodeInput ref={codeInput} value={code} onChange={updateCode}
                 disabled={loading || expired} error={error} />
-              <p id="login-code-help" className="auth-password-hint mt-2" role={expired ? 'status' : undefined}>
+              <div className="login-code-resend">
+                <span>Didn't get the code?</span>{' '}
+                <button type="button" className="btn btn-link p-0 auth-inline-link" onClick={handleResend}
+                  disabled={loading || resendSeconds > 0 || expired}>
+                  {resendSeconds ? `Resend code in ${resendSeconds}s` : 'Resend code'}
+                </button>
+              </div>
+              <p id="login-code-help" className="auth-password-hint" role={expired ? 'status' : undefined}>
                 {expired ? 'This code has expired. Start again to request a new code.' : 'Enter all six digits to sign in automatically. Never share your code.'}
               </p>
             </div>
-            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired || code.join('').length !== 6}>
-              {loading ? 'Verifying…' : 'Verify and sign in'}
-            </button>
-            <div className="d-flex flex-wrap gap-3 justify-content-between mt-3">
-              <button type="button" className="btn btn-link p-0 auth-inline-link" onClick={handleResend}
-                disabled={loading || resendSeconds > 0 || expired}>
-                {resendSeconds ? `Resend code in ${resendSeconds}s` : 'Resend code'}
-              </button>
+            {loading && <div className="login-code-progress" role="status">
+              <span className="spinner-border spinner-border-sm" aria-hidden="true" />Verifying…
+            </div>}
+            <div className="login-code-actions">
+              {error && code.join('').length === 6 && !expired && <button type="submit"
+                className="btn btn-link p-0 auth-inline-link" disabled={loading}>Verify and sign in</button>}
               <button type="button" className="btn btn-link p-0 auth-inline-link" disabled={loading}
                 onClick={() => { cancelLogin(); setChallenge(null); setCode(emptyCode()); setError(null); setNotice('') }}>
                 Start again

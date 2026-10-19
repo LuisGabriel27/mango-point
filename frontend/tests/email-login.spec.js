@@ -95,7 +95,7 @@ test('expired challenges require starting again and a refresh restores no partia
   await page.clock.fastForward(300100)
   await expect(page.getByRole('status').filter({ hasText: 'This code has expired' })).toBeVisible()
   for (const input of await page.locator('.login-code-digit').all()) await expect(input).toBeDisabled()
-  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toHaveCount(0)
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
@@ -261,7 +261,15 @@ for (const width of [1440, 390, 320]) {
     await page.keyboard.type('12345')
     await expect(boxes.last()).toBeFocused()
     expect(await boxes.evaluateAll((inputs) => inputs.map((input) => input.value))).toEqual(['1', '2', '3', '4', '5', ''])
-    await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Verify and sign in' })).toHaveCount(0)
+    const sizes = await boxes.evaluateAll((inputs) => inputs.map((input) => {
+      const { width, height } = input.getBoundingClientRect()
+      return { width, height }
+    }))
+    for (const size of sizes) {
+      expect(size.width).toBeLessThanOrEqual(45)
+      expect(Math.abs(size.width - size.height)).toBeLessThan(1)
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await page.screenshot({ path: testInfo.outputPath('six-code-boxes-partial.png') })
     await page.keyboard.type('6')

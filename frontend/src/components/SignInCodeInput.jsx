@@ -40,7 +40,7 @@ const SignInCodeInput = forwardRef(function SignInCodeInput({ value, onChange, d
   }
 
   return (
-    <div className="login-code-inputs" role="group" aria-labelledby="login-code-label" dir="ltr">
+    <div className="login-code-inputs" role="group" aria-label="Email verification code" dir="ltr">
       {value.map((digit, index) => (
         <input key={index} ref={(input) => { inputs.current[index] = input }}
           id={`login-code-${index + 1}`} type="text" className="form-control login-code-digit"

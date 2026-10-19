@@ -1666,6 +1666,23 @@ input[type="range"]::-moz-range-progress {
 .login-card .form-control::placeholder { color: #66796c; opacity: 1; }
 .login-card .form-control:focus { border-color: var(--mp-primary) !important; box-shadow: 0 0 0 3px rgba(27,67,50,.1) !important; }
 .login-card .form-control:autofill { -webkit-text-fill-color: var(--mp-text); box-shadow: 0 0 0 1000px #f5f8f3 inset; }
+.login-code-inputs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(.35rem, 1.2vw, .65rem);
+  width: 100%;
+  max-width: 24rem;
+}
+.login-card .form-control.login-code-digit {
+  min-width: 0;
+  height: 3.5rem;
+  padding: .5rem 0;
+  font-size: clamp(1.15rem, 4vw, 1.5rem) !important;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  caret-color: var(--mp-primary);
+}
 .login-submit-btn {
   display: flex;
   align-items: center;

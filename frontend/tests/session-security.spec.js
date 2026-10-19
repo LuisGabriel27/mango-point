@@ -71,7 +71,7 @@ async function signIn(page, password = 'old-password') {
   await page.locator('#login-identifier').fill('session-test')
   await page.locator('#login-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('textbox', { name: 'Digit 1 of 6', exact: true }).fill('123456')
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const invitation = page.getByRole('button', { name: 'Maybe later', exact: true })
   if (await invitation.isVisible()) await invitation.click()

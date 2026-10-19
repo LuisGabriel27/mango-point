@@ -4,6 +4,9 @@ import { useAuth } from '../context/AuthContext'
 import { apiErrorMessage } from '../api'
 import AuthLayout from '../components/AuthLayout'
 import LoginTerms from '../components/LoginTerms'
+import SignInCodeInput from '../components/SignInCodeInput'
+
+const emptyCode = () => Array(6).fill('')
 
 export default function LoginPage() {
   const { login, verifyLogin, resendLogin, cancelLogin, sessionNotice } = useAuth()
@@ -14,7 +17,7 @@ export default function LoginPage() {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [challenge, setChallenge] = useState(null)
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(emptyCode)
   const [resendAt, setResendAt] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [notice, setNotice] = useState('')
@@ -28,12 +31,12 @@ export default function LoginPage() {
     return () => window.clearInterval(timer)
   }, [challenge])
   useEffect(() => {
-    if (challenge && error && !loading) codeInput.current?.focus()
+    if (challenge && !loading) codeInput.current?.focus()
   }, [challenge, error, loading])
 
   const acceptChallenge = (next) => {
     setChallenge(next)
-    setCode('')
+    setCode(emptyCode())
     setPassword('')
     setNow(Date.now())
     setResendAt(Date.now() + next.resend_after_seconds * 1000)
@@ -58,7 +61,7 @@ export default function LoginPage() {
     } finally { requestInFlight.current = false; setLoading(false) }
   }
 
-  const submit = async (verificationCode = code) => {
+  const submit = async (verificationCode = code.join('')) => {
     if (requestInFlight.current || loading) return
     if (challenge && (!/^[0-9]{6}$/.test(verificationCode) || Date.parse(challenge.expires_at) <= Date.now())) return
     requestInFlight.current = true
@@ -77,16 +80,17 @@ export default function LoginPage() {
       if (status === 401 && !challenge) setError('Check your username or email and password, then try again.')
       else if (status === 404) setError('Sign-in verification is unavailable. Ask the administrator to update the API.')
       else setError(apiErrorMessage(err, 'Unable to connect to MangoPoint.'))
+      if (challenge && status === 400) setCode(emptyCode())
     } finally {
       requestInFlight.current = false
       setLoading(false)
     }
   }
 
-  const updateCode = (value) => {
-    const nextCode = value.replace(/\D/g, '').slice(0, 6)
+  const updateCode = (nextCode) => {
     setCode(nextCode)
-    if (nextCode.length === 6 && nextCode !== code) void submit(nextCode)
+    const completed = nextCode.join('')
+    if (completed.length === 6 && completed !== code.join('')) void submit(completed)
   }
 
   return (
@@ -110,17 +114,14 @@ export default function LoginPage() {
         {challenge ? (
           <>
             <div className="login-field">
-              <label className="form-label" htmlFor="login-code">Email verification code</label>
-              <input ref={codeInput} id="login-code" type="text" className="form-control" inputMode="numeric"
-                autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6}
-                value={code} onChange={(event) => updateCode(event.target.value)}
-                onPaste={(event) => { event.preventDefault(); updateCode(event.clipboardData.getData('text')) }}
-                aria-describedby="login-code-help" required autoFocus disabled={loading || expired} />
+              <label id="login-code-label" className="form-label" htmlFor="login-code-1">Email verification code</label>
+              <SignInCodeInput ref={codeInput} value={code} onChange={updateCode}
+                disabled={loading || expired} error={error} />
               <p id="login-code-help" className="auth-password-hint mt-2" role={expired ? 'status' : undefined}>
                 {expired ? 'This code has expired. Start again to request a new code.' : 'Enter all six digits to sign in automatically. Never share your code.'}
               </p>
             </div>
-            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired || code.length !== 6}>
+            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired || code.join('').length !== 6}>
               {loading ? 'Verifying…' : 'Verify and sign in'}
             </button>
             <div className="d-flex flex-wrap gap-3 justify-content-between mt-3">
@@ -129,7 +130,7 @@ export default function LoginPage() {
                 {resendSeconds ? `Resend code in ${resendSeconds}s` : 'Resend code'}
               </button>
               <button type="button" className="btn btn-link p-0 auth-inline-link" disabled={loading}
-                onClick={() => { cancelLogin(); setChallenge(null); setCode(''); setError(null); setNotice('') }}>
+                onClick={() => { cancelLogin(); setChallenge(null); setCode(emptyCode()); setError(null); setNotice('') }}>
                 Start again
               </button>
             </div>

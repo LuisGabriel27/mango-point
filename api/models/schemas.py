@@ -9,6 +9,7 @@ import re
 from typing import Annotated, Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
+from utils.input_validation import normalize_email, normalize_person_name
 from core.config import (
     FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M,
     SIMULATION_MODEL_VERSION,
@@ -282,6 +283,7 @@ class ManagementZone(BaseModel):
 
 class OrchardCreate(BaseModel):
     """Request schema for creating a managed orchard."""
+    model_config = ConfigDict(allow_inf_nan=False)
     name: str = Field(..., min_length=1, max_length=200)
     orchard_id: Optional[str] = Field(
         default=None,
@@ -317,6 +319,7 @@ class OrchardCreate(BaseModel):
 
 class OrchardUpdate(BaseModel):
     """Request schema for updating a managed orchard."""
+    model_config = ConfigDict(allow_inf_nan=False)
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     orchard_id: Optional[str] = Field(default=None, max_length=100)
     owner_name: Optional[str] = Field(default=None, max_length=200)
@@ -461,6 +464,7 @@ class DaylightWeatherFields(BaseModel):
     Observed means a user-reported light condition, not sensor verification.
     Tree/canopy shade is deliberately not an activity-enabling condition.
     """
+    model_config = ConfigDict(allow_inf_nan=False)
     shortwave_radiation_wm2: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="Instant total horizontal solar radiation (W/m²); unknown when omitted.")
     direct_normal_irradiance_wm2: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="Instant direct normal solar irradiance (W/m²); unknown when omitted.")
     daylight_condition: Optional[Literal["bright_sunshine", "intermittent_sunshine", "dim_overcast"]] = Field(None, description="Explicit daylight-light condition; overrides radiation inference, never enables darkness or replaces soil/host/rain checks.")
@@ -921,6 +925,7 @@ class SimulationRequest(BaseModel):
     )
 
     model_config = ConfigDict(
+        allow_inf_nan=False,
         json_schema_extra={
             "example": {
                 "pest_type": "fruitfly",
@@ -1318,16 +1323,12 @@ class AlertEmailRecipientCreate(BaseModel):
     @field_validator("email")
     @classmethod
     def validate_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
-            raise ValueError("Enter a valid email address")
-        return normalized
+        return normalize_email(value)
 
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: Optional[str]) -> Optional[str]:
-        normalized = (value or "").strip()
-        return normalized or None
+        return normalize_person_name(value) if value and value.strip() else None
 
 
 class AlertEmailRecipientUpdate(BaseModel):
@@ -1341,16 +1342,12 @@ class AlertEmailRecipientUpdate(BaseModel):
     def validate_email(cls, value: Optional[str]) -> str:
         if value is None:
             raise ValueError("Email cannot be empty")
-        normalized = value.strip().lower()
-        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
-            raise ValueError("Enter a valid email address")
-        return normalized
+        return normalize_email(value)
 
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: Optional[str]) -> Optional[str]:
-        normalized = (value or "").strip()
-        return normalized or None
+        return normalize_person_name(value) if value and value.strip() else None
 
     @model_validator(mode="after")
     def require_change(self):

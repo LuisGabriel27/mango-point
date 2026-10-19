@@ -1,3 +1,1 @@
-"""
-MangoPoint Utils — Weather, Evaluation, Visualization, Decision Support
-"""
+"""MangoPoint utilities for weather, date/time, inputs and decision support."""

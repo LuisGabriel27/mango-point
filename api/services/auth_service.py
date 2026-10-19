@@ -8,19 +8,19 @@ from datetime import datetime, timedelta, timezone
 import secrets
 import uuid
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
-from api.core.database import is_database_unavailable
 from api.core.security import (
     AuthConfigurationError,
     create_session_token,
     get_password_hash,
     verify_password,
+    session_credential_stamp,
 )
 from api.models.auth import AuthUserResponse, LoginResponse
-from db.models import PasswordResetChallenge, UserAccount, UserRoleEnum
+from db.models import AuthSession, PasswordResetChallenge, UserAccount, UserRoleEnum
 from utils.datetime_utils import utcnow_naive
 
 
@@ -40,68 +40,25 @@ class EmailAlreadyUsedError(RuntimeError):
     """Raised when another account already owns a requested email address."""
 
 
+class SessionLimitError(RuntimeError):
+    """An account already has two active sessions."""
+
+
+class VerificationCooldownError(RuntimeError):
+    """A verification code was requested too recently."""
+
+
 class AuthService:
     """Authentication-related business logic."""
-
-    def _build_offline_default_admin(self) -> UserAccount:
-        """Build an in-memory default admin user for offline auth fallback."""
-        role_value = settings.DEFAULT_ADMIN_ROLE.strip().lower() or UserRoleEnum.ADMIN.value
-        try:
-            role = UserRoleEnum(role_value)
-        except ValueError:
-            role = UserRoleEnum.ADMIN
-
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        return UserAccount(
-            user_id=0,
-            full_name=settings.DEFAULT_ADMIN_FULL_NAME.strip() or "MangoPoint Administrator",
-            username=settings.DEFAULT_ADMIN_USERNAME.strip() or "admin",
-            email=settings.DEFAULT_ADMIN_EMAIL.strip().lower() or "admin@mangopoint.local",
-            password_hash="",
-            role=role,
-            is_active=True,
-            created_at=now,
-            updated_at=now,
-            last_login_at=now,
-        )
-
-    def _matches_default_admin_credentials(self, username_or_email: str, password: str) -> bool:
-        """Validate whether submitted credentials match configured default admin values."""
-        if not settings.DEFAULT_ADMIN_ENABLED:
-            return False
-
-        normalized_login = (username_or_email or "").strip().lower()
-        if not normalized_login:
-            return False
-
-        username = settings.DEFAULT_ADMIN_USERNAME.strip().lower()
-        email = settings.DEFAULT_ADMIN_EMAIL.strip().lower()
-        expected_password = settings.DEFAULT_ADMIN_PASSWORD
-        return (
-            normalized_login in {username, email}
-            and password == expected_password
-            and bool(expected_password)
-        )
-
-    def login_with_default_admin_fallback(self, username_or_email: str, password: str) -> LoginResponse | None:
-        """
-        Authenticate against default admin credentials when the database is unavailable.
-
-        Returns None when fallback credentials do not match.
-        """
-        if not self._matches_default_admin_credentials(username_or_email, password):
-            return None
-
-        user = self._build_offline_default_admin()
-        return self.session_response(user)
 
     @staticmethod
     def session_response(
         user: UserAccount,
         session_started_at: int | None = None,
         activity_age_seconds: float = 0,
+        session_id: str | None = None,
     ) -> LoginResponse:
-        token, expires_at = create_session_token(user, session_started_at, activity_age_seconds)
+        token, expires_at = create_session_token(user, session_started_at, activity_age_seconds, session_id)
         return LoginResponse(
             access_token=token,
             expires_at=expires_at.isoformat().replace("+00:00", "Z"),
@@ -109,25 +66,34 @@ class AuthService:
             user=AuthUserResponse.from_user(user),
         )
 
-    async def get_user_by_id(self, db: AsyncSession, user_id: int) -> UserAccount | None:
+    async def get_user_by_id(self, db: AsyncSession, user_id: int, *, lock: bool = False) -> UserAccount | None:
         """Fetch a user by primary key."""
-        result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
+        query = select(UserAccount).where(UserAccount.user_id == user_id)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await db.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_user_by_login(self, db: AsyncSession, login_value: str) -> UserAccount | None:
+    @staticmethod
+    async def lock_account(db: AsyncSession, user: UserAccount) -> None:
+        await db.execute(select(UserAccount).where(UserAccount.user_id == user.user_id)
+            .with_for_update().execution_options(populate_existing=True))
+
+    async def get_user_by_login(self, db: AsyncSession, login_value: str, *, lock: bool = False) -> UserAccount | None:
         """Fetch a user by username or email, case-insensitively."""
         normalized = login_value.strip().lower()
         if not normalized:
             return None
 
-        result = await db.execute(
-            select(UserAccount).where(
+        query = select(UserAccount).where(
                 or_(
                     func.lower(UserAccount.username) == normalized,
                     func.lower(UserAccount.email) == normalized,
                 )
             )
-        )
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await db.execute(query)
         return result.scalar_one_or_none()
 
     async def get_user_by_email(self, db: AsyncSession, email: str) -> UserAccount | None:
@@ -147,7 +113,7 @@ class AuthService:
         password: str,
     ) -> UserAccount:
         """Validate login credentials and return the matching user."""
-        user = await self.get_user_by_login(db, username_or_email)
+        user = await self.get_user_by_login(db, username_or_email, lock=True)
         if user is None or not verify_password(password, user.password_hash):
             raise AuthenticationError("Invalid username/email or password.")
         if not user.is_active:
@@ -161,19 +127,39 @@ class AuthService:
         password: str,
     ) -> LoginResponse:
         """Authenticate a user and issue a bearer token."""
-        try:
-            user = await self.authenticate_user(db, username_or_email, password)
-        except Exception as exc:
-            if not is_database_unavailable(exc):
-                raise
+        # The account row lock serializes simultaneous logins across API workers.
+        user = await self.authenticate_user(db, username_or_email, password)
+        now = utcnow_naive()
+        stamp = session_credential_stamp(user)
+        await db.execute(delete(AuthSession).where(AuthSession.user_id == user.user_id,
+            or_(AuthSession.expires_at <= now, AuthSession.revoked_at.is_not(None), AuthSession.credential_stamp != stamp)))
+        count = await db.scalar(select(func.count()).select_from(AuthSession).where(
+            AuthSession.user_id == user.user_id, AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > now, AuthSession.credential_stamp == stamp))
+        if count >= 2:
+            raise SessionLimitError("This account already has two active sessions. Log out on another browser or wait for an inactive session to expire, then try again.")
+        session_id = str(uuid.uuid4())
+        response = self.session_response(user, session_id=session_id)
+        db.add(AuthSession(session_id=session_id, user_id=user.user_id, credential_stamp=stamp,
+            expires_at=datetime.fromisoformat(response.expires_at.replace("Z", "+00:00")).replace(tzinfo=None), created_at=now))
+        user.last_login_at = now
+        await db.flush()
+        return response
 
-            fallback = self.login_with_default_admin_fallback(username_or_email, password)
-            if fallback is not None:
-                return fallback
-            raise
-
-        user.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        return self.session_response(user)
+    async def renew_session(self, db: AsyncSession, user: UserAccount, claims: dict, activity_age: float) -> LoginResponse:
+        # Use the same lock order as login; a revoked session cannot be renewed.
+        await db.execute(select(UserAccount).where(UserAccount.user_id == user.user_id).with_for_update().execution_options(populate_existing=True))
+        session = await db.get(AuthSession, claims["sid"], populate_existing=True, with_for_update=True)
+        now = utcnow_naive()
+        if (session is None or session.user_id != user.user_id or session.revoked_at is not None
+                or session.expires_at <= now or session.credential_stamp != session_credential_stamp(user)
+                or claims["credential_stamp"] != session_credential_stamp(user)):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Session ended. Please sign in again.")
+        response = self.session_response(user, claims["session_started_at"], activity_age, session.session_id)
+        session.expires_at = datetime.fromisoformat(response.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        await db.flush()
+        return response
 
     @staticmethod
     def update_profile(user: UserAccount, full_name: str) -> UserAccount:
@@ -201,6 +187,7 @@ class AuthService:
         current_password: str,
     ) -> UserAccount:
         """Change the login and recovery email after rechecking the password."""
+        await db.execute(select(UserAccount).where(UserAccount.user_id == user.user_id).with_for_update().execution_options(populate_existing=True))
         if not user.password_hash or not verify_password(current_password, user.password_hash):
             raise CurrentPasswordError("Current password is incorrect.")
         normalized = email.strip().lower()
@@ -214,13 +201,20 @@ class AuthService:
         self,
         db: AsyncSession,
         user: UserAccount,
+        *, purpose: str = "reset",
     ) -> tuple[PasswordResetChallenge, str]:
         """Create a hashed six-digit code and invalidate older unused codes."""
         now = utcnow_naive()
+        await self.lock_account(db, user)
+        last = await db.scalar(select(PasswordResetChallenge.created_at).where(
+            PasswordResetChallenge.user_id == user.user_id).order_by(PasswordResetChallenge.created_at.desc()).limit(1))
+        if isinstance(last, datetime) and (now - last).total_seconds() < 60:
+            raise VerificationCooldownError("Wait 60 seconds before requesting another verification code.")
         await db.execute(
             update(PasswordResetChallenge)
             .where(
                 PasswordResetChallenge.user_id == user.user_id,
+                PasswordResetChallenge.purpose == purpose,
                 PasswordResetChallenge.consumed_at.is_(None),
             )
             .values(consumed_at=now)
@@ -233,6 +227,9 @@ class AuthService:
             attempt_count=0,
             expires_at=now + timedelta(minutes=settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES),
             created_at=now,
+            purpose=purpose,
+            email_snapshot=user.email,
+            credential_stamp=session_credential_stamp(user),
         )
         db.add(challenge)
         await db.flush()
@@ -252,8 +249,15 @@ class AuthService:
             )
         )
         challenge = result.scalar_one_or_none()
+        if challenge is None:
+            raise PasswordResetCodeError("This reset code is invalid or has expired.")
+        # All credential operations lock the account before the challenge row.
+        user = await self.get_user_by_id(db, challenge.user_id, lock=True)
+        result = await db.execute(select(PasswordResetChallenge).where(
+            PasswordResetChallenge.challenge_id == challenge_id).with_for_update().execution_options(populate_existing=True))
+        challenge = result.scalar_one_or_none()
         now = utcnow_naive()
-        if challenge is None or challenge.consumed_at is not None or challenge.expires_at <= now:
+        if challenge is None or challenge.purpose != "reset" or challenge.consumed_at is not None or challenge.expires_at <= now:
             raise PasswordResetCodeError("This reset code is invalid or has expired.")
         if challenge.attempt_count >= settings.PASSWORD_RESET_MAX_ATTEMPTS:
             challenge.consumed_at = now
@@ -266,10 +270,13 @@ class AuthService:
             remaining = settings.PASSWORD_RESET_MAX_ATTEMPTS - challenge.attempt_count
             raise PasswordResetCodeError(f"Incorrect reset code. {remaining} attempts remaining.")
 
-        user = await self.get_user_by_id(db, challenge.user_id)
         if user is None or not user.is_active:
             challenge.consumed_at = now
             raise PasswordResetCodeError("This reset code is invalid or has expired.")
+        if (challenge.email_snapshot is not None and challenge.email_snapshot != user.email
+                or challenge.credential_stamp is not None and challenge.credential_stamp != session_credential_stamp(user)):
+            challenge.consumed_at = now
+            raise PasswordResetCodeError("Account details changed. Request a new code.")
 
         if verify_password(new_password, user.password_hash):
             raise PasswordResetCodeError("Choose a password you have not already used.")
@@ -277,6 +284,33 @@ class AuthService:
         user.password_hash = get_password_hash(new_password)
         challenge.consumed_at = now
         return user
+
+    async def confirm_password_change(self, db: AsyncSession, user: UserAccount, payload) -> None:
+        await db.execute(select(UserAccount).where(UserAccount.user_id == user.user_id).with_for_update().execution_options(populate_existing=True))
+        if not verify_password(payload.current_password, user.password_hash):
+            raise CurrentPasswordError("Current password is incorrect.")
+        await self.verify_account_code(db, user, "change", payload.challenge_id, payload.code)
+        self.change_password(user, payload.current_password, payload.new_password)
+
+    async def verify_account_code(self, db: AsyncSession, user: UserAccount, purpose: str, challenge_id: str, code: str) -> None:
+        await self.lock_account(db, user)
+        result = await db.execute(select(PasswordResetChallenge).where(
+            PasswordResetChallenge.challenge_id == challenge_id).with_for_update())
+        challenge = result.scalar_one_or_none()
+        now = utcnow_naive()
+        if (challenge is None or challenge.purpose != purpose or challenge.user_id != user.user_id
+                or challenge.consumed_at is not None or challenge.expires_at <= now
+                or challenge.email_snapshot != user.email
+                or challenge.credential_stamp != session_credential_stamp(user)):
+            raise PasswordResetCodeError("This verification code is invalid or has expired. Request a new code.")
+        if challenge.attempt_count >= settings.PASSWORD_RESET_MAX_ATTEMPTS:
+            raise PasswordResetCodeError("Too many incorrect attempts. Request a new code.")
+        if not verify_password(code, challenge.code_hash):
+            challenge.attempt_count += 1
+            if challenge.attempt_count >= settings.PASSWORD_RESET_MAX_ATTEMPTS:
+                challenge.consumed_at = now
+            raise PasswordResetCodeError("Incorrect verification code. Request a new code after five incorrect attempts.")
+        challenge.consumed_at = now
 
     async def ensure_default_admin(self, db: AsyncSession) -> tuple[str, UserAccount | None]:
         """Create the configured default admin and keep its account identity active."""

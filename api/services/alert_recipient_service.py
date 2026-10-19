@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import AlertEmailRecipient, AlertEmailRecipientState
@@ -127,7 +127,7 @@ class AlertRecipientService:
         normalized_name = (name or "").strip() or None
         result = await db.execute(
             select(AlertEmailRecipient).where(
-                AlertEmailRecipient.email == normalized_email,
+                func.lower(AlertEmailRecipient.email) == normalized_email,
             )
         )
         existing = result.scalar_one_or_none()
@@ -174,7 +174,7 @@ class AlertRecipientService:
             normalized_email = email.strip().lower()
             duplicate_result = await db.execute(
                 select(AlertEmailRecipient).where(
-                    AlertEmailRecipient.email == normalized_email,
+                    func.lower(AlertEmailRecipient.email) == normalized_email,
                     AlertEmailRecipient.recipient_id != recipient_id,
                 )
             )

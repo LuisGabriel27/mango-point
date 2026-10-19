@@ -163,18 +163,23 @@ class NotificationService:
         self,
         code: str,
         expires_minutes: int,
+        *, purpose: str = "reset",
     ) -> EmailMessage:
-        """Build the plain-text and HTML versions of a reset-code email."""
+        """Build a purpose-specific verification email without exposing account secrets."""
+        label = {"change": "password change", "email": "recovery email change"}.get(purpose, "password reset")
+        heading = "Reset your password" if purpose == "reset" else f"Confirm your {label}"
+        action = "reset your MangoPoint password" if purpose == "reset" else f"confirm your MangoPoint {label}"
+        screen = "password reset" if purpose == "reset" else "account settings"
         email = EmailMessage()
-        email["Subject"] = f"{code} is your MangoPoint password reset code"
+        email["Subject"] = f"{code} is your MangoPoint password reset code" if purpose == "reset" else f"Confirm your MangoPoint {label}"
         email["From"] = formataddr((self.from_name, self.from_email))
         email["To"] = "Undisclosed recipient:;"
         email.set_content(
-            "MangoPoint password reset\n"
+            f"MangoPoint {label}\n"
             "=========================\n\n"
-            "We received a request to reset your MangoPoint password.\n\n"
+            f"We received a request to {action}.\n\n"
             f"Your verification code is: {code}\n\n"
-            f"This link expires in {expires_minutes} minutes. If you did not request "
+            f"This code expires in {expires_minutes} minutes. If you did not request "
             "this change, you can ignore this email.\n"
         )
 
@@ -185,10 +190,10 @@ class NotificationService:
   <div style="max-width:600px;margin:32px auto;padding:0 16px;">
     <div style="background:#fff;border:1px solid #d7e3db;border-top:5px solid #1b4332;border-radius:12px;padding:28px;">
       <div style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#1b4332;">MangoPoint secure access</div>
-      <h1 style="font-size:24px;margin:10px 0;color:#17211d;">Reset your password</h1>
-      <p style="font-size:15px;line-height:1.6;color:#58645e;">Enter this verification code on the MangoPoint password reset screen.</p>
+      <h1 style="font-size:24px;margin:10px 0;color:#17211d;">{heading}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#58645e;">Enter this verification code on the MangoPoint {screen} screen.</p>
       <div style="margin:24px 0;padding:16px;border:1px solid #cddfd4;border-radius:10px;background:#edf5f0;color:#1b4332;font-size:30px;font-weight:800;letter-spacing:.28em;text-align:center;">{safe_code}</div>
-      <p style="font-size:13px;line-height:1.6;color:#667085;">This link expires in {expires_minutes} minutes. If you did not request this change, you can ignore this email.</p>
+      <p style="font-size:13px;line-height:1.6;color:#667085;">This code expires in {expires_minutes} minutes. If you did not request this change, you can ignore this email.</p>
     </div>
   </div>
 </body></html>""",
@@ -410,6 +415,7 @@ class NotificationService:
         recipient: str,
         code: str,
         expires_minutes: int,
+        *, purpose: str = "reset",
     ) -> bool:
         """Send a private six-digit recovery code using the configured transport."""
         recipients = normalize_email_recipients([recipient])
@@ -419,7 +425,7 @@ class NotificationService:
             logger.warning("Skipping password reset email: %s", configuration_error)
             return False
 
-        email = self._build_password_reset_code_message(code, expires_minutes)
+        email = self._build_password_reset_code_message(code, expires_minutes, purpose=purpose)
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 await self._deliver_email(email, recipients)

@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager, suppress
 
 import asyncpg
 from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -145,6 +146,16 @@ app.add_middleware(
 
 
 # Exception handler
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Keep useful field errors without reflecting credentials or non-JSON numbers.
+    detail = [
+        {key: error[key] for key in ("type", "loc", "msg")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 @app.exception_handler(SQLAlchemyError)
 @app.exception_handler(asyncpg.PostgresError)
 async def database_exception_handler(request: Request, exc: Exception):

@@ -2439,6 +2439,11 @@ input[type="range"]::-moz-range-progress {
 .orchard-modal-actions { display: flex; gap: .5rem; margin-top: .8rem; padding-top: .8rem; border-top: 1px solid var(--mp-border); }
 
 .logout-confirmation-backdrop { z-index: 3200; }
+.confirmation-modal-backdrop { z-index: 3600; }
+.settings-verification { padding: .8rem; margin-top: .8rem; border: 1px solid var(--mp-border); border-radius: 10px; background: #f5f8f6; }
+.settings-verification p { font-size: .8rem; color: var(--mp-muted); }
+.settings-form-actions { flex-wrap: wrap; }
+.logout-confirmation-body p + p { margin-top: .5rem; }
 .logout-confirmation-dialog { width: min(420px, 100%); overflow-y: auto; }
 .logout-confirmation-body { display: flex; align-items: center; gap: .9rem; padding: 1.25rem 1rem; }
 .logout-confirmation-body > i {

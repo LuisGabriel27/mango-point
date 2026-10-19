@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
+import uuid
 from typing import Any, Optional
 
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
@@ -22,7 +23,7 @@ from api.core.database import (
     get_db,
     is_database_unavailable,
 )
-from db.models import UserAccount, UserRoleEnum
+from db.models import AuthSession, UserAccount
 from utils.datetime_utils import utcnow_naive
 
 
@@ -44,35 +45,6 @@ except ModuleNotFoundError:
 
 bearer_scheme = HTTPBearer(auto_error=False)
 SESSION_IDLE_TIMEOUT_SECONDS = 15 * 60
-
-
-def _role_from_claim(role_value: Any) -> UserRoleEnum:
-    """Coerce token role claim to a known enum value."""
-    normalized = str(role_value or "").strip().lower()
-    try:
-        return UserRoleEnum(normalized)
-    except ValueError:
-        return UserRoleEnum.ADMIN
-
-
-def _build_offline_user_from_payload(payload: dict[str, Any], user_id: int) -> UserAccount | None:
-    """Create an in-memory user model when offline auth claims are present."""
-    if not payload.get("offline_auth"):
-        return None
-
-    now = utcnow_naive()
-    return UserAccount(
-        user_id=user_id,
-        full_name=str(payload.get("full_name") or settings.DEFAULT_ADMIN_FULL_NAME or "MangoPoint Administrator"),
-        username=str(payload.get("username") or settings.DEFAULT_ADMIN_USERNAME or "admin"),
-        email=str(payload.get("email") or settings.DEFAULT_ADMIN_EMAIL or "admin@mangopoint.local"),
-        password_hash="",
-        role=_role_from_claim(payload.get("role")),
-        is_active=bool(payload.get("is_active", True)),
-        created_at=now,
-        updated_at=now,
-        last_login_at=now,
-    )
 
 
 def _get_secret_key() -> str:
@@ -153,6 +125,7 @@ def create_session_token(
     user: UserAccount,
     session_started_at: int | None = None,
     activity_age_seconds: float = 0,
+    session_id: str | None = None,
 ) -> tuple[str, datetime]:
     """Renew only within the idle window and the original absolute lifetime."""
     now = datetime.now(timezone.utc)
@@ -172,6 +145,7 @@ def create_session_token(
         "session_started_at": started,
         "credential_stamp": session_credential_stamp(None if offline else user),
         "jti": secrets.token_urlsafe(16),
+        "sid": session_id or str(uuid.uuid4()),
     }
     if offline:
         claims.update(offline_auth=True, username=user.username, email=user.email,
@@ -186,6 +160,7 @@ def decode_session_token(token: str) -> dict[str, Any]:
         started, issued, expires = (payload.get(key) for key in ("session_started_at", "iat", "exp"))
         stamp = payload.get("credential_stamp")
         if (any(type(value) is not int for value in (started, issued, expires))
+                or not isinstance(payload.get("sid"), str) or len(payload["sid"]) != 36
                 or not isinstance(stamp, str) or len(stamp) != 64
                 or any(char not in '0123456789abcdef' for char in stamp)
                 or started > issued or expires > issued + SESSION_IDLE_TIMEOUT_SECONDS + 1
@@ -228,59 +203,33 @@ async def get_current_user(
             detail="Invalid authentication token.",
         ) from exc
 
-    offline_user = _build_offline_user_from_payload(payload, user_id)
-    if offline_user is not None and (
-        not settings.DEFAULT_ADMIN_ENABLED
-        or not hmac.compare_digest(payload["credential_stamp"], session_credential_stamp())
-    ):
-        raise HTTPException(status_code=401, detail="Session is no longer valid. Please sign in again.")
-
+    # Login slots require the authoritative database, including on offline companions.
+    # Old database-unavailable fallback tokens cannot bypass the session limit.
+    if payload.get("offline_auth"):
+        raise HTTPException(status_code=401, detail="Please sign in again with the local database running.")
     try:
         result = await db.execute(select(UserAccount).where(UserAccount.user_id == user_id))
         user = result.scalar_one_or_none()
 
-        # Offline fallback tokens use the temporary subject ``0`` because no
-        # database row is available when they are issued.  Once PostgreSQL is
-        # reachable again, resolve that signed token to the persisted account
-        # with the same username.  Returning the temporary model here would
-        # make authenticated reads appear healthy while writes fail foreign-key
-        # checks such as ``created_by_user_id``.
-        if user is None and offline_user is not None:
-            recovered_result = await db.execute(
-                select(UserAccount).where(
-                    func.lower(UserAccount.username)
-                    == str(offline_user.username).strip().lower()
-                )
-            )
-            user = recovered_result.scalar_one_or_none()
     except Exception as exc:
-        if offline_user is not None and is_database_unavailable(exc):
-            return offline_user
         if is_database_unavailable(exc):
             raise database_unavailable_http_exception() from exc
         raise
 
     if user is None:
-        if offline_user is not None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Offline session no longer matches a database account. Please sign in again.",
-            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authenticated user no longer exists.",
         )
 
-    if offline_user is not None:
-        # A fallback session must never bypass a password changed in the
-        # persisted account while PostgreSQL was unavailable to that device.
-        valid_credentials = bool(user.password_hash) and verify_password(
-            settings.DEFAULT_ADMIN_PASSWORD, user.password_hash
-        )
-    else:
-        valid_credentials = hmac.compare_digest(payload["credential_stamp"], session_credential_stamp(user))
+    valid_credentials = hmac.compare_digest(payload["credential_stamp"], session_credential_stamp(user))
     if not valid_credentials:
         raise HTTPException(status_code=401, detail="Your password changed or your session was revoked. Please sign in again.")
+    session = await db.get(AuthSession, payload["sid"])
+    if (session is None or session.user_id != user.user_id or session.revoked_at is not None
+            or session.expires_at <= utcnow_naive()
+            or not hmac.compare_digest(session.credential_stamp, session_credential_stamp(user))):
+        raise HTTPException(status_code=401, detail="Session ended. Please sign in again.")
     return user
 
 

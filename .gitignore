@@ -7,6 +7,7 @@ __pycache__/
 venv/
 
 .pytest_cache/
+.mplconfig/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/

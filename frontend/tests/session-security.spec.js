@@ -36,8 +36,13 @@ function server() {
           if (heldRefresh) return heldRefresh(route, response)
           return route.fulfill({ json: response })
         }
+        if (path === '/auth/password/code') {
+          if (body.current_password !== password) return route.fulfill({ status: 400, json: { detail: 'Current password is incorrect.' } })
+          return route.fulfill({ json: { challenge_id: '00000000-0000-0000-0000-000000000001', message: 'Verification code sent.' } })
+        }
         if (path === '/auth/password') {
           if (body.current_password !== password) return route.fulfill({ status: 400, json: { detail: 'Current password is incorrect.' } })
+          if (body.code !== '123456') return route.fulfill({ status: 400, json: { detail: 'Incorrect verification code.' } })
           password = body.new_password
           version++
           return route.fulfill({ json: { message: 'Password updated. All devices must sign in again.' } })
@@ -108,11 +113,22 @@ test('successful password change signs out the current and second device; a wron
     await page.locator('#settings-current-password').fill('incorrect')
     await page.locator('#settings-new-password').fill('new-password-123')
     await page.locator('#settings-confirm-password').fill('new-password-123')
-    await page.getByRole('button', { name: 'Change password', exact: true }).click()
+    const passwordPanel = page.locator('section[aria-labelledby="password-settings-title"]')
+    await passwordPanel.getByRole('button', { name: 'Send verification code', exact: true }).click()
     await expect(page.getByText('Current password is incorrect.', { exact: true })).toBeVisible()
     await expect(second.getByRole('button', { name: 'History', exact: true })).toBeVisible()
     await page.locator('#settings-current-password').fill('old-password')
-    await page.getByRole('button', { name: 'Change password', exact: true }).click()
+    await passwordPanel.getByRole('button', { name: 'Show current password', exact: true }).click()
+    await expect(page.locator('#settings-current-password')).toHaveAttribute('type', 'text')
+    await passwordPanel.getByRole('button', { name: 'Hide current password', exact: true }).click()
+    await passwordPanel.getByRole('button', { name: 'Send verification code', exact: true }).click()
+    await expect(page.locator('#settings-current-password')).toBeDisabled()
+    await page.locator('#settings-password-code').fill('000000')
+    await passwordPanel.getByRole('button', { name: 'Confirm password change', exact: true }).click()
+    await expect(page.getByText('Incorrect verification code.', { exact: true })).toBeVisible()
+    await expect(second.getByRole('button', { name: 'History', exact: true })).toBeVisible()
+    await page.locator('#settings-password-code').fill('123456')
+    await passwordPanel.getByRole('button', { name: 'Confirm password change', exact: true }).click()
     await expect(page.locator('#login-identifier')).toBeVisible()
     await expect(page.getByRole('status').filter({ hasText: 'signed out on all devices' })).toBeVisible()
     await second.clock.fastForward(30100)

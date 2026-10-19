@@ -66,13 +66,14 @@ manifest are local-only. The sync triggers cover durable application tables
 and enqueue events in the same transaction as the original write; the cloud
 worker performs idempotent upserts for database rows only.
 
-## Backward Compatibility
+## Importing models
 
-The file `api/models/database.py` is a re-export shim:
+Import ORM models directly from the consolidated `db.models` module:
+
 ```python
-from db.models import *
-TreeRegistry = Tree          # legacy alias
-PestObservation = InfestationRecord  # legacy alias
+from db.models import InfestationRecord, Tree
 ```
 
-This ensures any code using `from ..models.database import X` continues to work.
+The unused API compatibility wrapper has been removed. External scripts using
+the old import path must switch to `db.models` and use `Tree` or
+`InfestationRecord` in place of the legacy aliases.

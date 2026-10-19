@@ -9,6 +9,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.datetime_utils import format_rfc3339
+from utils.input_validation import normalize_email, normalize_person_name
 
 
 def _serialize_datetime(value: Optional[datetime]) -> Optional[str]:
@@ -21,8 +22,16 @@ def _serialize_datetime(value: Optional[datetime]) -> Optional[str]:
 class LoginRequest(BaseModel):
     """Login request payload."""
 
-    username_or_email: str = Field(..., min_length=1, description="Username or email address")
-    password: str = Field(..., min_length=1, description="Account password")
+    username_or_email: str = Field(..., min_length=1, max_length=254, description="Username or email address")
+    password: str = Field(..., min_length=1, max_length=256, description="Account password")
+
+    @field_validator("username_or_email")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("Enter your username or email address.")
+        return value
 
 
 class AuthUserResponse(BaseModel):
@@ -85,10 +94,7 @@ class CurrentUserUpdateRequest(BaseModel):
     @field_validator("full_name")
     @classmethod
     def normalize_full_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("Name cannot be empty.")
-        return normalized
+        return normalize_person_name(value)
 
 
 class PasswordChangeRequest(BaseModel):
@@ -96,6 +102,15 @@ class PasswordChangeRequest(BaseModel):
 
     current_password: str = Field(..., min_length=1, max_length=256)
     new_password: str = Field(..., min_length=8, max_length=256)
+    challenge_id: str = Field(..., min_length=36, max_length=36)
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
+
+    @field_validator("new_password")
+    @classmethod
+    def password_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("New password cannot be blank.")
+        return value
 
     @model_validator(mode="after")
     def passwords_must_differ(self) -> "PasswordChangeRequest":
@@ -110,26 +125,32 @@ class PasswordChangeResponse(BaseModel):
     message: str
 
 
+class PasswordChangeCodeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=256)
+
+
 class PasswordResetRequest(BaseModel):
-    """Email address used to request a password-reset link."""
+    """Email address used to request a password-reset code."""
 
     email: str = Field(..., min_length=3, max_length=255)
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized.count("@") != 1 or "." not in normalized.rsplit("@", 1)[-1]:
-            raise ValueError("Enter a valid email address.")
-        return normalized
+        return normalize_email(value)
 
 
 class PasswordResetConfirmRequest(BaseModel):
     """Verification challenge, emailed code, and replacement password."""
 
     challenge_id: str = Field(..., min_length=36, max_length=36)
-    code: str = Field(..., pattern=r"^\d{6}$")
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
     new_password: str = Field(..., min_length=8, max_length=256)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_must_not_be_blank(cls, value: str) -> str:
+        return PasswordChangeRequest.password_must_not_be_blank(value)
 
 
 class PasswordResetResponse(BaseModel):
@@ -140,10 +161,12 @@ class PasswordResetResponse(BaseModel):
 
 
 class AccountEmailUpdateRequest(BaseModel):
-    """Recovery email change authorized by the current password."""
+    """Recovery email change authorized by the password and existing inbox."""
 
     email: str = Field(..., min_length=3, max_length=255)
     current_password: str = Field(..., min_length=1, max_length=256)
+    challenge_id: str = Field(..., min_length=36, max_length=36)
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
 
     @field_validator("email")
     @classmethod
@@ -152,6 +175,6 @@ class AccountEmailUpdateRequest(BaseModel):
 
 
 class LogoutResponse(BaseModel):
-    """Logout acknowledgement for client-side token cleanup."""
+    """Logout acknowledgement after revoking the persisted session."""
 
     message: str

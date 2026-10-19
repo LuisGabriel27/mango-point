@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import api, { apiErrorMessage } from '../api'
 import { useAuth } from '../context/AuthContext'
 import AlertRecipientSettings from './AlertRecipientSettings'
+import PasswordInput from './PasswordInput'
+import { emailValidationError, nameValidationError } from '../utils/inputValidation'
 
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
@@ -38,7 +40,20 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordError, setPasswordError] = useState('')
+  const [passwordChallenge, setPasswordChallenge] = useState(null)
+  const [passwordCode, setPasswordCode] = useState('')
+  const [emailChallenge, setEmailChallenge] = useState(null)
+  const [emailCode, setEmailCode] = useState('')
+  const [passwordResendAt, setPasswordResendAt] = useState(0)
+  const [emailResendAt, setEmailResendAt] = useState(0)
+  const [now, setNow] = useState(Date.now())
   const busy = profileSaving || emailSaving || passwordSaving
+
+  useEffect(() => {
+    if (!passwordChallenge && !emailChallenge) return undefined
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [passwordChallenge, emailChallenge])
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement
@@ -79,8 +94,8 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
   const handleProfileSubmit = async (event) => {
     event.preventDefault()
     const normalizedName = fullName.trim()
-    if (!normalizedName) {
-      setProfileError('Name cannot be empty.')
+    if (nameValidationError(normalizedName)) {
+      setProfileError(nameValidationError(normalizedName))
       return
     }
     setProfileSaving(true)
@@ -102,7 +117,7 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
   const handlePasswordSubmit = async (event) => {
     event.preventDefault()
     setPasswordError('')
-    if (newPassword.length < 8) {
+    if (!newPassword.trim() || newPassword.length < 8 || newPassword.length > 256) {
       setPasswordError('New password must contain at least 8 characters.')
       return
     }
@@ -117,9 +132,22 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
 
     setPasswordSaving(true)
     try {
+      if (!passwordChallenge) {
+        const response = await api.requestPasswordChangeCode({ current_password: currentPassword })
+        setPasswordChallenge(response.data)
+        setPasswordCode('')
+        setPasswordResendAt(Date.now() + 60000)
+        return
+      }
+      if (!/^[0-9]{6}$/.test(passwordCode)) {
+        setPasswordError('Enter the six-digit verification code from your email.')
+        return
+      }
       await api.changePassword({
         current_password: currentPassword,
         new_password: newPassword,
+        challenge_id: passwordChallenge.challenge_id,
+        code: passwordCode,
       })
       endSession('Password updated. You have been signed out on all devices. Sign in with your new password.')
     } catch (requestError) {
@@ -133,22 +161,49 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
     event.preventDefault()
     setEmailError('')
     setEmailNotice('')
+    if (emailValidationError(recoveryEmail)) { setEmailError(emailValidationError(recoveryEmail)); return }
     setEmailSaving(true)
     try {
+      if (!emailChallenge) {
+        const response = await api.requestEmailChangeCode({ current_password: emailPassword })
+        setEmailChallenge(response.data)
+        setEmailCode('')
+        setEmailResendAt(Date.now() + 60000)
+        return
+      }
+      if (!/^[0-9]{6}$/.test(emailCode)) { setEmailError('Enter the six-digit verification code from your email.'); return }
       const response = await api.updateAccountEmail({
         email: recoveryEmail.trim(),
         current_password: emailPassword,
+        challenge_id: emailChallenge.challenge_id,
+        code: emailCode,
       })
       const updated = response.data.user ?? response.data
       updateUser(updated)
       setRecoveryEmail(updated.email)
       setEmailPassword('')
+      setEmailChallenge(null)
+      setEmailCode('')
       setEmailNotice('Your login and recovery email was updated.')
     } catch (requestError) {
       setEmailError(apiErrorMessage(requestError, 'Could not update your recovery email.'))
     } finally {
       setEmailSaving(false)
     }
+  }
+
+  const resendCode = async (kind) => {
+    const password = kind === 'password'
+    const setSaving = password ? setPasswordSaving : setEmailSaving
+    const setError = password ? setPasswordError : setEmailError
+    setSaving(true)
+    setError('')
+    try {
+      const response = await (password ? api.requestPasswordChangeCode : api.requestEmailChangeCode)({ current_password: password ? currentPassword : emailPassword })
+      if (password) { setPasswordChallenge(response.data); setPasswordCode(''); setPasswordResendAt(Date.now() + 60000) }
+      else { setEmailChallenge(response.data); setEmailCode(''); setEmailResendAt(Date.now() + 60000) }
+    } catch (error) { setError(apiErrorMessage(error, 'Could not resend the verification code.')) }
+    finally { setSaving(false) }
   }
 
   return (
@@ -238,20 +293,30 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
                     <div className="settings-password-grid">
                       <div>
                         <label htmlFor="settings-recovery-email">Email address</label>
-                        <input id="settings-recovery-email" type="email" className="form-control" value={recoveryEmail} onChange={(event) => setRecoveryEmail(event.target.value)} autoComplete="email" maxLength={255} disabled={emailSaving} required />
+                        <input id="settings-recovery-email" type="email" className="form-control" value={recoveryEmail} onChange={(event) => setRecoveryEmail(event.target.value)} autoComplete="email" maxLength={254} disabled={emailSaving || Boolean(emailChallenge)} required />
                       </div>
                       <div>
                         <label htmlFor="settings-email-password">Current password</label>
-                        <input id="settings-email-password" type="password" className="form-control" value={emailPassword} onChange={(event) => setEmailPassword(event.target.value)} autoComplete="current-password" disabled={emailSaving} required />
+                        <PasswordInput id="settings-email-password" label="recovery email current password" value={emailPassword} onChange={(event) => setEmailPassword(event.target.value)} autoComplete="current-password" maxLength={256} disabled={emailSaving || Boolean(emailChallenge)} required />
                       </div>
                     </div>
+                    {emailChallenge && <div className="settings-verification">
+                      <p role="status">A code was sent to your current email, {user?.email}. Enter it to confirm the recovery email change.</p>
+                      <label htmlFor="settings-email-code">Email verification code</label>
+                      <input id="settings-email-code" className="form-control" value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                        inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={emailSaving} required />
+                    </div>}
                     <div className="settings-form-feedback" aria-live="polite">
                       {emailError && <div className="alert alert-danger py-2 mb-0">{emailError}</div>}
                       {!emailError && emailNotice && <div className="alert alert-success py-2 mb-0">{emailNotice}</div>}
                     </div>
                     <div className="settings-form-actions">
+                      {emailChallenge && <>
+                        <button type="button" className="btn btn-outline-secondary btn-sm" disabled={emailSaving} onClick={() => { setEmailChallenge(null); setEmailCode(''); setEmailError('') }}>Edit email</button>
+                        <button type="button" className="btn btn-outline-secondary btn-sm" disabled={emailSaving || now < emailResendAt} onClick={() => resendCode('email')}>Resend code{now < emailResendAt ? ` (${Math.ceil((emailResendAt - now) / 1000)}s)` : ''}</button>
+                      </>}
                       <button type="submit" className="btn btn-success btn-sm" disabled={emailSaving || !emailPassword || recoveryEmail.trim().toLowerCase() === user?.email?.toLowerCase()}>
-                        {emailSaving && <span className="spinner-border spinner-border-sm me-1" />}Save recovery email
+                        {emailSaving && <span className="spinner-border spinner-border-sm me-1" />}{emailChallenge ? 'Confirm recovery email' : 'Send verification code'}
                       </button>
                     </div>
                   </form>
@@ -260,30 +325,40 @@ export default function SettingsModal({ onClose, tutorialTab = null }) {
                 <section className="settings-panel-section" aria-labelledby="password-settings-title">
                   <div className="settings-section-heading" data-tour="settings-password">
                     <span className="settings-section-icon"><i className="bi bi-shield-lock" /></span>
-                    <div><h3 id="password-settings-title">Password</h3><p>Confirm your current password before choosing a replacement.</p></div>
+                    <div><h3 id="password-settings-title">Password</h3><p>Confirm your current password and verify the change through your account email.</p></div>
                   </div>
                   <form className="settings-form" onSubmit={handlePasswordSubmit}>
                     <div className="settings-password-grid">
                       <div className="settings-field-wide">
                         <label htmlFor="settings-current-password">Current password</label>
-                        <input id="settings-current-password" type="password" className="form-control" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" disabled={passwordSaving} required />
+                        <PasswordInput id="settings-current-password" label="current password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} maxLength={256} autoComplete="current-password" disabled={passwordSaving || Boolean(passwordChallenge)} required />
                       </div>
                       <div>
                         <label htmlFor="settings-new-password">New password</label>
-                        <input id="settings-new-password" type="password" className="form-control" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" disabled={passwordSaving} required />
+                        <PasswordInput id="settings-new-password" label="new password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" disabled={passwordSaving || Boolean(passwordChallenge)} required />
                       </div>
                       <div>
                         <label htmlFor="settings-confirm-password">Confirm new password</label>
-                        <input id="settings-confirm-password" type="password" className="form-control" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" disabled={passwordSaving} required />
+                        <PasswordInput id="settings-confirm-password" label="confirm new password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" disabled={passwordSaving || Boolean(passwordChallenge)} required />
                       </div>
                     </div>
                     <small className="text-muted">Use at least 8 characters. Changing your password signs you out on all devices.</small>
+                    {passwordChallenge && <div className="settings-verification">
+                      <p role="status">A six-digit code was sent to {user?.email}. It expires in 10 minutes. Your password has not changed yet.</p>
+                      <label htmlFor="settings-password-code">Email verification code</label>
+                      <input id="settings-password-code" className="form-control" value={passwordCode} onChange={(event) => setPasswordCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                        inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={passwordSaving} required />
+                    </div>}
                     <div className="settings-form-feedback" aria-live="polite">
                       {passwordError && <div className="alert alert-danger py-2 mb-0">{passwordError}</div>}
                     </div>
                     <div className="settings-form-actions">
+                      {passwordChallenge && <>
+                        <button type="button" className="btn btn-outline-secondary btn-sm" disabled={passwordSaving} onClick={() => { setPasswordChallenge(null); setPasswordCode(''); setPasswordError('') }}>Edit password</button>
+                        <button type="button" className="btn btn-outline-secondary btn-sm" disabled={passwordSaving || now < passwordResendAt} onClick={() => resendCode('password')}>Resend code{now < passwordResendAt ? ` (${Math.ceil((passwordResendAt - now) / 1000)}s)` : ''}</button>
+                      </>}
                       <button type="submit" className="btn btn-success btn-sm" disabled={passwordSaving}>
-                        {passwordSaving && <span className="spinner-border spinner-border-sm me-1" />}Change password
+                        {passwordSaving && <span className="spinner-border spinner-border-sm me-1" />}{passwordChallenge ? 'Confirm password change' : 'Send verification code'}
                       </button>
                     </div>
                   </form>

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import api, { apiErrorMessage } from '../api'
+import ConfirmationModal from './ConfirmationModal'
+import { emailValidationError, nameValidationError } from '../utils/inputValidation'
 
 export default function AlertRecipientSettings() {
   const nameInputRef = useRef(null)
@@ -14,6 +16,8 @@ export default function AlertRecipientSettings() {
   const [deletingId, setDeletingId] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [deleteRecipient, setDeleteRecipient] = useState(null)
+  const [deleteError, setDeleteError] = useState('')
 
   const busy = saving || updatingId !== null || deletingId !== null
   const activeCount = recipients.filter((recipient) => recipient.is_active).length
@@ -45,6 +49,8 @@ export default function AlertRecipientSettings() {
   const handleSubmit = async (event) => {
     event.preventDefault()
     const normalizedEmail = email.trim().toLowerCase()
+    const validationError = emailValidationError(normalizedEmail) || nameValidationError(name, true)
+    if (validationError) { setError(validationError); return }
     if (recipients.some((recipient) => (
       recipient.recipient_id !== editingId
       && recipient.email.toLowerCase() === normalizedEmail
@@ -124,12 +130,8 @@ export default function AlertRecipientSettings() {
   }
 
   const handleDelete = async (recipient) => {
-    const label = recipient.name || recipient.email
-    if (!window.confirm(
-      `Permanently delete ${label}? This removes the recipient and cannot be undone.`,
-    )) return
-
     setDeletingId(recipient.recipient_id)
+    setDeleteError('')
     setError('')
     setNotice('')
     try {
@@ -139,8 +141,9 @@ export default function AlertRecipientSettings() {
       ))
       if (editingId === recipient.recipient_id) clearForm()
       setNotice(`${recipient.email} was permanently deleted.`)
+      setDeleteRecipient(null)
     } catch (requestError) {
-      setError(apiErrorMessage(requestError, 'Could not delete this recipient.'))
+      setDeleteError(apiErrorMessage(requestError, 'Could not delete this recipient.'))
     } finally {
       setDeletingId(null)
     }
@@ -156,7 +159,7 @@ export default function AlertRecipientSettings() {
         </div>
       </div>
 
-      <form className="alert-recipient-form" onSubmit={handleSubmit}>
+      <form className="alert-recipient-form" onSubmit={handleSubmit} noValidate>
         <div className="alert-recipient-fields">
           <div>
             <label htmlFor="settings-recipient-name">Name <span>(optional)</span></label>
@@ -245,7 +248,7 @@ export default function AlertRecipientSettings() {
                   : <i className={`bi ${recipient.is_active ? 'bi-pause-fill' : 'bi-play-fill'}`} />}
                 <span>{recipient.is_active ? 'Pause' : 'Resume'}</span>
               </button>
-              <button type="button" className="alert-recipient-action is-delete" onClick={() => handleDelete(recipient)} disabled={busy} aria-label={`Permanently delete ${recipient.name || recipient.email}`}>
+              <button type="button" className="alert-recipient-action is-delete" onClick={() => { setDeleteError(''); setDeleteRecipient(recipient) }} disabled={busy} aria-label={`Permanently delete ${recipient.name || recipient.email}`}>
                 {deletingId === recipient.recipient_id
                   ? <span className="spinner-border spinner-border-sm" />
                   : <i className="bi bi-trash3" />}
@@ -255,6 +258,12 @@ export default function AlertRecipientSettings() {
           </div>
         ))}
       </div>
+      {deleteRecipient && <ConfirmationModal title="Delete notification recipient?" confirmLabel="Delete recipient" danger
+        busy={deletingId !== null} error={deleteError} onClose={() => setDeleteRecipient(null)} onConfirm={() => handleDelete(deleteRecipient)}>
+        <p>Delete <strong>{deleteRecipient.name || deleteRecipient.email}</strong>?</p>
+        {deleteRecipient.name && <p>{deleteRecipient.email}</p>}
+        <p>This permanently removes this recipient from the notification list. They will no longer receive alerts.</p>
+      </ConfirmationModal>}
     </section>
   )
 }

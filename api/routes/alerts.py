@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from ..core.database import get_db
 from ..core.security import get_current_active_user
@@ -651,13 +652,13 @@ async def add_alert_email_recipient(
 ):
     """Create or reactivate one designated recipient."""
     _require_admin(current_user)
-    recipient = await alert_recipient_service.add_or_reactivate(
-        db,
-        email=body.email,
-        name=body.name,
-        created_by_user_id=current_user.user_id,
-    )
-    await db.commit()
+    try:
+        recipient = await alert_recipient_service.add_or_reactivate(
+            db, email=body.email, name=body.name, created_by_user_id=current_user.user_id)
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="That email address is already assigned to another recipient.") from exc
     return recipient
 
 
@@ -684,11 +685,14 @@ async def update_alert_email_recipient(
             update_name="name" in body.model_fields_set,
             is_active=body.is_active,
         )
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="Alert email recipient not found.")
+        await db.commit()
     except AlertRecipientEmailConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if recipient is None:
-        raise HTTPException(status_code=404, detail="Alert email recipient not found.")
-    await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="That email address is already assigned to another recipient.") from exc
     return recipient
 
 

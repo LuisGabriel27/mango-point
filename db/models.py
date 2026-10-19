@@ -166,11 +166,28 @@ class PasswordResetChallenge(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False, default="reset", server_default="reset")
+    email_snapshot: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    credential_stamp: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         Index("idx_password_reset_challenge_user", "user_id"),
         Index("idx_password_reset_challenge_expires", "expires_at"),
     )
+
+
+class AuthSession(Base):
+    """Server-side session slots; never copied into cloud backup or exposed to clients."""
+    __tablename__ = "auth_session"
+
+    session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("user_account.user_id", ondelete="CASCADE"), nullable=False)
+    credential_stamp: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow_naive)
+
+    __table_args__ = (Index("idx_auth_session_user", "user_id"), Index("idx_auth_session_expires", "expires_at"))
 
 
 class Orchard(Base):

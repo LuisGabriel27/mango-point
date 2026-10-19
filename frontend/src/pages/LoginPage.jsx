@@ -57,6 +57,7 @@ export default function LoginPage() {
             className="form-control"
             placeholder="Enter your username or email"
             autoComplete="username"
+            maxLength={254}
             autoCapitalize="none"
             spellCheck={false}
             aria-describedby={error ? 'login-error' : undefined}
@@ -76,6 +77,7 @@ export default function LoginPage() {
               className="form-control"
               placeholder="Enter your password"
               autoComplete="current-password"
+              maxLength={256}
               aria-describedby={error ? 'login-error' : undefined}
               value={password}
               onChange={(event) => setPassword(event.target.value)}

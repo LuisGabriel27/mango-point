@@ -18,6 +18,9 @@ export default function ResetPasswordPage() {
   const handleSubmit = async (event) => {
     event.preventDefault()
     setError('')
+    if (!password.trim() || password.length < 8 || password.length > 256) {
+      setError('Choose a password of 8–256 characters.'); return
+    }
     if (password !== confirmation) {
       setError('The passwords do not match.')
       return

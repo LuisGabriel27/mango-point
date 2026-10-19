@@ -138,7 +138,7 @@ record for real browser rehearsal with both pests and both engines.
 | `api/` | FastAPI app, routes, services, and API-facing schemas |
 | `core/` | Simulation engine, configuration, grid logic, biological rules |
 | `spatial/` | GIS conversion, raster helpers, orchard coordinates |
-| `utils/` | Weather ingestion, evaluation, visualization, decision support |
+| `utils/` | Weather ingestion, date/time and input helpers, decision support |
 | `validation/` | Historical validation workflows and reporting |
 | `frontend/` | React/Vite UI for simulation, monitoring, validation, and review |
 | `db/` | Database schema, ORM models, and import helpers |
@@ -569,7 +569,13 @@ admin-managed list is authoritative, including when every recipient is removed.
 Admins can edit contact details, pause or resume delivery, and permanently delete
 recipient records from the same settings section. Every signed-in user can also
 change their displayed name, login/recovery email, and password from **Settings >
-Account**. Changing the recovery email requires the current password.
+Account**. Password fields have individual visibility toggles. Changing the
+password or recovery email requires the current password and a six-digit code
+sent to the account's existing inbox. Codes expire after 10 minutes, lock after
+five incorrect attempts, and can be resent after 60 seconds. Changing the email
+cannot redirect an already issued password verification code to a new inbox.
+Recipient forms validate addresses and names before saving; deletion uses an
+in-app confirmation with Cancel and explicit Delete actions.
 
 Sessions end after **15 minutes without user interaction**. Clicking, typing,
 pointer movement, scrolling and touch keep a session active; weather updates,
@@ -577,19 +583,31 @@ alert polling and map playback do not. Reloading preserves the inactivity
 deadline. Password changes and password resets invalidate every existing login,
 including the device making the change. Other connected devices return to Login
 on their next authenticated request or session check (every 30 seconds while
-visible); inactive tabs check when reopened. See the
+visible); inactive tabs check when reopened. Each account can have **two active
+sessions** on the same API/database. A third login is blocked until another
+session logs out or expires. Refreshing a session keeps its existing slot;
+closing a browser alone releases it when the inactivity deadline expires.
+Each separate login counts, including a new login in another browser tab;
+tabs that already share the same token use one slot. See the
 [session security guide](docs/session-security.md).
 
-Deploy the frontend and restart the API together for this change. Previously
-issued tokens require a new sign-in. These protections use the existing account
-password hash and require no database schema migration.
+Deploy the frontend and updated API together. The local API startup applies
+`db/migrations/0012_account_session_security.sql`; the matching hosted migration
+is `supabase/migrations/202610170000_account_session_security.sql`, also included
+in the consolidated SQL Editor file. Apply hosted schema updates using the
+project's Supabase connection and schema-sync workflow. Previously issued tokens
+require a new sign-in. Session records stay in the authoritative API database
+and are not copied through cloud backup. Internet-offline use still works with
+the local API and PostgreSQL running; login cannot bypass a database outage.
 
 Password recovery uses the same Brevo or SMTP transport. **Forgot password?**
 sends a six-digit code only to the email saved on the user account. The code
 expires after 10 minutes, is stored only as a password hash, and locks after five
 incorrect attempts. The default `admin@mangopoint.local` bootstrap address cannot
-receive mail, so replace it with a real recovery address in Settings before using
-password recovery.
+receive mail. Configure a real `DEFAULT_ADMIN_EMAIL` before initially creating
+an account. Existing accounts with an inaccessible or placeholder inbox require
+controlled server-side administrator recovery before using email verification;
+editing `.env` does not overwrite an existing account's recovery email.
 Recipient records and their active/paused state are added to the protected cloud
 backup outbox. In Supabase, row-level security is enabled and access is revoked
 from the `anon` and `authenticated` API roles; the server-side PostgreSQL backup

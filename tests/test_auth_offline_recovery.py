@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 import time
+import uuid
 
 import pytest
 from fastapi import HTTPException
@@ -26,6 +27,7 @@ def _offline_payload() -> dict:
         "is_active": True,
         "iat": issued, "exp": issued + 900, "session_started_at": issued,
         "credential_stamp": security.session_credential_stamp(),
+        "sid": str(uuid.uuid4()),
     }
 
 
@@ -43,7 +45,7 @@ def session_settings(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_offline_token_recovers_persisted_user_when_database_returns(monkeypatch):
+async def test_legacy_database_unavailable_tokens_cannot_bypass_persistent_session_slots(monkeypatch):
     persisted_user = UserAccount(
         user_id=1,
         full_name="MangoPoint Administrator",
@@ -58,11 +60,10 @@ async def test_offline_token_recovers_persisted_user_when_database_returns(monke
     payload = _offline_payload()
     monkeypatch.setattr(security, "decode_access_token", lambda _token: payload)
 
-    resolved = await security.get_current_user(_credentials(), db)
-
-    assert resolved is persisted_user
-    assert resolved.user_id == 1
-    assert db.execute.await_count == 2
+    with pytest.raises(HTTPException) as exc_info:
+        await security.get_current_user(_credentials(), db)
+    assert exc_info.value.status_code == 401
+    db.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

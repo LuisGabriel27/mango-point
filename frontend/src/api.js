@@ -73,6 +73,8 @@ const api = {
   updateProfile: (body) => client.patch('/auth/me', body),
   updateAccountEmail: (body) => client.patch('/auth/me/email', body),
   changePassword: (body) => client.post('/auth/password', body),
+  requestPasswordChangeCode: (body) => client.post('/auth/password/code', body),
+  requestEmailChangeCode: (body) => client.post('/auth/me/email/code', body),
   requestPasswordReset: (body) => client.post('/auth/password/forgot', body),
   resetPassword: (body) => client.post('/auth/password/reset', body),
 

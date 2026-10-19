@@ -304,12 +304,24 @@ elapsed startup time remain visible. Public API/database/login checks still
 run every time. `-CheckOnly` does not write the cache; `-ForceDeploy` refreshes
 the bundle check and explicitly rebuilds the frontend.
 
-The Vercel Git integration tracks **`mangopoint-production`** in
-`LuisGabriel27/mango-point`, builds from **`frontend/`**, and updates
+The GitHub default branch and Vercel production branch are both
+**`mangopoint-production`** in `LuisGabriel27/mango-point`. Vercel builds from
+**`frontend/`** and updates
 **https://mango-point-projects.vercel.app** after a successful production build.
 The shared address is a managed production domain. Push or merge reviewed
-frontend changes to that branch; other branches produce previews. A local
-`git pull` only updates that checkout and does not trigger deployment.
+frontend changes to that branch; other branches produce previews. After testing
+and committing the intended changes on `mangopoint-production`, publish them with:
+
+```powershell
+git push origin mangopoint-production
+```
+
+Saving a local file, making a local commit, or running `git pull` does not
+publish a release. Check the Vercel deployment status after pushing; a failed
+build does not publish the new interface. New clones and new pull requests use
+`mangopoint-production` by default. See the
+[repository branch setup](docs/repository-default-branch-2026-10-19.md)
+for the verified default branch and developer workflow.
 See the [automatic deployment check](docs/automatic-production-deployment-2026-10-19.md)
 for the settings and release verified on 2026-10-19.
 
@@ -605,8 +617,11 @@ Recipient forms validate addresses and names before saving; deletion uses an
 in-app confirmation with Cancel and explicit Delete actions.
 
 New sign-ins require **password + email verification code**. After a correct
-password, enter the six-digit code sent to the account's saved email. Login
-codes expire after **5 minutes**, lock after **5 incorrect attempts**, and can
+password, enter the six-digit code sent to the account's saved email. The field
+accepts at most six digits and automatically verifies when all six are entered,
+pasted or autofilled. No button click is needed; the verification button remains
+available for an explicit retry after an error. Login codes expire after
+**5 minutes**, lock after **5 incorrect attempts**, and can
 be resent after **60 seconds**. Resending replaces the previous code; **Start
 again** returns to password entry. No session is granted until verification.
 The configured Brevo/SMTP provider and internet access are required for every
@@ -646,6 +661,17 @@ receive mail. Configure a real `DEFAULT_ADMIN_EMAIL` before initially creating
 an account. Existing accounts with an inaccessible or placeholder inbox require
 controlled server-side administrator recovery before using email verification;
 editing `.env` does not overwrite an existing account's recovery email.
+
+Account verification and pest-alert emails use a shared compact MangoPoint
+layout with the mango-only logo, a readable code panel, expiry, and separate
+alert action steps.
+All account codes stay out of subject lines; the full original alert remains
+available in the plain-text alternative. Generate synthetic local design
+previews with `python -m scripts.preview_emails`, then open
+`outputs/email-design-preview/index.html`. This command sends no email and
+uses no account records. See the [email design guide](docs/email-design-2026-10-19.md)
+for the preview checks, email-client limits and activation steps.
+
 Recipient records and their active/paused state are added to the protected cloud
 backup outbox. In Supabase, row-level security is enabled and access is revoked
 from the `anon` and `authenticated` API roles; the server-side PostgreSQL backup

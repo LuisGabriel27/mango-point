@@ -1,5 +1,9 @@
 # Email-code sign-in implementation, 2026-10-19
 
+This report records implementation-stage checks and the pre-release state.
+The subsequent user push and API activation are recorded in the
+[release activation report](email-login-release-2026-10-19.md).
+
 The working-tree implementation requires the account password and an emailed
 code before creating a new MangoPoint session. It uses the existing FastAPI
 authentication boundary, PostgreSQL challenge/session tables and configured

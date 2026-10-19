@@ -1,0 +1,170 @@
+import { expect, test } from '@playwright/test'
+
+// Every API response and email code here is synthetic; no messages or records
+// are sent to the application server.
+async function emailServer(page) {
+  await page.clock.install()
+  const state = { local: true, delivery: true, legacy: false, verifyUnavailable: false, requests: [], sequence: 0, challenge: null, holdVerify: null }
+  const user = { user_id: 7, username: 'email-test', full_name: 'Email Test', email: 'owner@example.test', role: 'operator' }
+  const issue = async () => {
+    state.challenge = `00000000-0000-0000-0000-${String(++state.sequence).padStart(12, '0')}`
+    return { verification_required: true, challenge_id: state.challenge, masked_email: 'o***@example.test',
+      expires_at: new Date(await page.evaluate(() => Date.now()) + 300000).toISOString(), resend_after_seconds: 60 }
+  }
+  await page.route(/\/(health|auth|orchards|weather|monitoring|simulation|observations|alerts|sync|evaluation|validation)(\/|\?|$)/, async (route) => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname
+    const body = request.method() === 'POST' ? request.postDataJSON() : null
+    state.requests.push({ path, host: url.host, body, method: request.method() })
+    if (path === '/health') return state.local ? route.fulfill({ json: { status: 'healthy', database: 'connected' } }) : route.abort()
+    if (path === '/auth/login') {
+      if (!state.delivery) return route.fulfill({ status: 503, json: { detail: 'Could not send your sign-in code. Check your internet connection and try again.' } })
+      if (state.legacy) return route.fulfill({ json: { access_token: 'unverified-old-api-token', user } })
+      return route.fulfill({ json: await issue() })
+    }
+    if (path === '/auth/login/resend') return route.fulfill({ json: await issue() })
+    if (path === '/auth/login/verify') {
+      if (state.verifyUnavailable) return route.abort()
+      if (body.challenge_id !== state.challenge || body.code !== '123456') {
+        return route.fulfill({ status: 400, json: { detail: 'Incorrect verification code. 4 attempts remaining.' } })
+      }
+      const response = { access_token: 'isolated-email-verified-token', user,
+        expires_at: new Date(await page.evaluate(() => Date.now()) + 900000).toISOString() }
+      if (state.holdVerify) return state.holdVerify(route, response)
+      return route.fulfill({ json: response })
+    }
+    if (path === '/auth/me') return route.fulfill({ json: { user } })
+    if (request.method() !== 'GET') return route.fulfill({ status: 400, json: { detail: 'Unexpected fixture write.' } })
+    if (path === '/orchards') return route.fulfill({ json: { orchards: [] } })
+    if (path === '/simulation/runs') return route.fulfill({ json: { runs: [] } })
+    if (path === '/alerts') return route.fulfill({ json: { alerts: [] } })
+    return route.fulfill({ status: 503, json: { detail: 'Isolated test: unavailable.' } })
+  })
+  return state
+}
+
+async function enterPassword(page) {
+  await page.goto('/login')
+  await page.getByLabel('Username or email').fill('email-test')
+  await page.getByLabel('Password', { exact: true }).fill('private-fixture-password')
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+}
+
+test('password and incorrect code grant no session; the verified code completes login', async ({ page }) => {
+  const state = await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible()
+  await expect(page.getByLabel('Email verification code')).toBeFocused()
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+  await expect(page.locator('#login-password')).toHaveCount(0)
+  await page.getByLabel('Email verification code').fill('000000')
+  await page.getByRole('button', { name: 'Verify and sign in' }).click()
+  await expect(page.getByRole('alert')).toContainText('Incorrect verification code')
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('button', { name: 'Verify and sign in' }).click()
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBe('isolated-email-verified-token')
+  expect(state.requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+    .toEqual(['/auth/login', '/auth/login/verify', '/auth/login/verify'])
+})
+
+test('resend waits for cooldown, replaces the challenge and start again clears the code', async ({ page }) => {
+  const state = await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByRole('button', { name: /Resend code in/ })).toBeDisabled()
+  await page.getByLabel('Email verification code').fill('654321')
+  const first = state.challenge
+  await page.clock.fastForward(61000)
+  await page.getByRole('button', { name: 'Resend code', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'A new code was sent' })).toBeVisible()
+  expect(state.challenge).not.toBe(first)
+  await expect(page.getByLabel('Email verification code')).toHaveValue('')
+  await page.getByRole('button', { name: 'Start again' }).click()
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('')
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+})
+
+test('expired challenges require starting again and a refresh restores no partial session', async ({ page }) => {
+  await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByLabel('Email verification code')).toBeVisible()
+  await page.clock.fastForward(300100)
+  await expect(page.getByRole('status').filter({ hasText: 'This code has expired' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeDisabled()
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+})
+
+test('mail failure and an old password-only API both leave the user signed out', async ({ page }) => {
+  const state = await emailServer(page)
+  state.delivery = false
+  await enterPassword(page)
+  await expect(page.getByRole('alert')).toContainText('Could not send your sign-in code')
+  state.delivery = true
+  state.legacy = true
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('server needs the email sign-in update')
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+})
+
+test('code verification stays on its issuing API when companion availability changes', async ({ page }) => {
+  const state = await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByLabel('Email verification code')).toBeVisible()
+  state.local = false
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('button', { name: 'Verify and sign in' }).click()
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+  const auth = state.requests.filter((request) => ['/auth/login', '/auth/login/verify'].includes(request.path))
+  expect(auth.map((request) => request.host)).toEqual(['127.0.0.1:8000', '127.0.0.1:8000'])
+})
+
+test('a verification response cannot sign in after leaving the login screen', async ({ page }) => {
+  const state = await emailServer(page)
+  let release
+  state.holdVerify = async (route, response) => {
+    await new Promise((resolve) => { release = resolve })
+    await route.fulfill({ json: response })
+  }
+  await enterPassword(page)
+  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('button', { name: 'Verify and sign in' }).click()
+  await expect.poll(() => Boolean(release)).toBe(true)
+  await page.evaluate(() => { history.pushState({}, '', '/forgot-password'); dispatchEvent(new PopStateEvent('popstate')) })
+  await expect(page.getByRole('heading', { name: 'Reset your password' })).toBeVisible()
+  const finished = page.waitForResponse((response) => response.url().endsWith('/auth/login/verify'))
+  release()
+  await finished
+  await expect(page.getByRole('heading', { name: 'Reset your password' })).toBeVisible()
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+})
+
+test('an unreachable issuing API leaves the user signed out without retrying another server', async ({ page }) => {
+  const state = await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByLabel('Email verification code')).toBeVisible()
+  state.local = false
+  state.verifyUnavailable = true
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('button', { name: 'Verify and sign in' }).click()
+  await expect(page.getByRole('alert')).toContainText('Cannot reach MangoPoint on this device')
+  expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
+  expect(state.requests.filter((request) => request.path === '/auth/login/verify').map((request) => request.host))
+    .toEqual(['127.0.0.1:8000'])
+})
+
+test('email verification supports keyboard use on a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await emailServer(page)
+  await enterPassword(page)
+  await expect(page.getByLabel('Email verification code')).toBeFocused()
+  await page.keyboard.type('123456')
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('button', { name: 'Verify and sign in' })).toBeFocused()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
+})

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { apiErrorMessage } from '../api'
@@ -6,26 +6,69 @@ import AuthLayout from '../components/AuthLayout'
 import LoginTerms from '../components/LoginTerms'
 
 export default function LoginPage() {
-  const { login, sessionNotice } = useAuth()
+  const { login, verifyLogin, resendLogin, cancelLogin, sessionNotice } = useAuth()
   const navigate = useNavigate()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [challenge, setChallenge] = useState(null)
+  const [code, setCode] = useState('')
+  const [resendAt, setResendAt] = useState(0)
+  const [now, setNow] = useState(Date.now())
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => () => cancelLogin(), [cancelLogin])
+  useEffect(() => {
+    if (!challenge) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [challenge])
+
+  const acceptChallenge = (next) => {
+    setChallenge(next)
+    setCode('')
+    setPassword('')
+    setNow(Date.now())
+    setResendAt(Date.now() + next.resend_after_seconds * 1000)
+  }
+  const resendSeconds = Math.max(0, Math.ceil((resendAt - now) / 1000))
+  const expired = challenge && Date.parse(challenge.expires_at) <= now
+
+  const handleResend = async () => {
+    if (loading || resendSeconds || expired) return
+    setLoading(true)
+    setError(null)
+    setNotice('')
+    try {
+      acceptChallenge(await resendLogin(challenge))
+      setNotice('A new code was sent. Use the latest email.')
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Unable to resend your sign-in code.'))
+      if (err?.response?.status === 429) {
+        setResendAt(Date.now() + Number(err.response.headers['retry-after'] || 60) * 1000)
+      }
+    } finally { setLoading(false) }
+  }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (loading) return
     setError(null)
+    setNotice('')
     setLoading(true)
     try {
-      await login(identifier, password)
-      navigate('/')
+      if (challenge) {
+        await verifyLogin(challenge, code)
+        navigate('/')
+      } else {
+        acceptChallenge(await login(identifier, password))
+      }
     } catch (err) {
       const status = err?.response?.status
-      if (status === 401) setError('Check your username or email and password, then try again.')
-      else if (status === 503 || status === 404) setError('Sign-in is temporarily unavailable. Please try again shortly.')
+      if (status === 401 && !challenge) setError('Check your username or email and password, then try again.')
+      else if (status === 404) setError('Sign-in verification is unavailable. Ask the administrator to update the API.')
       else setError(apiErrorMessage(err, 'Unable to connect to MangoPoint.'))
     } finally {
       setLoading(false)
@@ -36,11 +79,12 @@ export default function LoginPage() {
     <AuthLayout
       compact
       eyebrow="Account access"
-      title="Welcome back"
-      description="Sign in to your orchard workspace to continue."
+      title={challenge ? 'Check your email' : 'Welcome back'}
+      description={challenge ? `Enter the six-digit sign-in code sent to ${challenge.masked_email}.` : 'Sign in to your orchard workspace to continue.'}
       footer={<span className="login-access-note"><i className="bi bi-lock" aria-hidden="true" />Access for authorized orchard personnel</span>}
     >
       {sessionNotice && <div className="alert alert-info auth-alert" role="status">{sessionNotice}</div>}
+      {notice && <div className="alert alert-info auth-alert" role="status">{notice}</div>}
       {error && (
         <div id="login-error" className="alert alert-warning auth-alert" role="alert">
           <i className="bi bi-exclamation-circle" aria-hidden="true" />
@@ -48,7 +92,35 @@ export default function LoginPage() {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="login-form" aria-busy={loading}>
+      <form key={challenge ? 'verification' : 'password'} onSubmit={handleSubmit} className="login-form" aria-busy={loading}>
+        {challenge ? (
+          <>
+            <div className="login-field">
+              <label className="form-label" htmlFor="login-code">Email verification code</label>
+              <input id="login-code" type="text" className="form-control" inputMode="numeric"
+                autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6}
+                value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
+                aria-describedby="login-code-help" required autoFocus disabled={loading || expired} />
+              <p id="login-code-help" className="auth-password-hint mt-2" role={expired ? 'status' : undefined}>
+                {expired ? 'This code has expired. Start again to request a new code.' : 'Check your inbox or spam folder. Never share your code.'}
+              </p>
+            </div>
+            <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading || expired}>
+              {loading ? 'Verifying…' : 'Verify and sign in'}
+            </button>
+            <div className="d-flex flex-wrap gap-3 justify-content-between mt-3">
+              <button type="button" className="btn btn-link p-0 auth-inline-link" onClick={handleResend}
+                disabled={loading || resendSeconds > 0 || expired}>
+                {resendSeconds ? `Resend code in ${resendSeconds}s` : 'Resend code'}
+              </button>
+              <button type="button" className="btn btn-link p-0 auth-inline-link" disabled={loading}
+                onClick={() => { cancelLogin(); setChallenge(null); setCode(''); setError(null); setNotice('') }}>
+                Start again
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         <div className="login-field">
           <label className="form-label" htmlFor="login-identifier">Username or email</label>
           <input
@@ -106,6 +178,9 @@ export default function LoginPage() {
             <>Sign in<i className="bi bi-arrow-right" aria-hidden="true" /></>
           )}
         </button>
+        <p className="auth-password-hint mt-3 mb-0">We’ll email a verification code after checking your password. Internet access is required.</p>
+          </>
+        )}
       </form>
       <LoginTerms />
     </AuthLayout>

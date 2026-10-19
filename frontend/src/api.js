@@ -5,7 +5,8 @@ import { SESSION_INVALID_EVENT } from './utils/sessionMonitor.js'
 const client = axios.create({ adapter: 'fetch' })
 
 client.interceptors.request.use(async (config) => {
-  const target = await resolveApiTarget()
+  const target = config.authTarget || await resolveApiTarget()
+  config.authTarget = target
   config.baseURL = target.baseURL
   if (target.mode === 'local' || target.mode === 'local-unavailable') {
     config.fetchOptions = localFetchOptions(config)
@@ -38,7 +39,8 @@ function formatValidationItem(item) {
 
 export function apiErrorMessage(error, fallback = 'Request failed.') {
   if (!error?.response && error?.code === 'ERR_NETWORK') {
-    return getConnectionState().mode.startsWith('local')
+    const mode = error.config?.authTarget?.mode || getConnectionState().mode
+    return mode.startsWith('local')
       ? 'Cannot reach MangoPoint on this device. Start the local server and check browser local network permission, then try again.'
       : 'Cannot reach the MangoPoint server. Check your internet connection and ask the server operator to run start_production.bat.'
   }
@@ -67,6 +69,8 @@ const api = {
   // Auth
   login: (usernameOrEmail, password) =>
     client.post('/auth/login', { username_or_email: usernameOrEmail, password }),
+  verifyLogin: (body, authTarget) => client.post('/auth/login/verify', body, { authTarget }),
+  resendLogin: (body, authTarget) => client.post('/auth/login/resend', body, { authTarget }),
   logout: (token) => client.post('/auth/logout', null, token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
   me: () => client.get('/auth/me'),
   refreshSession: (body) => client.post('/auth/session/refresh', body),

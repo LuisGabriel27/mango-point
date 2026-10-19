@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     PASSWORD_RESET_CODE_EXPIRE_MINUTES: int = 10
     PASSWORD_RESET_MAX_ATTEMPTS: int = 5
+    LOGIN_CODE_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=15)
+    LOGIN_CODE_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=10)
+    LOGIN_CODE_RESEND_SECONDS: int = Field(default=60, ge=30, le=600)
     PASSWORD_RESET_APP_URL: Optional[str] = None
     DEFAULT_ADMIN_ENABLED: bool = True
     DEFAULT_ADMIN_FULL_NAME: str = "MangoPoint Administrator"

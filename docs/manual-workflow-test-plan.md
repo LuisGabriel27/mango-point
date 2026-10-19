@@ -241,6 +241,22 @@ field validation evidence.
 | WF-76 | Sign in to a dedicated test account on two devices. Try an incorrect current password, then change the password successfully. | The failed attempt leaves both logins valid. Success signs out the current device and invalidates both old tokens; the second device returns to Login on its next request/session check. The new password signs in. |
 | WF-77 | Reset the test account password using its recovery mailbox while another device is signed in. | The reset invalidates existing sessions. The old password and tokens cannot authenticate; the replacement password works. |
 
+## Email-code sign-in
+
+Use a dedicated test account with an accessible inbox and the email-login
+frontend/backend release. Older password-only sign-in passes are historical;
+they do not verify this flow. The automated fixture checks send no real email.
+All fresh logins in the workflow now include the email-code step.
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-78 | Enter a wrong password, then the correct password; inspect the received code and finish sign-in. | Wrong credentials send no code. Correct password shows a masked inbox and grants no session until the emailed code is verified. No code appears in the email subject or application logs. |
+| WF-79 | Try incorrect, expired, already used and other-purpose codes; try five wrong codes before the correct one. | No rejected code grants access. Five wrong attempts exhaust the challenge. A successful code is single use. Reset/change codes cannot sign in and login codes cannot reset a password. |
+| WF-80 | Request a resend before and after 60 seconds, compare the emails, then use Start again and reload. | Early resend is blocked. Successful resend replaces the previous code. The latest code works; password/code drafts and partial authentication are not restored after starting again or reload. |
+| WF-81 | Make mail delivery unavailable on a test deployment, including without internet on its companion; retry a resend after restoring service. | Failure leaves the user signed out and creates no usable new challenge. Failed resend preserves the earlier still-valid code. Fresh offline login has no password-only bypass. |
+| WF-82 | Change local companion availability during verification; separately change the test account password/email or deactivate it before confirming a pending code. | Verification stays on its issuing API; a missing API produces a useful error. Changed credentials/inbox and inactive accounts cannot use the pending challenge. The two-session limit still applies after code verification. |
+| WF-83 | Complete the code screen using only the keyboard at desktop and narrow widths; leave it while verification is pending. | Code field receives focus, controls remain usable and no horizontal page overflow occurs. A late response cannot authenticate after leaving the screen. |
+
 ## Completion check
 
 - All four ordinary run combinations complete through results, saved history

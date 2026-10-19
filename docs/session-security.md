@@ -1,5 +1,43 @@
 # Session security
 
+New sign-ins require the account password and a six-digit code sent to the
+account's existing email through the configured Brevo/SMTP transport.
+`POST /auth/login` checks the password and returns a pending challenge, a masked
+email address, expiry and resend delay. It returns no access token, user profile
+or session slot. `POST /auth/login/verify` creates the session only after the
+code is accepted; `POST /auth/login/resend` replaces a pending code. The browser
+keeps pending details in memory, clears the password after the first step and
+pins verification/resend to the issuing API. Leaving the login screen cancels
+pending browser authentication; late responses cannot restore it. Reloading
+starts a fresh sign-in rather than restoring a partial session.
+
+Login codes expire after **5 minutes**, allow **5 incorrect attempts**, and
+have a **60-second resend cooldown**. These limits are configurable through
+`LOGIN_CODE_EXPIRE_MINUTES`, `LOGIN_CODE_MAX_ATTEMPTS` and
+`LOGIN_CODE_RESEND_SECONDS`. Codes are stored as password hashes in the existing
+`password_reset_challenge` table with purpose `login`, the account email and
+credential stamp. No schema change is needed beyond the existing account-security
+migration. Login challenges remain excluded from cloud backup. A reset/change
+code cannot be exchanged for a login session, and a login code cannot reset a
+password. Each purpose has its own resend cooldown.
+
+Account and challenge row locks prevent concurrent code reuse and lost attempt
+counters. An inactive account, changed password/email, expired, consumed or
+replaced challenge is rejected. The two-session limit is checked when requesting
+the code and again during verification. A valid code is consumed even if the
+available session slot fills before confirmation. Failed email delivery rolls
+back the new challenge and never grants a session; a failed resend preserves
+the earlier still-valid code. Codes are omitted from sign-in email subjects and
+application logs. They appear only in the private email bodies.
+
+**Fresh sign-in requires internet and a working account inbox**, including on
+an offline companion. There is no password-only fallback when email fails.
+An existing unexpired session can keep using its authoritative local API and
+database without internet, subject to the ordinary idle and absolute limits.
+After logout or session expiry, reconnect to receive a new sign-in code. Existing
+independent companion accounts need their own reachable email and mail transport.
+Do not advertise completely offline cold-start login with this email-code policy.
+
 Each account can have at most two active sessions against the same authoritative
 API database. Login locks the account row before counting and allocating slots,
 so simultaneous requests across API workers cannot allocate a third session.
@@ -41,7 +79,7 @@ its current email and credential stamp, and a purpose (reset, password change,
 or recovery email change). A code cannot be reused, submitted by another
 account, or exchanged between these flows. Changing the email or password
 invalidates outstanding codes tied to the previous account details. Email
-verification protects account changes; it does not add a second factor at login.
+verification protects account changes separately from the sign-in email code.
 
 Each token contains a keyed HMAC derived from the account ID and stored password
 hash. The raw password and password hash are never included in a token. The API
@@ -49,10 +87,12 @@ compares this stamp against the current account on every authenticated request.
 Changing or resetting the password changes the stored hash, immediately making
 all old tokens invalid across devices and API workers. Profile/name/email changes
 do not invalidate this stamp. A wrong current password changes no credentials.
-Authentication requires the authoritative PostgreSQL database. The former
+Authentication requires the authoritative PostgreSQL database and, for a new
+login code, working email delivery. The former
 database-unavailable default-admin fallback is disabled because it could bypass
 persisted session slots and account changes. Internet-offline operation remains
-available when the local companion API and local PostgreSQL are running.
+available to an existing verified session when the local companion API and local
+PostgreSQL are running.
 
 After a successful password change, the current browser clears its session and
 shows Login with instructions to use the new password. Other connected devices
@@ -72,6 +112,15 @@ official project-scoped Supabase MCP connection, then run
 Hosted session access is protected by RLS with no grants to browser API roles.
 Session slots and verification codes are ephemeral and excluded from cloud
 backup. Legacy tokens without a persisted session ID require a fresh sign-in.
+
+For the email-login release, first confirm that every active account has a
+reachable inbox and that its authoritative API has working mail configuration.
+Update the backend and frontend as one release: the new frontend rejects a
+password-only API response, and an old frontend does not understand the new
+pending challenge response. This change does not alter already-issued valid
+sessions or their existing expiry rules. No production account emails are
+automatically replaced, and no real email delivery is established by mocked
+automated tests. See the [email-login implementation check](email-login-security-2026-10-19.md).
 
 The configured mail provider must be able to deliver to the account inbox.
 Set a real `DEFAULT_ADMIN_EMAIL` before initially seeding an account. An existing

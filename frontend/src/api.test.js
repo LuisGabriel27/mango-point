@@ -13,3 +13,9 @@ test('proxy outages hide gateway HTML while preserving API validation details', 
   assert.equal(apiErrorMessage({ response: { status: 503, data: { detail: 'Database unavailable' } } }), 'Database unavailable')
   assert.equal(apiErrorMessage({ response: { status: 401, data: { detail: 'Invalid credentials' } } }), 'Invalid credentials')
 })
+
+test('a failed pinned login request explains its issuing API rather than a changed connection target', () => {
+  const message = apiErrorMessage({ code: 'ERR_NETWORK', config: { authTarget: { mode: 'local' } } })
+  assert.match(message, /on this device/)
+  assert.doesNotMatch(message, /server operator/)
+})

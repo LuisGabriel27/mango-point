@@ -73,6 +73,25 @@ class LoginResponse(BaseModel):
     user: AuthUserResponse
 
 
+class LoginChallengeResponse(BaseModel):
+    """Password accepted; no authenticated session exists until email verification."""
+
+    verification_required: bool = True
+    challenge_id: str
+    masked_email: str
+    expires_at: str
+    resend_after_seconds: int
+    message: str = "Enter the six-digit code sent to your account email."
+
+
+class LoginChallengeRequest(BaseModel):
+    challenge_id: str = Field(..., min_length=36, max_length=36)
+
+
+class LoginVerifyRequest(LoginChallengeRequest):
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
+
+
 class CurrentUserResponse(BaseModel):
     """Session validation response used by the dashboard."""
 

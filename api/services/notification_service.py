@@ -166,10 +166,14 @@ class NotificationService:
         *, purpose: str = "reset",
     ) -> EmailMessage:
         """Build a purpose-specific verification email without exposing account secrets."""
-        label = {"change": "password change", "email": "recovery email change"}.get(purpose, "password reset")
+        label = {"change": "password change", "email": "recovery email change", "login": "sign-in"}.get(purpose, "password reset")
         heading = "Reset your password" if purpose == "reset" else f"Confirm your {label}"
         action = "reset your MangoPoint password" if purpose == "reset" else f"confirm your MangoPoint {label}"
         screen = "password reset" if purpose == "reset" else "account settings"
+        if purpose == "login":
+            heading, action, screen = "Verify your sign-in", "sign in to MangoPoint", "sign-in verification"
+        advice = ("If you did not try to sign in, do not share this code and review your account password."
+                  if purpose == "login" else "If you did not request this change, you can ignore this email.")
         email = EmailMessage()
         email["Subject"] = f"{code} is your MangoPoint password reset code" if purpose == "reset" else f"Confirm your MangoPoint {label}"
         email["From"] = formataddr((self.from_name, self.from_email))
@@ -179,8 +183,7 @@ class NotificationService:
             "=========================\n\n"
             f"We received a request to {action}.\n\n"
             f"Your verification code is: {code}\n\n"
-            f"This code expires in {expires_minutes} minutes. If you did not request "
-            "this change, you can ignore this email.\n"
+            f"This code expires in {expires_minutes} minutes. {advice}\n"
         )
 
         safe_code = html.escape(code)
@@ -193,7 +196,7 @@ class NotificationService:
       <h1 style="font-size:24px;margin:10px 0;color:#17211d;">{heading}</h1>
       <p style="font-size:15px;line-height:1.6;color:#58645e;">Enter this verification code on the MangoPoint {screen} screen.</p>
       <div style="margin:24px 0;padding:16px;border:1px solid #cddfd4;border-radius:10px;background:#edf5f0;color:#1b4332;font-size:30px;font-weight:800;letter-spacing:.28em;text-align:center;">{safe_code}</div>
-      <p style="font-size:13px;line-height:1.6;color:#667085;">This code expires in {expires_minutes} minutes. If you did not request this change, you can ignore this email.</p>
+      <p style="font-size:13px;line-height:1.6;color:#667085;">This code expires in {expires_minutes} minutes. {advice}</p>
     </div>
   </div>
 </body></html>""",
@@ -417,12 +420,12 @@ class NotificationService:
         expires_minutes: int,
         *, purpose: str = "reset",
     ) -> bool:
-        """Send a private six-digit recovery code using the configured transport."""
+        """Send a private verification code using the configured transport."""
         recipients = normalize_email_recipients([recipient])
         configuration_error = self._transport_configuration_error(recipients)
         if configuration_error:
             self.last_error = configuration_error
-            logger.warning("Skipping password reset email: %s", configuration_error)
+            logger.warning("Skipping verification email: %s", configuration_error)
             return False
 
         email = self._build_password_reset_code_message(code, expires_minutes, purpose=purpose)
@@ -431,12 +434,12 @@ class NotificationService:
                 await self._deliver_email(email, recipients)
                 self.last_error = None
                 self.last_success_at = datetime.now(timezone.utc).isoformat()
-                logger.info("Password reset email sent via %s", self.email_provider)
+                logger.info("Verification email sent via %s", self.email_provider)
                 return True
             except Exception as exc:
                 self.last_error = str(exc)[:500]
                 logger.warning(
-                    "Password reset email attempt %d/%d failed: %s",
+                    "Verification email attempt %d/%d failed: %s",
                     attempt,
                     self.retry_attempts,
                     exc,

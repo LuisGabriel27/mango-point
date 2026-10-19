@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test'
 
-test('a visitor without a local companion signs in through the fixed production API', async ({ context, page }) => {
-  test.skip(!process.env.MANGOPOINT_TEST_USERNAME || !process.env.MANGOPOINT_TEST_PASSWORD, 'Provide credentials for an existing account in the test process environment.')
+test('a verified visitor without a local companion uses the fixed production API', async ({ context, page }) => {
+  test.skip(!process.env.MANGOPOINT_TEST_ACCESS_TOKEN, 'Provide an existing email-verified session token in the test process environment. This check sends no login email.')
+  await page.addInitScript((token) => sessionStorage.setItem('access_token', token), process.env.MANGOPOINT_TEST_ACCESS_TOKEN)
   await context.route(/http:\/\/(127\.0\.0\.1|localhost):8000\//, (route) => route.abort())
   const remoteFailures = []
   const pageErrors = []
@@ -9,19 +10,13 @@ test('a visitor without a local companion signs in through the fixed production 
     if (new URL(request.url()).pathname.startsWith('/api/')) remoteFailures.push(request.method())
   })
   page.on('pageerror', (error) => pageErrors.push(error.message))
-  await page.goto('/login')
-  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
+  await page.goto('/')
   const health = await page.evaluate(async () => {
     const response = await fetch('/api/health', { cache: 'no-store' })
     return { status: response.status, body: await response.json() }
   })
   expect(health.status).toBe(200)
   expect(health.body.database).toBe('connected')
-  await page.getByLabel('Username or email').fill(process.env.MANGOPOINT_TEST_USERNAME)
-  await page.getByLabel('Password', { exact: true }).fill(process.env.MANGOPOINT_TEST_PASSWORD)
-  const loginResponse = page.waitForResponse((response) => response.url().endsWith('/api/auth/login') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  expect((await loginResponse).status()).toBe(200)
   await expect(page.getByRole('button', { name: 'Logout' })).toBeVisible({ timeout: 30_000 })
   const records = await page.evaluate(async () => {
     const response = await fetch('/api/orchards', {

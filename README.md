@@ -204,6 +204,11 @@ user's device. In this mode, the browser prefers the loopback FastAPI companion
 at `http://127.0.0.1:8000`; if no companion is available and internet access is
 working, it uses the configured remote API instead.
 
+New sign-ins now require an emailed verification code. Prepare and sign in
+while online, with a reachable account inbox and working mail delivery on the
+local API. Offline use is limited to an existing unexpired verified session;
+after logout or session expiry, reconnect before signing in again.
+
 Prepare each laptop **while it still has internet access**:
 
 ```powershell
@@ -249,7 +254,7 @@ For an offline rehearsal:
 2. Confirm the dashboard shows **Local-first mode**.
 3. Reload the Vercel app once while online, then disconnect Wi-Fi.
 4. Keep Docker Desktop and both MangoPoint containers running.
-5. Reopen the same Vercel URL, select **Custom Weather**, run a simulation, and
+5. Keep the same signed-in tab/window open, select **Custom Weather**, run a simulation, and
    confirm the result appears in History.
 6. Reconnect Wi-Fi. The local API resumes its queued Supabase backup; live
    weather, email delivery, online basemaps, and other internet services also
@@ -261,14 +266,17 @@ interface, while Docker supplies FastAPI, the unchanged
 companion is stopped, offline simulation is unavailable. Docker images and npm
 assets must be downloaded during preparation, before entering an offline site.
 
-Default local login after database initialization:
+Default local account credentials after database initialization:
 
 ```text
 username: admin
 password: change-this-admin-password
 ```
 
-Change `DEFAULT_ADMIN_PASSWORD` in `.env` before a shared demo.
+Change `DEFAULT_ADMIN_PASSWORD` and set a reachable `DEFAULT_ADMIN_EMAIL` in
+`.env` before initially creating the account. Password entry is followed by an
+email code; the default `admin@mangopoint.local` address cannot receive it.
+Changing bootstrap settings does not replace an existing account's saved inbox.
 
 ### Sharing the deployed app with another laptop
 
@@ -296,15 +304,34 @@ elapsed startup time remain visible. Public API/database/login checks still
 run every time. `-CheckOnly` does not write the cache; `-ForceDeploy` refreshes
 the bundle check and explicitly rebuilds the frontend.
 
-Normal startup does not publish new frontend code. After pulling frontend
-changes, such as an updated PDF report layout, release them with:
+The Vercel Git integration tracks **`mangopoint-production`** in
+`LuisGabriel27/mango-point`, builds from **`frontend/`**, and updates
+**https://mango-point-projects.vercel.app** after a successful production build.
+The shared address is a managed production domain. Push or merge reviewed
+frontend changes to that branch; other branches produce previews. A local
+`git pull` only updates that checkout and does not trigger deployment.
+See the [automatic deployment check](docs/automatic-production-deployment-2026-10-19.md)
+for the settings and release verified on 2026-10-19.
+
+Normal startup checks the connection without publishing code. For an explicit
+manual frontend release from the local checkout, use:
 
 ```powershell
 .\start_production.bat -ForceDeploy
 ```
 
-This rebuilds the frontend and updates the shared production URL. A successful
-Vercel preview deployment alone does not update that URL.
+This rebuilds the local frontend and updates the shared production URL. It is
+not needed for ordinary Git-triggered frontend releases. A successful Vercel
+preview deployment alone does not update the production URL.
+
+**Backend changes still need deployment on the server laptop.** Vercel does
+not pull Python code, restart the running FastAPI process, or rebuild its Docker
+image. Pull the matching commit and restart the API; for Docker, run
+`docker compose up -d --build --no-deps api`, then `start_production.bat` to
+verify public access. Coordinate API changes with the frontend release when
+new endpoints are required. Keep the laptop, database and tunnel running.
+Online visitors receive the new interface on their next page load or reload;
+an already open or offline cached page can still show its loaded release.
 
 If the API and database are already running, this command only prepares the
 public connection:
@@ -577,6 +604,14 @@ cannot redirect an already issued password verification code to a new inbox.
 Recipient forms validate addresses and names before saving; deletion uses an
 in-app confirmation with Cancel and explicit Delete actions.
 
+New sign-ins require **password + email verification code**. After a correct
+password, enter the six-digit code sent to the account's saved email. Login
+codes expire after **5 minutes**, lock after **5 incorrect attempts**, and can
+be resent after **60 seconds**. Resending replaces the previous code; **Start
+again** returns to password entry. No session is granted until verification.
+The configured Brevo/SMTP provider and internet access are required for every
+fresh login, including on local companions. There is no password-only fallback.
+
 Sessions end after **15 minutes without user interaction**. Clicking, typing,
 pointer movement, scrolling and touch keep a session active; weather updates,
 alert polling and map playback do not. Reloading preserves the inactivity
@@ -597,8 +632,11 @@ is `supabase/migrations/202610170000_account_session_security.sql`, also include
 in the consolidated SQL Editor file. Apply hosted schema updates using the
 project's Supabase connection and schema-sync workflow. Previously issued tokens
 require a new sign-in. Session records stay in the authoritative API database
-and are not copied through cloud backup. Internet-offline use still works with
-the local API and PostgreSQL running; login cannot bypass a database outage.
+and are not copied through cloud backup. The email-login change reuses those
+existing challenge columns and needs no additional hosted schema update.
+Internet-offline use requires an existing unexpired verified session and the
+local API/PostgreSQL running. Fresh login requires email delivery; login cannot
+bypass a database outage. Release the email-login frontend and backend together.
 
 Password recovery uses the same Brevo or SMTP transport. **Forgot password?**
 sends a six-digit code only to the email saved on the user account. The code
@@ -832,15 +870,18 @@ Connection checks for the server-laptop deployment:
 python -m pytest -q tests/test_remote_access_startup.py
 .\start_remote_access.bat -CheckOnly
 cd frontend
-# Set MANGOPOINT_TEST_USERNAME and MANGOPOINT_TEST_PASSWORD in this terminal
-# for an existing account; never put them in frontend environment files.
+# Set MANGOPOINT_TEST_ACCESS_TOKEN in this terminal for an existing verified
+# session; never put it in frontend environment files or commit it.
 npm.cmd run test:production
 npm.cmd run test:pwa
 ```
 
-The production browser check blocks loopback access, signs in through `/api`,
-and reads orchard records. It does not create a simulation or a field record.
-Credentials remain in the test process environment and traces are disabled.
+The production browser check blocks loopback access, uses an existing verified
+session through `/api`, and reads orchard records. It sends no login email and
+creates no simulation or field record. The token remains in the test process
+environment and traces are disabled. Isolated email-login browser checks use
+`npx.cmd playwright test tests/email-login.spec.js`; their mail/API responses
+are mocked, so they do not establish real inbox delivery.
 
 The [testing methods guide](docs/testing-methods-for-defense.md) distinguishes
 automated implementation checks, controlled simulations and historical

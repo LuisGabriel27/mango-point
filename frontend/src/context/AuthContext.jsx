@@ -8,11 +8,13 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => sessionValue(sessionStorage, 'access_token'))
   const tokenRef = useRef(token)
+  const loginAttempt = useRef(0)
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [sessionNotice, setSessionNotice] = useState(() => sessionValue(sessionStorage, SESSION_NOTICE_KEY) || '')
 
   const endSession = useCallback((message = '') => {
+    loginAttempt.current++
     tokenRef.current = null
     for (const key of ['access_token', SESSION_ACTIVITY_KEY, SESSION_EXPIRY_KEY]) storeSessionValue(sessionStorage, key, null)
     storeSessionValue(sessionStorage, SESSION_NOTICE_KEY, message || null)
@@ -32,7 +34,28 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = useCallback(async (usernameOrEmail, password) => {
+    const attempt = ++loginAttempt.current
     const res = await api.login(usernameOrEmail, password)
+    if (attempt !== loginAttempt.current) throw new Error('Sign-in cancelled. Start again.')
+    if (!res.data.verification_required || !res.data.challenge_id) {
+      throw new Error('The server needs the email sign-in update. Ask the administrator to update the API.')
+    }
+    return { ...res.data, authTarget: res.config.authTarget, attempt }
+  }, [])
+
+  const cancelLogin = useCallback(() => { loginAttempt.current++ }, [])
+
+  const resendLogin = useCallback(async (challenge) => {
+    if (challenge.attempt !== loginAttempt.current) throw new Error('Sign-in cancelled. Start again.')
+    const res = await api.resendLogin({ challenge_id: challenge.challenge_id }, challenge.authTarget)
+    if (challenge.attempt !== loginAttempt.current) throw new Error('Sign-in cancelled. Start again.')
+    return { ...res.data, authTarget: challenge.authTarget, attempt: challenge.attempt }
+  }, [])
+
+  const verifyLogin = useCallback(async (challenge, code) => {
+    if (challenge.attempt !== loginAttempt.current) throw new Error('Sign-in cancelled. Start again.')
+    const res = await api.verifyLogin({ challenge_id: challenge.challenge_id, code }, challenge.authTarget)
+    if (challenge.attempt !== loginAttempt.current) throw new Error('Sign-in cancelled. Start again.')
     storeSessionValue(sessionStorage, SESSION_ACTIVITY_KEY, Date.now())
     storeSessionValue(sessionStorage, SESSION_NOTICE_KEY, null)
     setSessionNotice('')
@@ -86,7 +109,7 @@ export function AuthProvider({ children }) {
   }, [signedIn, endSession, applySession])
 
   return (
-    <AuthContext.Provider value={{ token, user, loading, login, logout, updateUser, endSession, sessionNotice }}>
+    <AuthContext.Provider value={{ token, user, loading, login, verifyLogin, resendLogin, cancelLogin, logout, updateUser, endSession, sessionNotice }}>
       {children}
     </AuthContext.Provider>
   )

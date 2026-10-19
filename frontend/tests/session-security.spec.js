@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 // Isolated accounts and API responses. Nothing is sent to the real server.
 function server() {
   let version = 1, sequence = 0, password = 'old-password'
-  const tokens = new Map(), refreshes = []
+  const tokens = new Map(), challenges = new Map(), refreshes = []
   const user = { user_id: 7, username: 'session-test', full_name: 'Session Test', role: 'operator' }
   let heldRefresh = null
   return { refreshes,
@@ -22,9 +22,18 @@ function server() {
           return { access_token: issued, expires_at: new Date(now + (900 - age) * 1000).toISOString(), user }
         }
         if (path === '/auth/login') {
-          return body.password === password
-            ? route.fulfill({ json: await issue() })
-            : route.fulfill({ status: 401, json: { detail: 'Invalid credentials.' } })
+          if (body.password !== password) return route.fulfill({ status: 401, json: { detail: 'Invalid credentials.' } })
+          const challenge_id = `00000000-0000-0000-0000-${String(++sequence).padStart(12, '0')}`
+          challenges.set(challenge_id, version)
+          return route.fulfill({ json: { verification_required: true, challenge_id, masked_email: 's***@example.test',
+            expires_at: new Date(await page.evaluate(() => Date.now()) + 300000).toISOString(), resend_after_seconds: 60 } })
+        }
+        if (path === '/auth/login/verify') {
+          if (body.code !== '123456' || challenges.get(body.challenge_id) !== version) {
+            return route.fulfill({ status: 400, json: { detail: 'Incorrect sign-in code.' } })
+          }
+          challenges.delete(body.challenge_id)
+          return route.fulfill({ json: await issue() })
         }
         if (path.startsWith('/auth/') && !valid) return route.fulfill({ status: 401,
           json: { detail: 'Your password changed or your session was revoked. Please sign in again.' } })
@@ -62,6 +71,8 @@ async function signIn(page, password = 'old-password') {
   await page.locator('#login-identifier').fill('session-test')
   await page.locator('#login-password').fill(password)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.getByLabel('Email verification code').fill('123456')
+  await page.getByRole('button', { name: 'Verify and sign in', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const invitation = page.getByRole('button', { name: 'Maybe later', exact: true })
   if (await invitation.isVisible()) await invitation.click()

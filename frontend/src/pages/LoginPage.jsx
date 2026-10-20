@@ -25,6 +25,7 @@ export default function LoginPage() {
   const [sessionLimit, setSessionLimit] = useState(null)
   const [recoveryOpen, setRecoveryOpen] = useState(false)
   const requestInFlight = useRef(false)
+  const loginForm = useRef(null)
   const codeInput = useRef(null)
   const recoveryButton = useRef(null)
   const wasRecoveryOpen = useRef(false)
@@ -144,7 +145,7 @@ export default function LoginPage() {
         </div>
       )}
 
-      <form key={challenge ? 'verification' : 'password'} onSubmit={(event) => { event.preventDefault(); void submit() }} className="login-form" aria-busy={loading}>
+      <form ref={loginForm} key={challenge ? 'verification' : 'password'} onSubmit={(event) => { event.preventDefault(); void submit() }} className="login-form" aria-busy={loading}>
         {challenge ? (
           <>
             {challenge.session_recovery && <div className="alert alert-info auth-alert" role="status">
@@ -229,9 +230,13 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {sessionLimit && <button ref={recoveryButton} type="button" className="btn btn-link p-0 auth-inline-link"
-          aria-haspopup="dialog" disabled={loading || !identifier.trim() || !password}
-          onClick={() => { setError(null); setRecoveryOpen(true) }}>Recover account access</button>}
+        <button ref={recoveryButton} type="button" className="btn btn-link p-0 auth-inline-link"
+          aria-haspopup="dialog" disabled={loading}
+          onClick={() => {
+            if (!loginForm.current?.reportValidity()) return
+            setError(null)
+            setRecoveryOpen(true)
+          }}>Recover account access</button>
 
         <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading}>
           {loading ? (
@@ -244,7 +249,7 @@ export default function LoginPage() {
         )}
       </form>
       <LoginTerms />
-      {recoveryOpen && <ConfirmationModal title="Two sessions are active" confirmLabel="Email a recovery code"
+      {recoveryOpen && <ConfirmationModal title={sessionLimit ? 'Two sessions are active' : 'Recover account access'} confirmLabel="Email a recovery code"
         onConfirm={() => void submit('', true)} onClose={closeRecovery} busy={loading} error={error || ''}
         showIcon={false} closeLabel="Close session recovery" className="session-recovery-backdrop">
         <p>Verify your email to sign out other sessions and sign in here.</p>

@@ -39,3 +39,62 @@ test('install precaches the local PDF engine asset without waiting for large orc
   assert.ok(fetched.includes('/assets/font.woff2'))
   assert.ok(!fetched.includes('/assets/orchard.png'))
 })
+
+test('online shell requests bypass stale HTTP/cache-storage releases and remain available offline', async () => {
+  for (const path of ['/login', '/index.html', '/.vite/manifest.json']) {
+    const handlers = {}, stored = new Map(), origin = 'https://mango-point-projects.vercel.app'
+    const request = { method: 'GET', mode: path === '/login' ? 'navigate' : 'cors', url: origin + path }
+    const cacheKey = path === '/login' ? '/index.html' : path
+    stored.set(cacheKey, new Response('previous release'))
+    let offline = false
+    vm.runInNewContext(readFileSync(new URL('../../public/sw.js', import.meta.url), 'utf8'), {
+      self: { location: { origin }, addEventListener: (name, handler) => { handlers[name] = handler } }, URL,
+      fetch: async (_request, options) => {
+        if (offline) throw new Error('offline')
+        return new Response(options?.cache === 'no-store' ? 'current release' : 'previous release')
+      },
+      caches: {
+        open: async () => ({ put: async (key, response) => stored.set(typeof key === 'string' ? key : new URL(key.url).pathname, response) }),
+        match: async (key) => stored.get(typeof key === 'string' ? key : new URL(key.url).pathname)?.clone(),
+      },
+    })
+    let response
+    const dispatch = () => handlers.fetch({ request, respondWith: (pending) => { response = pending } })
+    dispatch()
+    assert.equal(await (await response).text(), 'current release', path)
+    offline = true
+    dispatch()
+    assert.equal(await (await response).text(), 'current release', `${path} offline fallback`)
+  }
+})
+
+test('activating a release clears only older MangoPoint app caches', async () => {
+  const handlers = {}, deleted = []
+  let claimed = false, activated
+  vm.runInNewContext(readFileSync(new URL('../../public/sw.js', import.meta.url), 'utf8'), {
+    self: { addEventListener: (name, handler) => { handlers[name] = handler },
+      clients: { claim: async () => { claimed = true } } },
+    caches: { keys: async () => ['mangopoint-app-v5', 'mangopoint-app-v6', 'unrelated-local-cache'],
+      delete: async (key) => { deleted.push(key) } },
+  })
+  handlers.activate({ waitUntil: (pending) => { activated = pending } })
+  await activated
+  assert.deepEqual(deleted, ['mangopoint-app-v5'])
+  assert.equal(claimed, true)
+})
+
+test('a failed release download cannot replace the working offline shell', async () => {
+  const handlers = {}, written = []
+  let activated = false, installed
+  vm.runInNewContext(readFileSync(new URL('../../public/sw.js', import.meta.url), 'utf8'), {
+    self: { addEventListener: (name, handler) => { handlers[name] = handler }, skipWaiting: async () => { activated = true } },
+    fetch: async (asset) => asset === '/.vite/manifest.json'
+      ? { ok: true, json: async () => ({ app: { file: 'assets/current.js' } }) }
+      : { ok: asset !== '/assets/current.js' },
+    caches: { open: async () => ({ put: async (asset) => { written.push(asset) } }) },
+  })
+  handlers.install({ waitUntil: (pending) => { installed = pending } })
+  await assert.rejects(installed, /current.js is unavailable/)
+  assert.deepEqual(written, [])
+  assert.equal(activated, false)
+})

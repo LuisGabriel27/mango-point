@@ -1,3 +1,5 @@
+import { sessionValue, storeSessionValue } from '../utils/sessionMonitor.js'
+
 const DEFAULT_LOCAL_API_BASE = 'http://127.0.0.1:8000'
 const LOCAL_PROBE_TTL_MS = 15_000
 const LOCAL_PROBE_TIMEOUT_MS = 2_500
@@ -9,6 +11,27 @@ const remoteApiBase = String(runtimeEnv.VITE_API_BASE || (runtimeEnv.PROD ? '/ap
 const localApiBase = String(
   runtimeEnv.VITE_LOCAL_API_BASE || DEFAULT_LOCAL_API_BASE,
 ).replace(/\/$/, '')
+
+export const SESSION_API_TARGET_KEY = 'mangopoint.session.apiTarget'
+let sessionTarget = null
+
+export function getSessionApiTarget() {
+  if (sessionTarget) return { ...sessionTarget }
+  try {
+    const saved = JSON.parse(sessionValue(globalThis.sessionStorage, SESSION_API_TARGET_KEY))
+    if ((saved?.mode === 'local' && saved.baseURL === localApiBase)
+        || (saved?.mode === 'remote' && saved.baseURL === remoteApiBase)) return saved
+  } catch { /* A session from an older release may not have a saved target. */ }
+  return null
+}
+
+export function setSessionApiTarget(target) {
+  sessionTarget = target ? {
+    mode: target.mode.startsWith('local') ? 'local' : 'remote', baseURL: target.baseURL,
+  } : null
+  storeSessionValue(globalThis.sessionStorage, SESSION_API_TARGET_KEY,
+    sessionTarget ? JSON.stringify(sessionTarget) : null)
+}
 
 let probeState = {
   checkedAt: 0,
@@ -88,7 +111,12 @@ async function probeLocalApi(force = false) {
 export async function resolveApiTarget({ forceProbe = false } = {}) {
   const internetAvailable = typeof navigator === 'undefined' ? true : navigator.onLine !== false
   const localAvailable = await probeLocalApi(forceProbe)
-  const target = chooseApiTarget({ localAvailable, internetAvailable })
+  // Session rows and signing keys belong to the issuing API. A lost health
+  // probe must not move its bearer token (or farm writes) to another database.
+  const pinned = getSessionApiTarget()
+  const target = pinned
+    ? { ...pinned, mode: pinned.mode === 'local' && !localAvailable ? 'local-unavailable' : pinned.mode }
+    : chooseApiTarget({ localAvailable, internetAvailable })
   return publish({ ...target, internetAvailable, localAvailable })
 }
 

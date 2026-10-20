@@ -5,6 +5,7 @@ import { apiErrorMessage } from '../api'
 import AuthLayout from '../components/AuthLayout'
 import LoginTerms from '../components/LoginTerms'
 import SignInCodeInput from '../components/SignInCodeInput'
+import ConfirmationModal from '../components/ConfirmationModal'
 
 const emptyCode = () => Array(6).fill('')
 
@@ -21,8 +22,12 @@ export default function LoginPage() {
   const [resendAt, setResendAt] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [notice, setNotice] = useState('')
+  const [sessionLimit, setSessionLimit] = useState(null)
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
   const requestInFlight = useRef(false)
   const codeInput = useRef(null)
+  const recoveryButton = useRef(null)
+  const wasRecoveryOpen = useRef(false)
 
   useEffect(() => () => cancelLogin(), [cancelLogin])
   useEffect(() => {
@@ -33,8 +38,13 @@ export default function LoginPage() {
   useEffect(() => {
     if (challenge && !loading) codeInput.current?.focus()
   }, [challenge, error, loading])
+  useEffect(() => {
+    if (wasRecoveryOpen.current && !recoveryOpen && !challenge) recoveryButton.current?.focus()
+    wasRecoveryOpen.current = recoveryOpen
+  }, [recoveryOpen, challenge])
 
   const acceptChallenge = (next) => {
+    setRecoveryOpen(false)
     setChallenge(next)
     setCode(emptyCode())
     setPassword('')
@@ -61,7 +71,24 @@ export default function LoginPage() {
     } finally { requestInFlight.current = false; setLoading(false) }
   }
 
-  const submit = async (verificationCode = code.join('')) => {
+  const startAgain = () => {
+    if (loading) return
+    cancelLogin()
+    setChallenge(null)
+    setCode(emptyCode())
+    setSessionLimit(null)
+    setRecoveryOpen(false)
+    setError(null)
+    setNotice('')
+  }
+
+  const closeRecovery = () => {
+    if (loading) return
+    setRecoveryOpen(false)
+    setError(null)
+  }
+
+  const submit = async (verificationCode = code.join(''), recoverSessions = false) => {
     if (requestInFlight.current || loading) return
     if (challenge && (!/^[0-9]{6}$/.test(verificationCode) || Date.parse(challenge.expires_at) <= Date.now())) return
     requestInFlight.current = true
@@ -73,11 +100,18 @@ export default function LoginPage() {
         await verifyLogin(challenge, verificationCode)
         navigate('/')
       } else {
-        acceptChallenge(await login(identifier, password))
+        acceptChallenge(await login(identifier, password, { recoverSessions, authTarget: sessionLimit?.authTarget }))
       }
     } catch (err) {
       const status = err?.response?.status
-      if (status === 401 && !challenge) setError('Check your username or email and password, then try again.')
+      if (status === 409) {
+        setSessionLimit({ authTarget: err.config?.authTarget || challenge?.authTarget })
+        if (challenge) { cancelLogin(); setChallenge(null); setCode(emptyCode()); setPassword('') }
+        else setRecoveryOpen(true)
+        setError(recoverSessions ? 'Recovery is unavailable. Please contact your administrator.'
+          : challenge ? 'Two sessions are active. Enter your password to recover access.' : null)
+      }
+      else if (status === 401 && !challenge) setError('Check your username or email and password, then try again.')
       else if (status === 404) setError('Sign-in verification is unavailable. Ask the administrator to update the API.')
       else setError(apiErrorMessage(err, 'Unable to connect to MangoPoint.'))
       if (challenge && status === 400) setCode(emptyCode())
@@ -90,7 +124,7 @@ export default function LoginPage() {
   const updateCode = (nextCode) => {
     setCode(nextCode)
     const completed = nextCode.join('')
-    if (completed.length === 6 && completed !== code.join('')) void submit(completed)
+    if (!challenge?.session_recovery && completed.length === 6 && completed !== code.join('')) void submit(completed)
   }
 
   return (
@@ -103,7 +137,7 @@ export default function LoginPage() {
     >
       {sessionNotice && <div className="alert alert-info auth-alert" role="status">{sessionNotice}</div>}
       {notice && <div className="alert alert-info auth-alert" role="status">{notice}</div>}
-      {error && (
+      {error && !recoveryOpen && (
         <div id="login-error" className="alert alert-warning auth-alert" role="alert">
           <i className="bi bi-exclamation-circle" aria-hidden="true" />
           <span>{error}</span>
@@ -113,6 +147,9 @@ export default function LoginPage() {
       <form key={challenge ? 'verification' : 'password'} onSubmit={(event) => { event.preventDefault(); void submit() }} className="login-form" aria-busy={loading}>
         {challenge ? (
           <>
+            {challenge.session_recovery && <div className="alert alert-info auth-alert" role="status">
+              Confirming this code signs out all other MangoPoint sessions for this account and signs you in here. Unsaved work in those sessions may be lost.
+            </div>}
             <div className="login-field login-verification-field">
               <label id="login-code-label" className="form-label" htmlFor="login-code-1">Please enter the authentication code</label>
               <SignInCodeInput ref={codeInput} value={code} onChange={updateCode}
@@ -125,15 +162,20 @@ export default function LoginPage() {
                 </button>
               </div>
               <p id="login-code-help" className="auth-password-hint" role={expired ? 'status' : undefined}>
-                {expired ? 'This code has expired. Refresh this page to sign in again.' : 'Enter all six digits to sign in automatically. Never share your code.'}
+                {expired ? 'This code has expired. Choose Start again to sign in.'
+                  : challenge.session_recovery ? 'Enter all six digits, then confirm below. Never share your code.'
+                    : 'Enter all six digits to sign in automatically. Never share your code.'}
               </p>
             </div>
             {loading && <div className="login-code-progress" role="status">
               <span className="spinner-border spinner-border-sm" aria-hidden="true" />Verifying…
             </div>}
-            {error && code.join('').length === 6 && !expired && <div className="login-code-actions">
+            {challenge.session_recovery && <button type="submit" className="btn btn-success w-100 login-submit-btn"
+              disabled={loading || expired || code.join('').length !== 6}>Sign out other sessions and sign in</button>}
+            {!challenge.session_recovery && error && code.join('').length === 6 && !expired && <div className="login-code-actions">
               <button type="submit" className="btn btn-link p-0 auth-inline-link" disabled={loading}>Verify and sign in</button>
             </div>}
+            <button type="button" className="btn btn-link p-0 auth-inline-link" onClick={startAgain} disabled={loading}>Start again</button>
           </>
         ) : (
           <>
@@ -150,7 +192,7 @@ export default function LoginPage() {
             spellCheck={false}
             aria-describedby={error ? 'login-error' : undefined}
             value={identifier}
-            onChange={(event) => setIdentifier(event.target.value)}
+            onChange={(event) => { setIdentifier(event.target.value); setSessionLimit(null) }}
             required
             autoFocus
           />
@@ -187,6 +229,10 @@ export default function LoginPage() {
           </div>
         </div>
 
+        {sessionLimit && <button ref={recoveryButton} type="button" className="btn btn-link p-0 auth-inline-link"
+          aria-haspopup="dialog" disabled={loading || !identifier.trim() || !password}
+          onClick={() => { setError(null); setRecoveryOpen(true) }}>Recover account access</button>}
+
         <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading}>
           {loading ? (
             <><span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />Signing in…</>
@@ -198,6 +244,11 @@ export default function LoginPage() {
         )}
       </form>
       <LoginTerms />
+      {recoveryOpen && <ConfirmationModal title="Two sessions are active" confirmLabel="Email a recovery code"
+        onConfirm={() => void submit('', true)} onClose={closeRecovery} busy={loading} error={error || ''}
+        showIcon={false} closeLabel="Close session recovery" className="session-recovery-backdrop">
+        <p>Verify your email to sign out other sessions and sign in here.</p>
+      </ConfirmationModal>}
     </AuthLayout>
   )
 }

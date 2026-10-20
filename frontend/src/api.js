@@ -1,17 +1,20 @@
 import axios from 'axios'
-import { getConnectionState, localFetchOptions, resolveApiTarget } from './offline/apiRuntime.js'
+import { getConnectionState, getSessionApiTarget, setSessionApiTarget,
+  localFetchOptions, resolveApiTarget } from './offline/apiRuntime.js'
 import { SESSION_INVALID_EVENT } from './utils/sessionMonitor.js'
 
 const client = axios.create({ adapter: 'fetch' })
 
 client.interceptors.request.use(async (config) => {
+  const token = sessionStorage.getItem('access_token')
   const target = config.authTarget || await resolveApiTarget()
+  // Pin existing sessions from releases that did not record their API yet.
+  if (token && token === sessionStorage.getItem('access_token') && !getSessionApiTarget()) setSessionApiTarget(target)
   config.authTarget = target
   config.baseURL = target.baseURL
   if (target.mode === 'local' || target.mode === 'local-unavailable') {
     config.fetchOptions = localFetchOptions(config)
   }
-  const token = sessionStorage.getItem('access_token')
   if (token && !config.headers['Authorization']) config.headers['Authorization'] = `Bearer ${token}`
   return config
 })
@@ -67,13 +70,15 @@ export function apiErrorMessage(error, fallback = 'Request failed.') {
 
 const api = {
   // Auth
-  login: (usernameOrEmail, password) =>
-    client.post('/auth/login', { username_or_email: usernameOrEmail, password }),
+  login: (usernameOrEmail, password, { recoverSessions = false, authTarget } = {}) =>
+    client.post('/auth/login', { username_or_email: usernameOrEmail, password, recover_sessions: recoverSessions }, { authTarget }),
   verifyLogin: (body, authTarget) => client.post('/auth/login/verify', body, { authTarget }),
   resendLogin: (body, authTarget) => client.post('/auth/login/resend', body, { authTarget }),
-  logout: (token) => client.post('/auth/logout', null, token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
-  me: () => client.get('/auth/me'),
-  refreshSession: (body) => client.post('/auth/session/refresh', body),
+  logout: (token, authTarget) => client.post('/auth/logout', null, {
+    authTarget, timeout: 10000, ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+  }),
+  me: () => client.get('/auth/me', { timeout: 10000 }),
+  refreshSession: (body) => client.post('/auth/session/refresh', body, { timeout: 10000 }),
   updateProfile: (body) => client.patch('/auth/me', body),
   updateAccountEmail: (body) => client.patch('/auth/me/email', body),
   changePassword: (body) => client.post('/auth/password', body),

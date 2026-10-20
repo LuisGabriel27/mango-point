@@ -41,8 +41,33 @@ Do not advertise completely offline cold-start login with this email-code policy
 Each account can have at most two active sessions against the same authoritative
 API database. Login locks the account row before counting and allocating slots,
 so simultaneous requests across API workers cannot allocate a third session.
-A third login returns HTTP 409 with instructions to log out elsewhere or wait
-for an idle session to expire. Each separate login counts, including a new login
+A third ordinary login returns HTTP 409 and offers email-verified session
+recovery. After the password is accepted, a **Two sessions are active** modal
+offers **Email a recovery code**, which requests a
+purpose-bound code even when both session slots are occupied. Entering all six
+digits does not automatically submit recovery: the user explicitly chooses
+**Sign out other sessions and sign in**. Successful verification revokes all
+other sessions for that account on the issuing API and creates one replacement
+session in the same transaction. Unsaved work in those sessions may be lost.
+Requesting/resending a code, a wrong code, delivery failure or cancellation does
+not revoke sessions. The two-session limit continues to apply to ordinary logins.
+Cancel, Escape, the close button and a backdrop click dismiss the modal without
+requesting a code. **Recover account access** reopens it. Focus returns to that
+button and the password/identifier remain intact. Recovery mail failures stay
+inside the modal for retry; successful delivery opens the existing code screen.
+
+Recovery uses the existing challenge table's `login_recovery` purpose. Normal
+and recovery codes share the login resend cooldown and replace earlier pending
+codes from either flow; five-minute expiry and failed-attempt limits are the
+same. The challenge remains bound to the account, password stamp and inbox.
+A client flag cannot turn a normal login code into a recovery code. The account
+lock serializes recovery with login, refresh and logout, so an in-flight renewal
+cannot restore a revoked session. No new database columns or hosted schema
+update are required. Deploy the API and frontend together; recovery still needs
+working email and a reachable issuing API. See the
+[session-slot recovery verification](session-slot-recovery-2026-10-20.md).
+
+Each separate login counts, including a new login
 in another tab; tabs already sharing a token use one session. Independent offline
 companion databases do not share a global session count.
 
@@ -60,8 +85,30 @@ An expired token cannot be renewed. Renewals also preserve the original absolute
 session lifetime configured by `AUTH_ACCESS_TOKEN_EXPIRE_MINUTES` (8 hours by
 default). A failed network renewal never extends a token's validity.
 Renewal updates the existing database session rather than allocating a slot.
+The verified session's API target and last verified user profile are retained
+in tab-scoped session storage alongside its token and deadlines. Network errors,
+request timeouts and gateway/service failures during validation preserve this
+existing session, including across a dashboard reload. Reconnection retries
+validation or pending activity renewal without counting as user interaction.
+An authenticated 401 response still ends the matching session; `/auth/me` also
+ends it if the account is inactive (403). Ordinary role-based 403 responses do
+not log the user out. Cached profile information only supports the interface;
+the FastAPI backend continues to authorize all data requests.
+
+Once verified, all API-client requests stay on the issuing API. A companion
+health failure cannot route a local token or farm write to the remote database,
+and a newly available companion cannot take over a remote session. Logout uses
+that same API and clears the browser's token, profile, target and deadlines even
+when its request fails. The next login can select an available API again.
+Sessions from an earlier frontend release record their target on the first
+authenticated request; their original API cannot be reconstructed if it was
+never saved. This change does not extend token validity during an outage or
+allow an expired/revoked session to be renewed. See the
+[offline-session fix and verification](offline-session-recovery-2026-10-20.md).
+
 Ordinary Logout revokes that session on the server and immediately releases its
-slot. Replaying an old token cannot restore a logged-out session. Closing the
+slot when the request reaches the server. During an outage its slot remains
+until server expiry. Replaying an old token cannot restore a server-revoked session. Closing the
 browser without logging out releases its slot when its idle expiry passes.
 
 Settings password fields have independent Show/Hide buttons. Changing a password

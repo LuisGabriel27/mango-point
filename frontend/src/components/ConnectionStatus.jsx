@@ -58,7 +58,9 @@ export default function ConnectionStatus() {
           ? connection.internetAvailable
             ? 'Local-first mode: simulations and records use this device.'
             : 'Offline local-first mode: simulations save locally; cloud backup resumes after reconnection.'
-          : 'Offline companion unavailable. Start MangoPoint Docker, then retry.'}
+          : connection.mode === 'remote'
+            ? 'Offline: reconnect to use the MangoPoint server. Saved results remain available in this session.'
+            : 'Offline companion unavailable. Start MangoPoint Docker, then retry.'}
       </span>
       {!localReady && (
         <button

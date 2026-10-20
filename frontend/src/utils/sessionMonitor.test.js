@@ -109,6 +109,32 @@ test('failed renewal cannot prolong server token validity', async () => {
   env.stop()
 })
 
+test('reconnection validates the session immediately without counting as user activity', async () => {
+  const env = environment()
+  await env.advance(1000)
+  env.events.emit('online', false)
+  await env.advance(0)
+  assert.equal(env.checks.length, 1)
+  assert.equal(env.refreshes.length, 0)
+  await env.advance(SESSION_IDLE_MS - 1000)
+  assert.match(env.expired[0], /15 minutes of inactivity/)
+  env.stop()
+})
+
+test('reconnection retries pending user activity without resetting its age', async () => {
+  const env = environment({ refreshFails: true })
+  await env.advance(SESSION_IDLE_MS - 60000)
+  env.events.emit('keydown')
+  await env.advance(1000)
+  const attempts = env.refreshes.length
+  env.events.emit('online', false)
+  await env.advance(0)
+  assert.equal(env.refreshes.length, attempts + 1)
+  assert.equal(env.refreshes.at(-1).activity_age_seconds, 1)
+  assert.equal(env.expired.length, 0)
+  env.stop()
+})
+
 test('cleanup removes timers and listeners so a signed-out session cannot resume', async () => {
   const env = environment()
   env.stop()

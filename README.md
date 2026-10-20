@@ -203,6 +203,9 @@ while its reviewed Python simulation engine and authoritative data remain on the
 user's device. In this mode, the browser prefers the loopback FastAPI companion
 at `http://127.0.0.1:8000`; if no companion is available and internet access is
 working, it uses the configured remote API instead.
+After sign-in, that session stays on the API that issued it until logout or
+expiry. Losing or restoring connectivity does not move the session or its
+record requests between the local companion and remote server.
 
 After sign-in, the dashboard automatically prepares completed saved simulation
 results for offline viewing, including results you have never opened. It reads
@@ -222,7 +225,11 @@ full results; if unavailable, the smaller browser-storage fallback retains at
 most 25 runs and may retain fewer when space is limited. Cache availability is
 specific to this browser and device, and clearing browser data removes it.
 Fresh sign-in, uncached results and server-generated Excel exports still need
-a reachable API. Reloading the dashboard also needs API session validation.
+a reachable API. A temporary network or server failure during session validation,
+including a dashboard reload, preserves the existing unexpired session and last
+verified user in this browser tab. Reconnecting retries validation with the
+issuing API. Explicit authentication rejection and the ordinary inactivity and
+token-expiry deadlines still end the session; an outage does not extend them.
 
 New sign-ins now require an emailed verification code. Prepare and sign in
 while online, with a reachable account inbox and working mail delivery on the
@@ -655,7 +662,14 @@ including the device making the change. Other connected devices return to Login
 on their next authenticated request or session check (every 30 seconds while
 visible); inactive tabs check when reopened. Each account can have **two active
 sessions** on the same API/database. A third login is blocked until another
-session logs out or expires. Refreshing a session keeps its existing slot;
+session logs out or expires, or the owner completes session recovery. If both
+slots belong to closed browsers, a **Two sessions are active** modal offers
+**Email a recovery code**. Cancel or close it to return to login; **Recover
+account access** reopens it. Enter the emailed code and choose **Sign out other
+sessions and sign in**. This signs out all other sessions for that account on
+the issuing API; unsaved work there may be lost. Requesting a code or entering
+an incorrect code leaves those sessions intact. Recovery needs a reachable API
+and working email delivery. Refreshing a session keeps its existing slot;
 closing a browser alone releases it when the inactivity deadline expires.
 Each separate login counts, including a new login in another browser tab;
 tabs that already share the same token use one slot. See the

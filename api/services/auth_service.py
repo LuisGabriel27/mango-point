@@ -23,6 +23,8 @@ from api.models.auth import AuthUserResponse, LoginResponse
 from db.models import AuthSession, PasswordResetChallenge, UserAccount, UserRoleEnum
 from utils.datetime_utils import utcnow_naive
 
+LOGIN_PURPOSES = ("login", "login_recovery")
+
 
 class AuthenticationError(RuntimeError):
     """Raised when login credentials are invalid or the account is unavailable."""
@@ -125,11 +127,14 @@ class AuthService:
         db: AsyncSession,
         username_or_email: str,
         password: str,
+        *, recover_sessions: bool = False,
     ) -> tuple[PasswordResetChallenge, str]:
         """Prove the password before sending a code; never issue a session here."""
         user = await self.authenticate_user(db, username_or_email, password)
-        await self._require_session_slot(db, user)
-        return await self.create_password_reset_challenge(db, user, purpose="login")
+        if not recover_sessions:
+            await self._require_session_slot(db, user)
+        return await self.create_password_reset_challenge(
+            db, user, purpose="login_recovery" if recover_sessions else "login")
 
     async def _require_session_slot(self, db: AsyncSession, user: UserAccount) -> None:
         # Callers hold the account lock, including when confirming the email code.
@@ -141,38 +146,45 @@ class AuthService:
             AuthSession.user_id == user.user_id, AuthSession.revoked_at.is_(None),
             AuthSession.expires_at > now, AuthSession.credential_stamp == stamp))
         if count >= 2:
-            raise SessionLimitError("This account already has two active sessions. Log out on another browser or wait for an inactive session to expire, then try again.")
+            raise SessionLimitError("This account already has two active sessions. Use email-verified session recovery to sign out other sessions and sign in here, or wait for a session to expire.")
 
-    async def _login_account(self, db: AsyncSession, challenge_id: str) -> UserAccount:
+    async def _login_account(self, db: AsyncSession, challenge_id: str) -> tuple[UserAccount, PasswordResetChallenge]:
         """Lock account then challenge, and re-read to prevent concurrent replay."""
         result = await db.execute(select(PasswordResetChallenge).where(
             PasswordResetChallenge.challenge_id == challenge_id))
         challenge = result.scalar_one_or_none()
-        if challenge is None or challenge.purpose != "login":
+        if challenge is None or challenge.purpose not in LOGIN_PURPOSES:
             raise PasswordResetCodeError("This sign-in code is invalid or has expired. Start again with your password.")
         user = await self.get_user_by_id(db, challenge.user_id, lock=True)
         result = await db.execute(select(PasswordResetChallenge).where(
             PasswordResetChallenge.challenge_id == challenge_id).with_for_update()
             .execution_options(populate_existing=True))
         challenge = result.scalar_one_or_none()
-        if (user is None or not user.is_active or challenge is None or challenge.purpose != "login"
+        if (user is None or not user.is_active or challenge is None or challenge.purpose not in LOGIN_PURPOSES
                 or challenge.consumed_at is not None or challenge.expires_at <= utcnow_naive()
                 or challenge.attempt_count >= settings.LOGIN_CODE_MAX_ATTEMPTS
                 or challenge.email_snapshot != user.email
                 or challenge.credential_stamp != session_credential_stamp(user)):
             raise PasswordResetCodeError("This sign-in code is invalid or has expired. Start again with your password.")
-        return user
+        return user, challenge
 
     async def resend_login(self, db: AsyncSession, challenge_id: str) -> tuple[PasswordResetChallenge, str]:
-        user = await self._login_account(db, challenge_id)
-        await self._require_session_slot(db, user)
-        return await self.create_password_reset_challenge(db, user, purpose="login")
+        user, challenge = await self._login_account(db, challenge_id)
+        if challenge.purpose == "login":
+            await self._require_session_slot(db, user)
+        return await self.create_password_reset_challenge(db, user, purpose=challenge.purpose)
 
     async def verify_login(self, db: AsyncSession, challenge_id: str, code: str) -> LoginResponse:
-        user = await self._login_account(db, challenge_id)
-        await self.verify_account_code(db, user, "login", challenge_id, code)
-        await self._require_session_slot(db, user)
+        user, challenge = await self._login_account(db, challenge_id)
+        await self.verify_account_code(db, user, challenge.purpose, challenge_id, code)
         now = utcnow_naive()
+        if challenge.purpose == "login_recovery":
+            # Password + purpose-bound email code have been verified. The account
+            # lock serializes revocation/allocation with login, refresh and logout.
+            await db.execute(update(AuthSession).where(
+                AuthSession.user_id == user.user_id, AuthSession.revoked_at.is_(None)
+            ).values(revoked_at=now))
+        await self._require_session_slot(db, user)
         stamp = session_credential_stamp(user)
         session_id = str(uuid.uuid4())
         response = self.session_response(user, session_id=session_id)
@@ -242,17 +254,18 @@ class AuthService:
         """Create a hashed six-digit code and invalidate older unused codes."""
         now = utcnow_naive()
         await self.lock_account(db, user)
+        purposes = LOGIN_PURPOSES if purpose in LOGIN_PURPOSES else (purpose,)
         last = await db.scalar(select(PasswordResetChallenge.created_at).where(
             PasswordResetChallenge.user_id == user.user_id,
-            PasswordResetChallenge.purpose == purpose).order_by(PasswordResetChallenge.created_at.desc()).limit(1))
-        cooldown = settings.LOGIN_CODE_RESEND_SECONDS if purpose == "login" else 60
+            PasswordResetChallenge.purpose.in_(purposes)).order_by(PasswordResetChallenge.created_at.desc()).limit(1))
+        cooldown = settings.LOGIN_CODE_RESEND_SECONDS if purpose in LOGIN_PURPOSES else 60
         if isinstance(last, datetime) and (now - last).total_seconds() < cooldown:
             raise VerificationCooldownError(f"Wait {cooldown} seconds before requesting another verification code.")
         await db.execute(
             update(PasswordResetChallenge)
             .where(
                 PasswordResetChallenge.user_id == user.user_id,
-                PasswordResetChallenge.purpose == purpose,
+                PasswordResetChallenge.purpose.in_(purposes),
                 PasswordResetChallenge.consumed_at.is_(None),
             )
             .values(consumed_at=now)
@@ -263,7 +276,7 @@ class AuthService:
             user_id=user.user_id,
             code_hash=get_password_hash(code),
             attempt_count=0,
-            expires_at=now + timedelta(minutes=(settings.LOGIN_CODE_EXPIRE_MINUTES if purpose == "login"
+            expires_at=now + timedelta(minutes=(settings.LOGIN_CODE_EXPIRE_MINUTES if purpose in LOGIN_PURPOSES
                                                else settings.PASSWORD_RESET_CODE_EXPIRE_MINUTES)),
             created_at=now,
             purpose=purpose,
@@ -342,7 +355,7 @@ class AuthService:
                 or challenge.email_snapshot != user.email
                 or challenge.credential_stamp != session_credential_stamp(user)):
             raise PasswordResetCodeError("This verification code is invalid or has expired. Request a new code.")
-        max_attempts = settings.LOGIN_CODE_MAX_ATTEMPTS if purpose == "login" else settings.PASSWORD_RESET_MAX_ATTEMPTS
+        max_attempts = settings.LOGIN_CODE_MAX_ATTEMPTS if purpose in LOGIN_PURPOSES else settings.PASSWORD_RESET_MAX_ATTEMPTS
         if challenge.attempt_count >= max_attempts:
             raise PasswordResetCodeError("Too many incorrect attempts. Request a new code.")
         if not verify_password(code, challenge.code_hash):

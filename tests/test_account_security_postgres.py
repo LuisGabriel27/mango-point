@@ -86,7 +86,7 @@ async def account_api(monkeypatch):
 async def sign_in(client, password='old-password', username='security-test'):
     # Advance only isolated fixture challenges so session tests need not sleep.
     async with client.test_factory.begin() as db:
-        await db.execute(update(PasswordResetChallenge).where(PasswordResetChallenge.purpose == 'login')
+        await db.execute(update(PasswordResetChallenge).where(PasswordResetChallenge.purpose.in_(['login', 'login_recovery']))
             .values(created_at=utcnow_naive() - timedelta(seconds=settings.LOGIN_CODE_RESEND_SECONDS + 1)))
     issued = await client.post('/auth/login', json={'username_or_email':username, 'password':password})
     if issued.status_code != 200:
@@ -374,8 +374,119 @@ async def test_verification_rechecks_session_capacity_and_consumes_the_correct_c
         for _ in range(2):
             db.add(AuthSession(session_id=str(uuid.uuid4()), user_id=user.user_id,
                 credential_stamp=session_credential_stamp(user), expires_at=utcnow_naive() + timedelta(minutes=5)))
-    assert (await client.post('/auth/login/verify', json=payload)).status_code == 409
+    assert (await client.post('/auth/login/verify', json={**payload, 'recover_sessions': True})).status_code == 409
     assert (await client.post('/auth/login/verify', json=payload)).status_code == 400
     async with factory() as db:
         assert len((await db.scalars(select(AuthSession))).all()) == 2
         assert (await db.get(PasswordResetChallenge, payload['challenge_id'])).consumed_at is not None
+
+
+async def begin_session_recovery(client):
+    async with client.test_factory.begin() as db:
+        await db.execute(update(PasswordResetChallenge).values(created_at=utcnow_naive() - timedelta(seconds=61)))
+    return await client.post('/auth/login', json={
+        'username_or_email': 'security-test', 'password': 'old-password', 'recover_sessions': True})
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_requires_password_and_code_before_revoking_old_sessions(account_api):
+    client, factory, sender = account_api
+    first, second = await sign_in(client), await sign_in(client)
+    sender.reset_mock()
+    assert (await client.post('/auth/login', json={
+        'username_or_email': 'security-test', 'password': 'incorrect', 'recover_sessions': True})).status_code == 401
+    assert (await begin_email_login(client)).status_code == 409
+    sender.assert_not_awaited()
+    issued = await begin_session_recovery(client)
+    assert issued.status_code == 200 and issued.json()['session_recovery'] is True
+    assert sender.await_args.kwargs['purpose'] == 'login_recovery'
+    code = sender.await_args.args[1]
+    payload = {'challenge_id': issued.json()['challenge_id'], 'code': code}
+    wrong = '000000' if code != '000000' else '999999'
+    assert (await client.post('/auth/login/verify', json={**payload, 'code': wrong})).status_code == 400
+    assert (await client.post('/auth/password/reset', json={**payload, 'new_password': 'bypass-password'})).status_code == 400
+    for response in (first, second):
+        assert (await client.get('/auth/me', headers=bearer(response))).status_code == 200
+    recovered = await client.post('/auth/login/verify', json=payload)
+    assert recovered.status_code == 200
+    assert (await client.get('/auth/me', headers=bearer(recovered))).status_code == 200
+    for response in (first, second):
+        assert (await client.get('/auth/me', headers=bearer(response))).status_code == 401
+        assert (await client.post('/auth/session/refresh', headers=bearer(response), json={})).status_code == 401
+    assert (await client.post('/auth/login/verify', json=payload)).status_code == 400
+    async with factory() as db:
+        assert len((await db.scalars(select(AuthSession))).all()) == 1
+    assert (await sign_in(client)).status_code == 200
+    assert (await sign_in(client)).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_session_recovery_resend_cooldown_and_delivery_failure_leave_sessions_intact(account_api):
+    client, factory, sender = account_api
+    first, second = await sign_in(client), await sign_in(client)
+    sender.return_value = False
+    assert (await begin_session_recovery(client)).status_code == 503
+    sender.return_value = True
+    issued = await begin_session_recovery(client)
+    payload = {'challenge_id': issued.json()['challenge_id'], 'code': sender.await_args.args[1]}
+    assert (await client.post('/auth/login/resend', json={'challenge_id': payload['challenge_id']})).status_code == 429
+    # Switching between normal/recovery requests does not bypass the shared cooldown.
+    assert (await client.post('/auth/login', json={
+        'username_or_email': 'security-test', 'password': 'old-password', 'recover_sessions': True})).status_code == 429
+    async with factory.begin() as db:
+        row = await db.get(PasswordResetChallenge, payload['challenge_id'])
+        row.created_at = utcnow_naive() - timedelta(seconds=61)
+    sender.return_value = False
+    assert (await client.post('/auth/login/resend', json={'challenge_id': payload['challenge_id']})).status_code == 503
+    sender.return_value = True
+    resent = await client.post('/auth/login/resend', json={'challenge_id': payload['challenge_id']})
+    assert resent.status_code == 200 and resent.json()['session_recovery'] is True
+    for response in (first, second):
+        assert (await client.get('/auth/me', headers=bearer(response))).status_code == 200
+    assert (await client.post('/auth/login/verify', json=payload)).status_code == 400
+    recovered = await client.post('/auth/login/verify', json={
+        'challenge_id': resent.json()['challenge_id'], 'code': sender.await_args.args[1]})
+    assert recovered.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_concurrent_recovery_and_refresh_cannot_revive_revoked_sessions(account_api):
+    client, factory, sender = account_api
+    first, second = await sign_in(client), await sign_in(client)
+    issued = await begin_session_recovery(client)
+    payload = {'challenge_id': issued.json()['challenge_id'], 'code': sender.await_args.args[1]}
+    responses = await asyncio.gather(*(
+        [client.post('/auth/login/verify', json=payload) for _ in range(6)]
+        + [client.post('/auth/session/refresh', headers=bearer(first), json={})]))
+    verification = responses[:-1]
+    assert sum(response.status_code == 200 for response in verification) == 1
+    assert sum(response.status_code == 400 for response in verification) == 5
+    assert responses[-1].status_code in {200, 401}
+    for response in (first, second):
+        assert (await client.get('/auth/me', headers=bearer(response))).status_code == 401
+    if responses[-1].status_code == 200:
+        assert (await client.get('/auth/me', headers=bearer(responses[-1]))).status_code == 401
+    async with factory() as db:
+        assert len((await db.scalars(select(AuthSession))).all()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['expired', 'password', 'email', 'inactive', 'attempts'])
+async def test_invalid_recovery_challenge_cannot_revoke_session_slots(account_api, change):
+    client, factory, sender = account_api
+    await sign_in(client)
+    await sign_in(client)
+    issued = await begin_session_recovery(client)
+    payload = {'challenge_id': issued.json()['challenge_id'], 'code': sender.await_args.args[1]}
+    async with factory.begin() as db:
+        row = await db.get(PasswordResetChallenge, payload['challenge_id'])
+        user = await db.get(UserAccount, row.user_id)
+        if change == 'expired': row.expires_at = utcnow_naive() - timedelta(seconds=1)
+        elif change == 'password': user.password_hash = get_password_hash('changed-password')
+        elif change == 'email': user.email = 'changed@example.test'
+        elif change == 'inactive': user.is_active = False
+        else: row.attempt_count = settings.LOGIN_CODE_MAX_ATTEMPTS
+    assert (await client.post('/auth/login/verify', json=payload)).status_code == 400
+    async with factory() as db:
+        rows = (await db.scalars(select(AuthSession))).all()
+        assert len(rows) == 2 and all(row.revoked_at is None for row in rows)

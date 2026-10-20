@@ -35,7 +35,7 @@ def service():
         SMTP_FROM_NAME='MangoPoint', ALERT_EMAIL_APP_URL='https://mangopoint.example.test/?a=1&b=2'))
 
 
-@pytest.mark.parametrize('purpose,minutes', [('login', 5), ('reset', 10), ('change', 10), ('email', 10)])
+@pytest.mark.parametrize('purpose,minutes', [('login', 5), ('login_recovery', 5), ('reset', 10), ('change', 10), ('email', 10)])
 def test_verification_code_is_private_copyable_and_kept_in_both_mime_bodies(service, purpose, minutes):
     message = service._build_password_reset_code_message('012345', minutes, purpose=purpose)
     assert message.is_multipart()

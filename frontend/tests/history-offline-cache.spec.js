@@ -9,16 +9,26 @@ async function openDashboard(page, { failingId = null, holdId = null } = {}) {
       orchardId: mode === 'grid' ? 'default-orchard' : 'other-orchard' }),
     started_at: '2025-01-02T00:00:00Z', weather_source: 'manual',
   })))
-  const state = { offline: false, failingId, holdId, release: null, detailReads: [], writes: [] }
+  const state = { offline: false, failingId, holdId, release: null, detailReads: [], writes: [], sessionRefreshes: [] }
+  const user = { user_id: 'offline-cache-test', username: 'manager', role: 'operator' }
   await page.addInitScript(() => sessionStorage.setItem('access_token', 'isolated-offline-history'))
   await page.route(/arcgisonline|tile.openstreetmap|demotiles.maplibre/, (route) => route.abort())
   await page.route(/\/(health|auth|orchards|weather|monitoring|simulation|observations|alerts|sync|evaluation|validation)(\/|\?|$)/, async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname
+    // Reconnection may renew a session after real input. This is authentication
+    // maintenance, separate from the farm-record writes this fixture forbids.
+    if (path === '/auth/session/refresh' && request.method() === 'POST') {
+      const body = request.postDataJSON()
+      state.sessionRefreshes.push(body)
+      return route.fulfill({ json: { access_token: 'isolated-offline-history', user,
+        expires_at: new Date(await page.evaluate(() => Date.now())
+          + (900 - body.activity_age_seconds) * 1000).toISOString() } })
+    }
     if (request.method() !== 'GET') {
       state.writes.push({ method: request.method(), path })
       return route.fulfill({ status: 400, json: { detail: 'Unexpected fixture write' } })
     }
-    if (path === '/auth/me') return route.fulfill({ json: { user: { user_id: 'offline-cache-test', username: 'manager', role: 'operator' } } })
+    if (path === '/auth/me') return route.fulfill({ json: { user } })
     if (path === '/health') return route.fulfill({ json: { status: 'healthy', database: 'connected' } })
     if (path === '/orchards') return route.fulfill({ json: { orchards: [
       { orchard_id: 'other-orchard', name: 'Other test orchard', tree_geojson: runs[1].risk_geojson },

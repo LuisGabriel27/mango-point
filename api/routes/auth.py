@@ -61,7 +61,7 @@ PASSWORD_RESET_REQUEST_MESSAGE = (
 
 async def _deliver_login_challenge(db, challenge, code: str) -> LoginChallengeResponse:
     delivered = await notification_service.send_password_reset_code(
-        challenge.email_snapshot, code, settings.LOGIN_CODE_EXPIRE_MINUTES, purpose="login")
+        challenge.email_snapshot, code, settings.LOGIN_CODE_EXPIRE_MINUTES, purpose=challenge.purpose)
     if not delivered:
         await db.rollback()
         raise HTTPException(status_code=503, detail=(
@@ -71,6 +71,7 @@ async def _deliver_login_challenge(db, challenge, code: str) -> LoginChallengeRe
     local, _, domain = challenge.email_snapshot.partition("@")
     return LoginChallengeResponse(
         challenge_id=challenge.challenge_id,
+        session_recovery=challenge.purpose == "login_recovery",
         masked_email=f"{local[:1]}***@{domain}",
         expires_at=challenge.expires_at.isoformat() + "Z",
         resend_after_seconds=settings.LOGIN_CODE_RESEND_SECONDS,
@@ -105,7 +106,8 @@ async def login(
     """A password alone never grants a session or dashboard access."""
     response.headers["Cache-Control"] = "no-store"
     try:
-        challenge, code = await auth_service.start_login(db, payload.username_or_email, payload.password)
+        challenge, code = await auth_service.start_login(
+            db, payload.username_or_email, payload.password, recover_sessions=payload.recover_sessions)
         return await _deliver_login_challenge(db, challenge, code)
     except Exception as exc:
         raise _login_exception(exc) from exc

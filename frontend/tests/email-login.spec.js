@@ -244,6 +244,8 @@ test('Backspace, Delete and arrow keys edit individual positions without shiftin
   await page.keyboard.press('End')
   await expect(boxes.last()).toBeFocused()
   await page.keyboard.press('Tab')
+  await expect(page.getByRole('button', { name: 'Start again', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
   await expect(page.getByRole('button', { name: 'Terms and Conditions', exact: true })).toBeFocused()
   expect(state.requests.filter((request) => request.path === '/auth/login/verify')).toHaveLength(0)
 })

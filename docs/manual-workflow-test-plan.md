@@ -271,6 +271,37 @@ do not establish real account, database or deployed-device behavior. See the
 | WF-86 | End the signed-in session while a result download is pending. | Login appears; the pending download cannot save its delayed response or request another result. Ordinary session rules still apply. |
 | WF-87 | Make IndexedDB writes fail while reads still work, then prepare results and inspect their cached copies. Separately deny browser storage or fill its quota. | Fallback-only results remain readable; denied/full storage cannot claim all results are ready. The small fallback may retain fewer results. Browser preparation does not change hosted schema or trigger cloud backup. |
 
+## Offline session recovery
+
+Use an existing verified session within its ordinary expiry limits. Isolated
+browser fixtures verify the session lifecycle without generating forecasts or
+farm records. Repeat the physical network interruption on the affected deployed
+laptop before treating fixture checks as deployment evidence. See the
+[fix and verification](offline-session-recovery-2026-10-20.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-88 | Sign in against the local API, make an unsaved input edit, disconnect and reconnect. Repeat against the remote API while companion availability changes. | Session, user and unsaved input remain; all authenticated client requests stay on the issuing API; no farm writes or simulations are triggered. |
+| WF-89 | Reload an existing session while its API fails with a network error, 502, 503 or 504; then restore the API and reconnect. | Dashboard retains its last verified user, token, target and original deadlines; revalidation resumes without a fresh sign-in. |
+| WF-90 | During an outage revoke the session or deactivate the dedicated test account, then restore its issuing API. | Authoritative 401 or `/auth/me` 403 returns to Login and clears local session state. |
+| WF-91 | Explicitly log out during an API outage, with another API available; reconnect afterward. | Local session state clears immediately; logout targets the issuing API; reconnection cannot restore it. |
+
+## Recovery when both session slots are occupied
+
+Use dedicated accounts on a test deployment. Browser fixtures exercise controls
+without real email or sessions; isolated PostgreSQL checks verify actual session
+revocation and concurrency separately. See the
+[implementation and verification](session-slot-recovery-2026-10-20.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-92 | Fill both slots, close their browsers without logout, then attempt sign-in at desktop and narrow widths. Request recovery, try an incorrect code, then confirm the correct code. Change companion availability during this flow. | Password and email code are required. Code completion alone does not submit recovery; explicit confirmation signs out other sessions and signs in here on the same API. Wrong codes leave sessions untouched; two-session limit remains. |
+| WF-93 | Fail recovery email delivery, retry, resend after cooldown, then choose Start again. | Delivery failure and cancellation do not end existing sessions; resend keeps recovery mode and replaces the code; password/code drafts clear on returning to password entry. |
+| WF-94 | Fill capacity after an ordinary sign-in challenge was issued, then verify it and choose recovery. | Capacity conflict returns to password entry with recovery available; the consumed ordinary code cannot be reused or upgraded to recovery. |
+| WF-95 | Submit a valid recovery confirmation, leave the login screen while its response is delayed, then release it. | The browser stays signed out on the new screen; a late response cannot restore authentication. A recovery already committed by the API still revokes the old sessions. |
+| WF-96 | Load the deployed login page at desktop and narrow widths with isolated two-session error/recovery responses; inspect local/public API health and schema. | The published assets show recovery and explicit confirmation; completing the code sends no automatic recovery request. APIs advertise recovery support. This fixture check creates no real sign-in or email and does not establish real-account recovery. |
+| WF-97 | Trigger the two-session recovery modal at desktop and narrow widths. Dismiss with Cancel, Escape, close and backdrop; reopen, check keyboard focus, then request a code with a delivery failure/retry. | Input survives dismissal; focus stays in the open modal and returns to Recover account access; background and scrolling restore on close. Opening/dismissal sends no recovery request. Errors remain in the modal; successful delivery opens code entry. Existing sessions stay active until code confirmation. |
+
 ## Completion check
 
 - All four ordinary run combinations complete through results, saved history

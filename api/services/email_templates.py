@@ -95,13 +95,15 @@ def _shell(*, title: str, preview: str, category: str, content: str, footer: str
 def verification_email(code: str, expires_minutes: int, *, purpose: str = "reset") -> VerificationEmail:
     details = {
         "login": ("Your MangoPoint sign-in code", "Confirm your sign-in", "Enter this code in MangoPoint to finish signing in."),
+        "login_recovery": ("Your MangoPoint session recovery code", "Recover account access",
+                           "Confirm this code in MangoPoint to sign out all other sessions and sign in here. Unsaved work in those sessions may be lost."),
         "reset": ("Your MangoPoint password reset code", "Reset your password", "Enter this code in MangoPoint to choose a new password."),
         "change": ("Confirm your MangoPoint password change", "Confirm password change", "Enter this code in Account settings to change your password."),
         "email": ("Confirm your MangoPoint recovery email change", "Confirm email change", "Enter this code in Account settings to update your recovery email."),
     }
     subject, title, instruction = details.get(purpose, details["reset"])
     advice = ("Didn't try to sign in? Do not use this code. Review your account password."
-              if purpose == "login" else "Didn't request this? You can ignore this email; your account details have not changed.")
+              if purpose in {"login", "login_recovery"} else "Didn't request this? You can ignore this email; your account details have not changed.")
     expiry = f"Expires in {expires_minutes} {'minute' if expires_minutes == 1 else 'minutes'}"
     text = (f"MangoPoint | Account security\n\n{title}\n{instruction}\n\n"
             f"Your verification code: {code}\n{expiry}. Use this code once.\n\n"

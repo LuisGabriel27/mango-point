@@ -24,6 +24,7 @@ class LoginRequest(BaseModel):
 
     username_or_email: str = Field(..., min_length=1, max_length=254, description="Username or email address")
     password: str = Field(..., min_length=1, max_length=256, description="Account password")
+    recover_sessions: bool = Field(default=False, strict=True, description="Request email-verified session recovery")
 
     @field_validator("username_or_email")
     @classmethod
@@ -71,6 +72,26 @@ class LoginResponse(BaseModel):
     expires_at: str
     expires_in_seconds: int
     user: AuthUserResponse
+
+
+class LoginChallengeResponse(BaseModel):
+    """Password accepted; no authenticated session exists until email verification."""
+
+    verification_required: bool = True
+    session_recovery: bool = False
+    challenge_id: str
+    masked_email: str
+    expires_at: str
+    resend_after_seconds: int
+    message: str = "Enter the six-digit code sent to your account email."
+
+
+class LoginChallengeRequest(BaseModel):
+    challenge_id: str = Field(..., min_length=36, max_length=36)
+
+
+class LoginVerifyRequest(LoginChallengeRequest):
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
 
 
 class CurrentUserResponse(BaseModel):

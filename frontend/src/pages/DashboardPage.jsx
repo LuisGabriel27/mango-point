@@ -395,6 +395,7 @@ export default function DashboardPage() {
   const [mapRefreshKey, setMapRefreshKey] = useState(0)
   const [simulationTemplate, setSimulationTemplate] = useState(null)
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
+  const [historyMutationKey, setHistoryMutationKey] = useState(0)
   const [selectedPestType, setSelectedPestType] = useState('fruitfly')
 
   // Status zone drawing (bulk status change)
@@ -1937,7 +1938,7 @@ export default function DashboardPage() {
               >
                 <OverviewTab
                   active={displayTab === 'overview'}
-                  refreshKey={historyRefreshKey}
+                  refreshKey={`${historyRefreshKey}:${historyMutationKey}`}
                 />
               </div>
 
@@ -1968,6 +1969,14 @@ export default function DashboardPage() {
                   refreshKey={historyRefreshKey}
                   onLoadRun={handleHistoricalSimulationLoad}
                   onUseTemplate={handleHistoricalTemplateLoad}
+                  onRunVisibilityChange={(runId, deleted) => {
+                    setHistoryMutationKey((key) => key + 1)
+                    if (deleted && simData?.run_id === runId) {
+                      setSimData(null)
+                      setPlaybackFrames([])
+                      setCurrentFrameIdx(0)
+                    }
+                  }}
                 />
               </div>
 

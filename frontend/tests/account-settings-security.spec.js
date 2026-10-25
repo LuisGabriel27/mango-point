@@ -8,7 +8,7 @@ test('blocked third login shows the session-limit explanation without creating a
   await page.getByLabel('Username or email').fill('security-review')
   await page.getByLabel('Password', { exact: true }).fill('private-password')
   await page.getByRole('button', { name: /Sign in/i }).click()
-  await expect(page.getByRole('alert')).toContainText('already has two active sessions')
+  await expect(page.getByRole('alertdialog', { name: 'Two sessions are active', exact: true })).toBeVisible()
   await expect(page).toHaveURL(/\/login$/)
   expect(await page.evaluate(() => sessionStorage.getItem('access_token'))).toBeNull()
 })

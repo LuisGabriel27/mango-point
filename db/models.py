@@ -152,7 +152,7 @@ class UserAccount(Base):
 
 
 class PasswordResetChallenge(Base):
-    """Short-lived verification codes for account recovery."""
+    """Short-lived, purpose-bound codes for sign-in and account verification."""
     __tablename__ = "password_reset_challenge"
 
     challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)

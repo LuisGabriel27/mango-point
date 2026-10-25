@@ -18,7 +18,12 @@ async function openDashboard(page, { signIn = false, mapTiles = false } = {}) {
   })
   await page.route(/\/(health|auth|orchards|weather|monitoring|simulation|observations|alerts|sync|evaluation|validation)(\/|\?|$)/, async route => {
     const request = route.request(), path = new URL(request.url()).pathname
-    if (path === '/auth/login' || path === '/auth/session/refresh') return route.fulfill({ json: session() })
+    if (path === '/auth/login') return route.fulfill({ json: {
+      verification_required: true, challenge_id: '00000000-0000-0000-0000-000000000001',
+      masked_email: 'w***@example.test', expires_at: new Date(Date.now() + 300000).toISOString(),
+      resend_after_seconds: 60,
+    } })
+    if (path === '/auth/login/verify' || path === '/auth/session/refresh') return route.fulfill({ json: session() })
     if (request.method() !== 'GET') {
       writes.push({ method: request.method(), path })
       return route.fulfill({ status: 400, json: { detail: 'No writes in workspace checks.' } })
@@ -39,6 +44,7 @@ async function openDashboard(page, { signIn = false, mapTiles = false } = {}) {
     await page.getByLabel('Username or email').fill('workspace-test')
     await page.getByLabel('Password', { exact: true }).fill('isolated-test-password')
     await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await page.getByRole('textbox', { name: 'Digit 1 of 6', exact: true }).fill('123456')
   }
   await page.getByRole('button', { name: 'Maybe later', exact: true }).click()
   const connectionNotice = page.getByRole('button', { name: 'Close connection status', exact: true })

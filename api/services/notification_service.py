@@ -20,6 +20,7 @@ from typing import Any, Iterable, List, Optional
 import httpx
 
 from ..core.config import settings
+from .email_templates import alert_email_html, verification_email
 
 logger = logging.getLogger(__name__)
 
@@ -166,39 +167,13 @@ class NotificationService:
         *, purpose: str = "reset",
     ) -> EmailMessage:
         """Build a purpose-specific verification email without exposing account secrets."""
-        label = {"change": "password change", "email": "recovery email change"}.get(purpose, "password reset")
-        heading = "Reset your password" if purpose == "reset" else f"Confirm your {label}"
-        action = "reset your MangoPoint password" if purpose == "reset" else f"confirm your MangoPoint {label}"
-        screen = "password reset" if purpose == "reset" else "account settings"
+        template = verification_email(code, expires_minutes, purpose=purpose)
         email = EmailMessage()
-        email["Subject"] = f"{code} is your MangoPoint password reset code" if purpose == "reset" else f"Confirm your MangoPoint {label}"
+        email["Subject"] = template.subject
         email["From"] = formataddr((self.from_name, self.from_email))
         email["To"] = "Undisclosed recipient:;"
-        email.set_content(
-            f"MangoPoint {label}\n"
-            "=========================\n\n"
-            f"We received a request to {action}.\n\n"
-            f"Your verification code is: {code}\n\n"
-            f"This code expires in {expires_minutes} minutes. If you did not request "
-            "this change, you can ignore this email.\n"
-        )
-
-        safe_code = html.escape(code)
-        email.add_alternative(
-            f"""<!doctype html>
-<html><body style="margin:0;background:#f3f7f4;font-family:Arial,sans-serif;color:#17211d;">
-  <div style="max-width:600px;margin:32px auto;padding:0 16px;">
-    <div style="background:#fff;border:1px solid #d7e3db;border-top:5px solid #1b4332;border-radius:12px;padding:28px;">
-      <div style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#1b4332;">MangoPoint secure access</div>
-      <h1 style="font-size:24px;margin:10px 0;color:#17211d;">{heading}</h1>
-      <p style="font-size:15px;line-height:1.6;color:#58645e;">Enter this verification code on the MangoPoint {screen} screen.</p>
-      <div style="margin:24px 0;padding:16px;border:1px solid #cddfd4;border-radius:10px;background:#edf5f0;color:#1b4332;font-size:30px;font-weight:800;letter-spacing:.28em;text-align:center;">{safe_code}</div>
-      <p style="font-size:13px;line-height:1.6;color:#667085;">This code expires in {expires_minutes} minutes. If you did not request this change, you can ignore this email.</p>
-    </div>
-  </div>
-</body></html>""",
-            subtype="html",
-        )
+        email.set_content(template.text)
+        email.add_alternative(template.html, subtype="html")
         return email
 
     def _connect(self):
@@ -246,30 +221,8 @@ class NotificationService:
         )
         email.set_content(text_body)
 
-        safe_message = html.escape(message.strip()).replace("\n", "<br>")
-        safe_alert_id = html.escape(alert_id)
-        dashboard_html = (
-            f'<p><a href="{html.escape(self.app_url, quote=True)}" '
-            'style="display:inline-block;padding:10px 16px;background:#176b45;color:#fff;'
-            'text-decoration:none;border-radius:6px;">Open MangoPoint</a></p>'
-            if self.app_url
-            else ""
-        )
         email.add_alternative(
-            f"""<!doctype html>
-<html><body style="margin:0;background:#f3f7f4;font-family:Arial,sans-serif;color:#1f2937;">
-  <div style="max-width:640px;margin:24px auto;padding:0 16px;">
-    <div style="background:#fff;border:1px solid #d7e3db;border-top:5px solid #b42318;border-radius:10px;padding:24px;">
-      <div style="font-size:22px;font-weight:700;color:#b42318;margin-bottom:8px;">Pest Risk Alert</div>
-      <div style="font-size:12px;color:#667085;margin-bottom:18px;">Alert ID: {safe_alert_id}</div>
-      <div style="font-size:15px;line-height:1.65;">{safe_message}</div>
-      {dashboard_html}
-    </div>
-    <p style="font-size:12px;color:#667085;line-height:1.5;">
-      Automated notification from MangoPoint. Inspect the orchard and confirm conditions before treatment.
-    </p>
-  </div>
-</body></html>""",
+            alert_email_html(str(email["Subject"]), message, alert_id, self.app_url),
             subtype="html",
         )
         return email
@@ -325,6 +278,8 @@ class NotificationService:
             "subject": str(email["Subject"]),
             "htmlContent": html_content,
         }
+        if plain_part is not None:
+            payload["textContent"] = plain_part.get_content()
 
         if len(recipients) == 1:
             payload["to"] = [{"email": recipients[0]}]
@@ -417,12 +372,12 @@ class NotificationService:
         expires_minutes: int,
         *, purpose: str = "reset",
     ) -> bool:
-        """Send a private six-digit recovery code using the configured transport."""
+        """Send a private verification code using the configured transport."""
         recipients = normalize_email_recipients([recipient])
         configuration_error = self._transport_configuration_error(recipients)
         if configuration_error:
             self.last_error = configuration_error
-            logger.warning("Skipping password reset email: %s", configuration_error)
+            logger.warning("Skipping verification email: %s", configuration_error)
             return False
 
         email = self._build_password_reset_code_message(code, expires_minutes, purpose=purpose)
@@ -431,12 +386,12 @@ class NotificationService:
                 await self._deliver_email(email, recipients)
                 self.last_error = None
                 self.last_success_at = datetime.now(timezone.utc).isoformat()
-                logger.info("Password reset email sent via %s", self.email_provider)
+                logger.info("Verification email sent via %s", self.email_provider)
                 return True
             except Exception as exc:
                 self.last_error = str(exc)[:500]
                 logger.warning(
-                    "Password reset email attempt %d/%d failed: %s",
+                    "Verification email attempt %d/%d failed: %s",
                     attempt,
                     self.retry_attempts,
                     exc,

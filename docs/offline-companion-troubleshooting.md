@@ -92,7 +92,9 @@ PowerShell URL. A command error is not a CORS result.
    can stay hidden in that tab; opening a new tab in the same profile allows a
    fresh check. In developer tools, requests should target
    `http://127.0.0.1:8000`, including login and `/simulation/run-simulation`.
-5. Sign in using an account in this laptop's local database. If a session was
+5. While online, sign in using an account in this laptop's local database and
+   verify the code sent to its saved email. The local API also needs working
+   Brevo/SMTP delivery. If a session was
    created against another server, sign out and sign in again through the
    now-working local connection. An account existing only on the remote server
    may not exist in this local database.
@@ -121,7 +123,11 @@ docker compose up -d --build --wait --wait-timeout 120
 ```
 
 After browser preparation, disconnect Wi-Fi, keep Docker/API/database running,
-reopen the same app, select **Custom Weather** and run the normal forecast.
+keep the existing verified browser session, select **Custom Weather** and run
+the normal forecast. A fresh login cannot complete without email delivery.
+After logout, a 15-minute inactivity expiry or the absolute session deadline,
+reconnect before signing in again. An offline PWA cache is not an authenticated
+session and cannot bypass email verification.
 Live weather, online map tiles and notification delivery require internet.
 Use the companion launcher on each offline laptop; the production launcher
 belongs to the designated shared server operator.

@@ -176,6 +176,8 @@ async def test_brevo_delivery_uses_https_and_private_message_versions(monkeypatc
         {"to": [{"email": "farmer.two@example.test"}]},
     ]
     assert "Inspect the flagged orchard zone" in captured["payload"]["htmlContent"]
+    assert "Inspect the flagged orchard zone" in captured["payload"]["textContent"]
+    assert '<html' not in captured["payload"]["textContent"]
 
 
 @pytest.mark.asyncio

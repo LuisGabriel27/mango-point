@@ -53,19 +53,25 @@ def sessions(monkeypatch):
     monkeypatch.setattr(notification_service, 'send_password_reset_code', send)
     db.sent_codes = sent
     db.session_rows = rows
+    db.challenge_rows = challenges
     async def database():
         yield db
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_db] = database
     with TestClient(app) as client:
+        client.test_db = db
         yield client, user, db
 
 
 def login(client, password="old-password"):
     response = client.post("/auth/login", json={"username_or_email": "session-test", "password": password})
     assert response.status_code == 200
-    return response.json()["access_token"]
+    # The fixture attaches its captured transport code; no real email is sent.
+    code = client.test_db.sent_codes[-1]
+    verified = client.post('/auth/login/verify', json={'challenge_id':response.json()['challenge_id'], 'code':code})
+    assert verified.status_code == 200
+    return verified.json()["access_token"]
 
 
 def headers(token):
@@ -107,7 +113,7 @@ def test_activity_renewal_preserves_the_same_session_slot_and_reads_do_not_renew
     assert 899 <= initial["exp"] - initial["iat"] <= 900
     for _ in range(3):
         assert client.get("/auth/me", headers=headers(token)).status_code == 200
-    assert db.commit.await_count == 1  # Only login writes; ordinary reads do not.
+    assert db.commit.await_count == 2  # Password challenge and verified login only.
     renewed = client.post("/auth/session/refresh", headers=headers(token), json={"activity_age_seconds": 60})
     assert renewed.status_code == 200
     assert renewed.headers["cache-control"] == "no-store"
@@ -116,7 +122,7 @@ def test_activity_renewal_preserves_the_same_session_slot_and_reads_do_not_renew
     assert 839 <= claims["exp"] - claims["iat"] <= 841
     assert claims['sid'] == initial['sid']
     assert len(db.session_rows) == 1
-    assert db.commit.await_count == 2
+    assert db.commit.await_count == 3
     for age in (-1, 900, 1000):
         assert client.post("/auth/session/refresh", headers=headers(token), json={"activity_age_seconds": age}).status_code == 422
 

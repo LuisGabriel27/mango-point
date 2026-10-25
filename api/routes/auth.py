@@ -25,6 +25,9 @@ from api.models.auth import (
     CurrentUserUpdateRequest,
     LoginRequest,
     LoginResponse,
+    LoginChallengeResponse,
+    LoginChallengeRequest,
+    LoginVerifyRequest,
     LogoutResponse,
     PasswordChangeRequest,
     PasswordChangeCodeRequest,
@@ -56,32 +59,91 @@ PASSWORD_RESET_REQUEST_MESSAGE = (
 )
 
 
-@router.post("/login", response_model=LoginResponse, summary="Authenticate a dashboard user")
+async def _deliver_login_challenge(db, challenge, code: str) -> LoginChallengeResponse:
+    delivered = await notification_service.send_password_reset_code(
+        challenge.email_snapshot, code, settings.LOGIN_CODE_EXPIRE_MINUTES, purpose=challenge.purpose)
+    if not delivered:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=(
+            "Could not send your sign-in code. Check your internet connection and try again. "
+            "If this continues, ask the administrator to check your account email and email delivery."))
+    await db.commit()
+    local, _, domain = challenge.email_snapshot.partition("@")
+    return LoginChallengeResponse(
+        challenge_id=challenge.challenge_id,
+        session_recovery=challenge.purpose == "login_recovery",
+        masked_email=f"{local[:1]}***@{domain}",
+        expires_at=challenge.expires_at.isoformat() + "Z",
+        resend_after_seconds=settings.LOGIN_CODE_RESEND_SECONDS,
+    )
+
+
+def _login_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, SessionLimitError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, AuthenticationError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, PasswordResetCodeError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, VerificationCooldownError):
+        return HTTPException(status_code=429, detail=str(exc),
+                             headers={"Retry-After": str(settings.LOGIN_CODE_RESEND_SECONDS)})
+    if isinstance(exc, AuthConfigurationError):
+        return HTTPException(status_code=500, detail=str(exc))
+    if is_database_unavailable(exc):
+        return database_unavailable_http_exception()
+    if isinstance(exc, HTTPException):
+        return exc
+    raise exc
+
+
+@router.post("/login", response_model=LoginChallengeResponse, summary="Check the password and email a sign-in code")
 async def login(
     payload: LoginRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> LoginChallengeResponse:
+    """A password alone never grants a session or dashboard access."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        challenge, code = await auth_service.start_login(
+            db, payload.username_or_email, payload.password, recover_sessions=payload.recover_sessions)
+        return await _deliver_login_challenge(db, challenge, code)
+    except Exception as exc:
+        raise _login_exception(exc) from exc
+
+
+@router.post("/login/verify", response_model=LoginResponse, summary="Verify the emailed code and create a session")
+async def verify_login(
+    payload: LoginVerifyRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
-    """Authenticate with username/email and password, then return a bearer token."""
+    response.headers["Cache-Control"] = "no-store"
     try:
-        result = await auth_service.login(db, payload.username_or_email, payload.password)
+        result = await auth_service.verify_login(db, payload.challenge_id, payload.code)
         await db.commit()
         return result
-    except SessionLimitError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except AuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
-    except AuthConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
+    except (PasswordResetCodeError, SessionLimitError) as exc:
+        # Keep failed-attempt counters and consumption, including when slots fill.
+        await db.commit()
+        raise _login_exception(exc) from exc
     except Exception as exc:
-        if is_database_unavailable(exc):
-            raise database_unavailable_http_exception() from exc
-        raise
+        raise _login_exception(exc) from exc
+
+
+@router.post("/login/resend", response_model=LoginChallengeResponse, summary="Replace a pending sign-in code")
+async def resend_login(
+    payload: LoginChallengeRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> LoginChallengeResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        challenge, code = await auth_service.resend_login(db, payload.challenge_id)
+        return await _deliver_login_challenge(db, challenge, code)
+    except Exception as exc:
+        raise _login_exception(exc) from exc
 
 
 @router.post(

@@ -44,7 +44,7 @@ def test_password_reset_and_account_emails_are_normalized():
     assert payload.email == "new@example.com"
 
 
-@pytest.mark.parametrize('purpose', ['change', 'email'])
+@pytest.mark.parametrize('purpose', ['change', 'email', 'login'])
 def test_account_change_emails_keep_the_code_in_both_bodies_without_putting_it_in_the_subject(purpose):
     email = notification_service._build_password_reset_code_message('123456', 10, purpose=purpose)
     assert '123456' not in email['Subject']

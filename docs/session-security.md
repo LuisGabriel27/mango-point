@@ -1,10 +1,73 @@
 # Session security
 
+New sign-ins require the account password and a six-digit code sent to the
+account's existing email through the configured Brevo/SMTP transport.
+`POST /auth/login` checks the password and returns a pending challenge, a masked
+email address, expiry and resend delay. It returns no access token, user profile
+or session slot. `POST /auth/login/verify` creates the session only after the
+code is accepted; `POST /auth/login/resend` replaces a pending code. The browser
+keeps pending details in memory, clears the password after the first step and
+pins verification/resend to the issuing API. Leaving the login screen cancels
+pending browser authentication; late responses cannot restore it. Reloading
+starts a fresh sign-in rather than restoring a partial session.
+
+Login codes expire after **5 minutes**, allow **5 incorrect attempts**, and
+have a **60-second resend cooldown**. These limits are configurable through
+`LOGIN_CODE_EXPIRE_MINUTES`, `LOGIN_CODE_MAX_ATTEMPTS` and
+`LOGIN_CODE_RESEND_SECONDS`. Codes are stored as password hashes in the existing
+`password_reset_challenge` table with purpose `login`, the account email and
+credential stamp. No schema change is needed beyond the existing account-security
+migration. Login challenges remain excluded from cloud backup. A reset/change
+code cannot be exchanged for a login session, and a login code cannot reset a
+password. Each purpose has its own resend cooldown.
+
+Account and challenge row locks prevent concurrent code reuse and lost attempt
+counters. An inactive account, changed password/email, expired, consumed or
+replaced challenge is rejected. The two-session limit is checked when requesting
+the code and again during verification. A valid code is consumed even if the
+available session slot fills before confirmation. Failed email delivery rolls
+back the new challenge and never grants a session; a failed resend preserves
+the earlier still-valid code. Codes are omitted from sign-in email subjects and
+application logs. They appear only in the private email bodies.
+
+**Fresh sign-in requires internet and a working account inbox**, including on
+an offline companion. There is no password-only fallback when email fails.
+An existing unexpired session can keep using its authoritative local API and
+database without internet, subject to the ordinary idle and absolute limits.
+After logout or session expiry, reconnect to receive a new sign-in code. Existing
+independent companion accounts need their own reachable email and mail transport.
+Do not advertise completely offline cold-start login with this email-code policy.
+
 Each account can have at most two active sessions against the same authoritative
 API database. Login locks the account row before counting and allocating slots,
 so simultaneous requests across API workers cannot allocate a third session.
-A third login returns HTTP 409 with instructions to log out elsewhere or wait
-for an idle session to expire. Each separate login counts, including a new login
+A third ordinary login returns HTTP 409 and offers email-verified session
+recovery. After the password is accepted, a **Two sessions are active** modal
+offers **Email a recovery code**, which requests a
+purpose-bound code even when both session slots are occupied. Entering all six
+digits does not automatically submit recovery: the user explicitly chooses
+**Sign out other sessions and sign in**. Successful verification revokes all
+other sessions for that account on the issuing API and creates one replacement
+session in the same transaction. Unsaved work in those sessions may be lost.
+Requesting/resending a code, a wrong code, delivery failure or cancellation does
+not revoke sessions. The two-session limit continues to apply to ordinary logins.
+Cancel, Escape, the close button and a backdrop click dismiss the modal without
+requesting a code. **Recover account access** reopens it. Focus returns to that
+button and the password/identifier remain intact. Recovery mail failures stay
+inside the modal for retry; successful delivery opens the existing code screen.
+
+Recovery uses the existing challenge table's `login_recovery` purpose. Normal
+and recovery codes share the login resend cooldown and replace earlier pending
+codes from either flow; five-minute expiry and failed-attempt limits are the
+same. The challenge remains bound to the account, password stamp and inbox.
+A client flag cannot turn a normal login code into a recovery code. The account
+lock serializes recovery with login, refresh and logout, so an in-flight renewal
+cannot restore a revoked session. No new database columns or hosted schema
+update are required. Deploy the API and frontend together; recovery still needs
+working email and a reachable issuing API. See the
+[session-slot recovery verification](session-slot-recovery-2026-10-20.md).
+
+Each separate login counts, including a new login
 in another tab; tabs already sharing a token use one session. Independent offline
 companion databases do not share a global session count.
 
@@ -22,8 +85,30 @@ An expired token cannot be renewed. Renewals also preserve the original absolute
 session lifetime configured by `AUTH_ACCESS_TOKEN_EXPIRE_MINUTES` (8 hours by
 default). A failed network renewal never extends a token's validity.
 Renewal updates the existing database session rather than allocating a slot.
+The verified session's API target and last verified user profile are retained
+in tab-scoped session storage alongside its token and deadlines. Network errors,
+request timeouts and gateway/service failures during validation preserve this
+existing session, including across a dashboard reload. Reconnection retries
+validation or pending activity renewal without counting as user interaction.
+An authenticated 401 response still ends the matching session; `/auth/me` also
+ends it if the account is inactive (403). Ordinary role-based 403 responses do
+not log the user out. Cached profile information only supports the interface;
+the FastAPI backend continues to authorize all data requests.
+
+Once verified, all API-client requests stay on the issuing API. A companion
+health failure cannot route a local token or farm write to the remote database,
+and a newly available companion cannot take over a remote session. Logout uses
+that same API and clears the browser's token, profile, target and deadlines even
+when its request fails. The next login can select an available API again.
+Sessions from an earlier frontend release record their target on the first
+authenticated request; their original API cannot be reconstructed if it was
+never saved. This change does not extend token validity during an outage or
+allow an expired/revoked session to be renewed. See the
+[offline-session fix and verification](offline-session-recovery-2026-10-20.md).
+
 Ordinary Logout revokes that session on the server and immediately releases its
-slot. Replaying an old token cannot restore a logged-out session. Closing the
+slot when the request reaches the server. During an outage its slot remains
+until server expiry. Replaying an old token cannot restore a server-revoked session. Closing the
 browser without logging out releases its slot when its idle expiry passes.
 
 Settings password fields have independent Show/Hide buttons. Changing a password
@@ -41,7 +126,7 @@ its current email and credential stamp, and a purpose (reset, password change,
 or recovery email change). A code cannot be reused, submitted by another
 account, or exchanged between these flows. Changing the email or password
 invalidates outstanding codes tied to the previous account details. Email
-verification protects account changes; it does not add a second factor at login.
+verification protects account changes separately from the sign-in email code.
 
 Each token contains a keyed HMAC derived from the account ID and stored password
 hash. The raw password and password hash are never included in a token. The API
@@ -49,10 +134,12 @@ compares this stamp against the current account on every authenticated request.
 Changing or resetting the password changes the stored hash, immediately making
 all old tokens invalid across devices and API workers. Profile/name/email changes
 do not invalidate this stamp. A wrong current password changes no credentials.
-Authentication requires the authoritative PostgreSQL database. The former
+Authentication requires the authoritative PostgreSQL database and, for a new
+login code, working email delivery. The former
 database-unavailable default-admin fallback is disabled because it could bypass
 persisted session slots and account changes. Internet-offline operation remains
-available when the local companion API and local PostgreSQL are running.
+available to an existing verified session when the local companion API and local
+PostgreSQL are running.
 
 After a successful password change, the current browser clears its session and
 shows Login with instructions to use the new password. Other connected devices
@@ -72,6 +159,15 @@ official project-scoped Supabase MCP connection, then run
 Hosted session access is protected by RLS with no grants to browser API roles.
 Session slots and verification codes are ephemeral and excluded from cloud
 backup. Legacy tokens without a persisted session ID require a fresh sign-in.
+
+For the email-login release, first confirm that every active account has a
+reachable inbox and that its authoritative API has working mail configuration.
+Update the backend and frontend as one release: the new frontend rejects a
+password-only API response, and an old frontend does not understand the new
+pending challenge response. This change does not alter already-issued valid
+sessions or their existing expiry rules. No production account emails are
+automatically replaced, and no real email delivery is established by mocked
+automated tests. See the [email-login implementation check](email-login-security-2026-10-19.md).
 
 The configured mail provider must be able to deliver to the account inbox.
 Set a real `DEFAULT_ADMIN_EMAIL` before initially seeding an account. An existing

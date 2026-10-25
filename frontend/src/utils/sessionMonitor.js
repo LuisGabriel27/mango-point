@@ -3,6 +3,7 @@ export const SESSION_CHECK_MS = 30 * 1000
 export const SESSION_ACTIVITY_KEY = 'mangopoint.session.lastActivity'
 export const SESSION_EXPIRY_KEY = 'mangopoint.session.expiresAt'
 export const SESSION_NOTICE_KEY = 'mangopoint.session.notice'
+export const SESSION_USER_KEY = 'mangopoint.session.user'
 export const SESSION_INVALID_EVENT = 'mangopoint:session-invalid'
 
 export function sessionValue(storage, key) {
@@ -80,6 +81,7 @@ export function startSessionMonitor({
   storeSessionValue(storage, SESSION_ACTIVITY_KEY, lastActivity)
   for (const type of inputEvents) events.addEventListener(type, activity, { passive: true, capture: true })
   events.addEventListener('focus', wake)
+  events.addEventListener('online', wake)
   document.addEventListener('visibilitychange', wake)
   const interval = timers.setInterval(() => {
     if (expire()) return
@@ -92,6 +94,7 @@ export function startSessionMonitor({
     timers.clearTimeout(deadlineTimer)
     for (const type of inputEvents) events.removeEventListener(type, activity, true)
     events.removeEventListener('focus', wake)
+    events.removeEventListener('online', wake)
     document.removeEventListener('visibilitychange', wake)
   }
 }

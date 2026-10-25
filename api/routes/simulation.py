@@ -19,11 +19,13 @@ from sqlalchemy import extract, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
+from ..core.security import get_current_active_user
 from ..models.schemas import CecidWeedZone, ManagementZone, SimulationRequest, SimulationResponse
 from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Orchard, Pest, Tree
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
+from ..services.simulation_history_service import set_run_deleted, visible_simulation_runs
 from ..core.config import settings
 from utils.datetime_utils import format_rfc3339, parse_rfc3339, utcnow_naive
 
@@ -1244,12 +1246,17 @@ async def list_simulation_runs(
     """List past simulation runs."""
     from sqlalchemy import select
     
-    query = select(SimulationRun)
+    query = select(SimulationRun).where(visible_simulation_runs())
     if orchard_id:
         query = query.where(SimulationRun.orchard_id == orchard_id)
     query = query.order_by(SimulationRun.started_at.desc()).limit(limit).offset(offset)
     result = await db.execute(query)
     runs = result.scalars().all()
+
+    deleted_query = select(SimulationRun.run_id).where(SimulationRun.status == "deleted")
+    if orchard_id:
+        deleted_query = deleted_query.where(SimulationRun.orchard_id == orchard_id)
+    deleted_ids = (await db.execute(deleted_query)).scalars().all()
     
     return {
         "runs": [
@@ -1275,6 +1282,7 @@ async def list_simulation_runs(
             for r in runs
         ],
         "total": len(runs),
+        "deleted_run_ids": deleted_ids,
     }
 
 
@@ -1292,7 +1300,7 @@ async def export_simulation_runs(
     db: AsyncSession = Depends(get_db),
 ):
     """Export saved run summaries with reproducibility fields."""
-    query = select(SimulationRun)
+    query = select(SimulationRun).where(visible_simulation_runs())
     if orchard_id:
         query = query.where(SimulationRun.orchard_id == orchard_id)
 
@@ -1349,7 +1357,7 @@ async def export_simulation_run(
 ):
     """Export a single saved run as a multi-sheet Excel workbook."""
     run = (await db.execute(select(SimulationRun).where(SimulationRun.run_id == run_id))).scalar_one_or_none()
-    if not run:
+    if not run or run.status == "deleted":
         raise HTTPException(status_code=404, detail="Simulation run not found")
 
     response_payload = run.response_payload or {}
@@ -1441,6 +1449,24 @@ async def export_simulation_run(
     )
 
 
+@router.delete("/runs/{run_id}", summary="Soft delete a saved simulation")
+async def delete_simulation_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    return await set_run_deleted(db, run_id, current_user.user_id, deleted=True)
+
+
+@router.post("/runs/{run_id}/restore", summary="Restore a soft-deleted simulation")
+async def restore_simulation_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    return await set_run_deleted(db, run_id, current_user.user_id, deleted=False)
+
+
 @router.get(
     "/runs/{run_id}",
     summary="Get simulation run details",
@@ -1457,7 +1483,7 @@ async def get_simulation_run(
     result = await db.execute(query)
     run = result.scalar_one_or_none()
     
-    if not run:
+    if not run or run.status == "deleted":
         raise HTTPException(status_code=404, detail="Simulation run not found")
 
     stored_metadata = run.result_metadata or (run.response_payload or {}).get("metadata") or {}

@@ -1,8 +1,11 @@
 import { expect, test } from '@playwright/test'
 
-test('the cached Vercel app signs in and reaches local API POST validation with browser internet blocked', async ({ context, page }) => {
-  test.skip(!process.env.MANGOPOINT_TEST_USERNAME || !process.env.MANGOPOINT_TEST_PASSWORD, 'Provide an existing local account in process environment variables.')
-  await page.goto('/login')
+test('the cached Vercel app uses an existing verified local session with browser internet blocked', async ({ context, page }) => {
+  test.skip(!process.env.MANGOPOINT_TEST_ACCESS_TOKEN, 'Provide an existing email-verified local session token in process environment variables. Fresh sign-in requires email delivery.')
+  await page.addInitScript((token) => {
+    if (!sessionStorage.getItem('access_token')) sessionStorage.setItem('access_token', token)
+  }, process.env.MANGOPOINT_TEST_ACCESS_TOKEN)
+  await page.goto('/')
   await expect(page.getByText('Local-first mode: simulations and records use this device.')).toBeVisible()
   await page.waitForFunction(async () => {
     await navigator.serviceWorker.ready
@@ -19,7 +22,7 @@ test('the cached Vercel app signs in and reaches local API POST validation with 
     return route.abort('internetdisconnected')
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible()
   const remoteReachable = await page.evaluate(async () => {
     try {
       await fetch(`/api/health?offline_transport_check=${Date.now()}`, { cache: 'no-store' })
@@ -27,13 +30,6 @@ test('the cached Vercel app signs in and reaches local API POST validation with 
     } catch { return false }
   })
   expect(remoteReachable).toBe(false)
-  const loginResponse = page.waitForResponse((response) => response.url() === 'http://127.0.0.1:8000/auth/login' && response.request().method() === 'POST')
-  await page.getByLabel('Username or email').fill(process.env.MANGOPOINT_TEST_USERNAME)
-  await page.getByLabel('Password', { exact: true }).fill(process.env.MANGOPOINT_TEST_PASSWORD)
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  expect((await loginResponse).status()).toBe(200)
-  await expect(page.getByRole('button', { name: 'Logout' })).toBeVisible()
-
   const localResults = await page.evaluate(async () => {
     const token = sessionStorage.getItem('access_token')
     const options = { cache: 'no-store', targetAddressSpace: 'loopback', headers: { Authorization: `Bearer ${token}` } }

@@ -5,6 +5,10 @@ import {
   CURRENT_SIMULATION_MODEL_VERSION,
   buildReplayableSimulationRequest,
   normalizeSimulationRunForHistory,
+  saveSimulationRunToHistory,
+  listSimulationRunsFromHistory,
+  getSimulationRunFromHistory,
+  setSimulationHistoryDeleted,
 } from './simulationHistoryStore.js'
 import {
   HISTORY_PERIOD_ALL_HISTORY,
@@ -14,6 +18,71 @@ import {
   historyMonthKey,
   historyMonthLabel,
 } from './historyPeriod.js'
+
+test('soft-deleted cached runs stay hidden after stale saves and restore their original output', async () => {
+  const originalWindow = globalThis.window
+  const storage = new Map()
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) } }
+  try {
+    const run = { run_id: 'soft-delete-cache-test', status: 'completed', pest_type: 'cecid',
+      request_payload: { random_seed: 42 }, risk_geojson: { type: 'FeatureCollection', features: [{ id: 'saved-evidence' }] } }
+    await saveSimulationRunToHistory(run)
+    await setSimulationHistoryDeleted([run.run_id], true)
+    assert.equal(await getSimulationRunFromHistory(run.run_id), null)
+    assert.equal((await listSimulationRunsFromHistory()).length, 0)
+    await saveSimulationRunToHistory(run)
+    assert.equal(await getSimulationRunFromHistory(run.run_id), null)
+    await setSimulationHistoryDeleted([run.run_id], false)
+    const restored = await getSimulationRunFromHistory(run.run_id)
+    assert.equal(restored.status, 'completed')
+    assert.deepEqual(restored.risk_geojson, run.risk_geojson)
+    assert.equal(restored.request_payload.random_seed, 42)
+    await setSimulationHistoryDeleted([run.run_id], true)
+    // Deletion markers cannot be evicted by the ordinary 25-record cache cap.
+    for (let index = 0; index < 28; index++) await saveSimulationRunToHistory({ run_id: `other-${index}` })
+    await saveSimulationRunToHistory(run)
+    assert.equal(await getSimulationRunFromHistory(run.run_id), null)
+  } finally { globalThis.window = originalWindow }
+})
+
+test('a server deletion for an uncached run blocks later stale output from being saved', async () => {
+  const originalWindow = globalThis.window
+  const storage = new Map()
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) } }
+  try {
+    await setSimulationHistoryDeleted(['remote-deleted'], true)
+    await saveSimulationRunToHistory({ run_id: 'remote-deleted', status: 'completed' })
+    assert.equal(await getSimulationRunFromHistory('remote-deleted'), null)
+    await setSimulationHistoryDeleted(['remote-deleted'], false)
+    await saveSimulationRunToHistory({ run_id: 'remote-deleted', status: 'completed', hours: 48 })
+    assert.equal((await getSimulationRunFromHistory('remote-deleted')).hours, 48)
+  } finally { globalThis.window = originalWindow }
+})
+
+test('cache deletion reports unavailable durable browser storage', async () => {
+  const originalWindow = globalThis.window
+  globalThis.window = {}
+  try { await assert.rejects(setSimulationHistoryDeleted(['cannot-persist'], true), /storage is unavailable/) }
+  finally { globalThis.window = originalWindow }
+})
+
+test('offline preparation reports unavailable, denied, full and capped fallback storage honestly', async () => {
+  const originalWindow = globalThis.window
+  const storage = new Map()
+  try {
+    globalThis.window = {}
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'unavailable' }, { requirePersistence: true }), /storage is unavailable/)
+    globalThis.window = { get localStorage() { throw new Error('Denied') } }
+    assert.deepEqual(await listSimulationRunsFromHistory(), [])
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'denied' }, { requirePersistence: true }), /storage is unavailable/)
+    globalThis.window = { localStorage: { getItem: () => null, setItem: () => { throw new Error('Quota exceeded') } } }
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'full' }, { requirePersistence: true }), /storage|offline/)
+    globalThis.window = { localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) } }
+    for (let i = 0; i < 25; i++) await saveSimulationRunToHistory({ run_id: `recent-${i}`, started_at: '2026-10-19T00:00:00Z' })
+    await assert.rejects(saveSimulationRunToHistory({ run_id: 'older', started_at: '2020-01-01T00:00:00Z' }, { requirePersistence: true }), /storage is full/)
+    assert.equal(await getSimulationRunFromHistory('older'), null)
+  } finally { globalThis.window = originalWindow }
+})
 
 test('frontend simulation model version matches the backend release', () => {
   assert.equal(CURRENT_SIMULATION_MODEL_VERSION, '2026.10-source-progression-v17')

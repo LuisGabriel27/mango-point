@@ -241,6 +241,67 @@ field validation evidence.
 | WF-76 | Sign in to a dedicated test account on two devices. Try an incorrect current password, then change the password successfully. | The failed attempt leaves both logins valid. Success signs out the current device and invalidates both old tokens; the second device returns to Login on its next request/session check. The new password signs in. |
 | WF-77 | Reset the test account password using its recovery mailbox while another device is signed in. | The reset invalidates existing sessions. The old password and tokens cannot authenticate; the replacement password works. |
 
+## Email-code sign-in
+
+Use a dedicated test account with an accessible inbox and the email-login
+frontend/backend release. Older password-only sign-in passes are historical;
+they do not verify this flow. The automated fixture checks send no real email.
+All fresh logins in the workflow now include the email-code step.
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-78 | Enter a wrong password, then the correct password; inspect the received code and finish sign-in. | Wrong credentials send no code. Correct password shows a masked inbox and grants no session until the emailed code is verified. No code appears in the email subject or application logs. |
+| WF-79 | Try incorrect, expired, already used and other-purpose codes; try five wrong codes before the correct one. | No rejected code grants access. Five wrong attempts exhaust the challenge. A successful code is single use. Reset/change codes cannot sign in and login codes cannot reset a password. |
+| WF-80 | Request a resend before and after 60 seconds, compare the emails, then use Start again and reload. | Early resend is blocked. Successful resend replaces the previous code. The latest code works; password/code drafts and partial authentication are not restored after starting again or reload. |
+| WF-81 | Make mail delivery unavailable on a test deployment, including without internet on its companion; retry a resend after restoring service. | Failure leaves the user signed out and creates no usable new challenge. Failed resend preserves the earlier still-valid code. Fresh offline login has no password-only bypass. |
+| WF-82 | Change local companion availability during verification; separately change the test account password/email or deactivate it before confirming a pending code. | Verification stays on its issuing API; a missing API produces a useful error. Changed credentials/inbox and inactive accounts cannot use the pending challenge. The two-session limit still applies after code verification. |
+| WF-83 | Complete the code screen using only the keyboard at desktop and narrow widths; leave it while verification is pending. | Code field receives focus, controls remain usable and no horizontal page overflow occurs. A late response cannot authenticate after leaving the screen. |
+
+## Automatic offline History preparation
+
+Use existing saved results without opening them first. For an isolated browser
+rehearsal, label every result and API response as a test fixture; those checks
+do not establish real account, database or deployed-device behavior. See the
+[implementation and browser evidence](offline-history-cache-2026-10-19.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-84 | Sign in with saved completed runs for both pests and engines, including another orchard and an older month. Stay on Live Map until preparation finishes, then disconnect and load each result through History. Repeat at a narrow width. | Opening individual results is unnecessary for caching. All dates/orchards are prepared. Available offline labels match durable data. Saved maps, playback, weather, inputs and model metadata are preserved. No simulation or farm-record writes are sent by preparation. |
+| WF-85 | Interrupt a result download, inspect History, then reconnect or use Refresh. | Incomplete preparation and Online only results are explicit. Already saved results remain usable; retry requests missing results without downloading complete cached results again. |
+| WF-86 | End the signed-in session while a result download is pending. | Login appears; the pending download cannot save its delayed response or request another result. Ordinary session rules still apply. |
+| WF-87 | Make IndexedDB writes fail while reads still work, then prepare results and inspect their cached copies. Separately deny browser storage or fill its quota. | Fallback-only results remain readable; denied/full storage cannot claim all results are ready. The small fallback may retain fewer results. Browser preparation does not change hosted schema or trigger cloud backup. |
+
+## Offline session recovery
+
+Use an existing verified session within its ordinary expiry limits. Isolated
+browser fixtures verify the session lifecycle without generating forecasts or
+farm records. Repeat the physical network interruption on the affected deployed
+laptop before treating fixture checks as deployment evidence. See the
+[fix and verification](offline-session-recovery-2026-10-20.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-88 | Sign in against the local API, make an unsaved input edit, disconnect and reconnect. Repeat against the remote API while companion availability changes. | Session, user and unsaved input remain; all authenticated client requests stay on the issuing API; no farm writes or simulations are triggered. |
+| WF-89 | Reload an existing session while its API fails with a network error, 502, 503 or 504; then restore the API and reconnect. | Dashboard retains its last verified user, token, target and original deadlines; revalidation resumes without a fresh sign-in. |
+| WF-90 | During an outage revoke the session or deactivate the dedicated test account, then restore its issuing API. | Authoritative 401 or `/auth/me` 403 returns to Login and clears local session state. |
+| WF-91 | Explicitly log out during an API outage, with another API available; reconnect afterward. | Local session state clears immediately; logout targets the issuing API; reconnection cannot restore it. |
+
+## Recovery when both session slots are occupied
+
+Use dedicated accounts on a test deployment. Browser fixtures exercise controls
+without real email or sessions; isolated PostgreSQL checks verify actual session
+revocation and concurrency separately. See the
+[implementation and verification](session-slot-recovery-2026-10-20.md).
+
+| ID | Action | Expected result |
+|---|---|---|
+| WF-92 | Fill both slots, close their browsers without logout, then attempt sign-in at desktop and narrow widths. Request recovery, try an incorrect code, then confirm the correct code. Change companion availability during this flow. | Password and email code are required. Code completion alone does not submit recovery; explicit confirmation signs out other sessions and signs in here on the same API. Wrong codes leave sessions untouched; two-session limit remains. |
+| WF-93 | Fail recovery email delivery, retry, resend after cooldown, then choose Start again. | Delivery failure and cancellation do not end existing sessions; resend keeps recovery mode and replaces the code; password/code drafts clear on returning to password entry. |
+| WF-94 | Fill capacity after an ordinary sign-in challenge was issued, then verify it and choose recovery. | Capacity conflict returns to password entry with recovery available; the consumed ordinary code cannot be reused or upgraded to recovery. |
+| WF-95 | Submit a valid recovery confirmation, leave the login screen while its response is delayed, then release it. | The browser stays signed out on the new screen; a late response cannot restore authentication. A recovery already committed by the API still revokes the old sessions. |
+| WF-96 | Load the deployed login page at desktop and narrow widths with isolated two-session error/recovery responses; inspect local/public API health and schema. | The published assets show recovery and explicit confirmation; completing the code sends no automatic recovery request. APIs advertise recovery support. This fixture check creates no real sign-in or email and does not establish real-account recovery. |
+| WF-97 | Trigger the two-session recovery modal at desktop and narrow widths. Dismiss with Cancel, Escape, close and backdrop; reopen, check keyboard focus, then request a code with a delivery failure/retry. | Input survives dismissal; focus stays in the open modal and returns to Recover account access; background and scrolling restore on close. Opening/dismissal sends no recovery request. Errors remain in the modal; successful delivery opens code entry. Existing sessions stay active until code confirmation. |
+
 ## Completion check
 
 - All four ordinary run combinations complete through results, saved history

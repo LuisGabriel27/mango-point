@@ -1,15 +1,21 @@
 export default function AuthLayout({ eyebrow, title, description, children, footer, compact = false }) {
   return (
     <div className={`auth-shell${compact ? ' auth-shell-compact' : ''}`}>
-      <main className="login-shell">
-        <div className="login-grid">
+      <main className="login-shell login-grid">
           <section className="login-hero-panel" aria-label="About MangoPoint">
             <div className="login-brand">
-              <img src="/brand/mangopoint-wordmark-v3.png" alt="MangoPoint" className="login-logo" width="2172" height="724" />
-              <p className="login-brand-caption">Orchard monitoring &amp; decision support</p>
+              <div className="login-brand-lockup">
+                <img src="/brand/mangopoint-logo-v3.png" alt="" aria-hidden="true" className="login-logo" width="48" height="48" />
+                <span className="login-brand-name">MangoPoint</span>
+              </div>
             </div>
 
             <div className="login-hero-content">
+              <div className="login-photo-collage" role="img" aria-label="Aerial views of a mango orchard">
+                <img className="login-photo login-photo-main" src="/brand/login-orchard-canopy.jpg" alt="" width="4000" height="2250" loading="lazy" decoding="async" />
+                <img className="login-photo login-photo-river" src="/brand/login-orchard-river.jpg" alt="" width="4000" height="2250" loading="lazy" decoding="async" />
+                <img className="login-photo login-photo-trees" src="/brand/login-orchard-trees.jpg" alt="" width="4000" height="2250" loading="lazy" decoding="async" />
+              </div>
               <h2 className="login-hero-heading">A clearer view of<br />your orchard.</h2>
               <p className="login-hero-copy">
                 Bring tree health, pest forecasts, and orchard records together in one workspace.
@@ -29,7 +35,6 @@ export default function AuthLayout({ eyebrow, title, description, children, foot
                 </li>
               </ul>
             </div>
-            <div className="login-hero-note"><span aria-hidden="true" />Made for mango orchard management</div>
           </section>
 
           <section className="login-card" aria-labelledby="auth-title">
@@ -43,7 +48,6 @@ export default function AuthLayout({ eyebrow, title, description, children, foot
               {footer && <div className="login-card-footer">{footer}</div>}
             </div>
           </section>
-        </div>
         <footer className="login-page-footer">MangoPoint <span aria-hidden="true">&middot;</span> Supporting informed orchard decisions</footer>
       </main>
     </div>

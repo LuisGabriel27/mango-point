@@ -34,6 +34,13 @@ After signing in, use the workspace's **Setup → Simulate → Results → Verif
 sequence. The dashboard also provides Live Map, Overview, Crop Impact,
 Surveillance and History views.
 
+The Simulation controls workspace starts on **Setup** after sign-in. Click its
+heading or its chevron to make room for the map; **Open** or a workflow shortcut
+in the compact rail restores it. On smaller screens the heading closes the
+controls drawer, and **Controls** in the top bar reopens it. Collapsing preserves
+the selected workflow, unsaved inputs and results; the desktop collapse
+preference is remembered on the device.
+
 1. **Setup:** Select an orchard and inspect its tree statuses, host stages and
    source assumptions. Choose Live Forecast or Custom Weather. Distinguish
    temporary scenario edits from edits applied to the saved orchard.

@@ -1,5 +1,30 @@
 # Geographic risk heatmap and multiple neighbors
 
+The surrounding satellite background uses Esri World Imagery, underneath each
+orchard's separate orthophoto. Live checks on 25 October 2026 found available
+zoom-18 tiles at BPI and Guimaras Wonders Farm, but missing zoom-19 and zoom-20
+tiles. The detail source therefore stops requesting new tiles at zoom 18 and
+enlarges those images as the camera zooms closer. A separate zoom-15 satellite
+underlayer supplies coarser context if a detail tile is missing; OpenStreetMap
+remains underneath both. All background layers remain enabled at close zooms.
+Esri requests use [`blankTile=false`](https://developers.arcgis.com/rest/services-reference/enterprise/map-tile/)
+so missing tiles return 404 instead of covering the fallback with an opaque
+"Map data not yet available" picture. Background coverage still depends on the
+providers and network availability.
+
+At these latitudes the fallback tiles have a ground sampling of approximately
+4.7 m per tile pixel; that is not a claim of measured image resolution or
+positional accuracy. The live map's metric scale bar shows actual distances
+(including a 5 m bar at suitable close zooms). Enlarging a satellite tile adds
+no new photographic detail. The existing orchard orthophotos, tree locations
+and report-only orthophoto map are unchanged.
+
+Collapsing the workspace keeps the existing map instance and imagery mounted.
+MapLibre's own container resize observer resizes and redraws the canvas together;
+there is no second observer clearing the canvas between animation frames. The
+controls slide and fade at a fixed content width to avoid reflow while collapsing.
+The transitions are disabled when the user requests reduced motion.
+
 The heatmap is a geographic canvas raster anchored to fixed Mercator coordinates.
 It uses the existing green/yellow/orange/red/dark-red risk palette. Tree centers
 anchor the surface to the same normalized risk and eligibility as their markers;
@@ -58,6 +83,16 @@ score, which becomes 100% after an infestation establishes. A representative
 100% score therefore does not imply 100% ensemble frequency. Tree details,
 popups, and field-verification prefills use the active map's value; the legend
 labels the selected metric. The color cutoffs remain 10%, 25%, 50%, and 75%.
+
+Hovering over a tree, or focusing its marker with the keyboard, opens a read-only
+details card. It shows the tree number, current status before a forecast, or the
+one-run status and active map metric when displaying a saved result. Available
+stage, source and Cecid exposure details retain their scenario/model labels;
+hovering does not turn a prediction into a field observation. The card remains
+open while the pointer is over it, and closes on Escape, leaving the tree/card,
+or moving the map. Click the tree or press Enter to open the existing Tree
+Management controls. Touch users still tap a tree to manage it. Hover/focus
+alone changes no tree inputs and sends no application writes.
 
 Repeated-run maps are implemented for Cecid and Fruit Fly. The UI offers 1,
 5, or 9 realizations (default 5), and restores saved choices. API callers default

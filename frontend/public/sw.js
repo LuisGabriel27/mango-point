@@ -1,10 +1,9 @@
-const CACHE_VERSION = 'mangopoint-app-v5'
+const CACHE_VERSION = 'mangopoint-app-v22'
 const CORE_ASSETS = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
-  '/brand/mangopoint-logo-v2.png',
-  '/brand/mangopoint-wordmark-v3.png',
+  '/brand/mangopoint-logo-v3.png',
   '/trees.geojson',
 ]
 

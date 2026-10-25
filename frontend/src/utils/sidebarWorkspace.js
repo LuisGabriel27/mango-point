@@ -5,7 +5,7 @@ export const SIDEBAR_WORKFLOWS = [
   { id: 'verify', label: 'Verify', icon: 'clipboard2-check' },
 ]
 
-export const DEFAULT_SIDEBAR_WORKFLOW = 'simulate'
+export const DEFAULT_SIDEBAR_WORKFLOW = 'setup'
 
 export function nextSidebarWorkflowId(activeWorkflow, key) {
   const currentIndex = Math.max(0, SIDEBAR_WORKFLOWS.findIndex(({ id }) => id === activeWorkflow))

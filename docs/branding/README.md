@@ -1,12 +1,46 @@
 # MangoPoint logo
 
-Created with the built-in image generation tool.
+The current icon is the owner-supplied [mangopoint-logo-v3.png](../../frontend/public/brand/mangopoint-logo-v3.png), added on 25 October 2026 from `Mango map-pin icon, transparent.png`. The 1254 x 1254 RGBA PNG is copied unchanged, including its transparency. It is used in navigation, login/recovery pages, the browser favicon, installed-app manifest and simulation reports. The login and navigation wordmarks render MangoPoint as accessible live text alongside the icon.
 
-Full logo with name: [mangopoint-wordmark-v3.png](../../frontend/public/brand/mangopoint-wordmark-v3.png). This 2172 x 724 PNG combines the mango symbol with the complete MangoPoint wordmark on a white background and is used on the login page. See [wordmark prompts](wordmark-prompts.md).
+## Login layout
 
-Icon asset: [mangopoint-logo-v2.png](../../frontend/public/brand/mangopoint-logo-v2.png).
+Login and account recovery use MangoPoint's light green background on the
+left and a white form on the right. The two backgrounds fill the viewport
+without an outer frame or divider border. The left panel pairs a compact
+headline and feature list with three overlapping,
+rounded orchard photos. On smaller screens the logo sits above the form and
+the collage and feature text are hidden. Rounded fields and a green sign-in
+button retain the application's colors; the page has no photo background.
+The logo subtitle and the bottom orchard-management tagline have been removed.
+The larger collage and the headline/feature block share the available space
+below the logo; the collage still scales down with screen height.
+The collage is capped at 560 px and uses more of the left panel; feature
+descriptions give way to compact labels on shorter desktop screens.
 
-The symbol combines a golden mango with a geographic location point and a green leaf. The navigation renders the MangoPoint wordmark as accessible live text alongside it. The icon PNG is 1254 x 1254 pixels with an alpha background and is used by the navigation and browser favicon. The login logo has the accessible image name "MangoPoint" inside the page heading.
+The photo assets are unchanged copies of the owner-supplied images, displayed
+and cropped using CSS:
+
+- `DJI_0620.JPG` → [login-orchard-canopy.jpg](../../frontend/public/brand/login-orchard-canopy.jpg)
+- `DJI_0661.JPG` → [login-orchard-river.jpg](../../frontend/public/brand/login-orchard-river.jpg)
+- `dji_fly_20260508_092904_664_1778203967348_photo_optimized.jpg` → [login-orchard-trees.jpg](../../frontend/public/brand/login-orchard-trees.jpg)
+
+The original photos in Downloads are unchanged. The collage images load
+lazily, with fixed layout dimensions to avoid moving the form while loading.
+The sign-in layout adapts to screen height: the collage shrinks, features
+become compact labels and secondary text is omitted on shorter screens.
+In narrow landscape windows the username and password fields sit side by
+side, keeping the sign-in controls visible without page scrolling.
+The desktop footer sits within the white form side, while the green panel
+extends to the bottom of the screen. On smaller screens the green logo area
+sits above the white form; both span the full width.
+
+## Previous assets
+
+The earlier assets below were created with the built-in image generation tool and remain available as design references. They are no longer used by the application.
+
+Full logo with name: [mangopoint-wordmark-v3.png](../../frontend/public/brand/mangopoint-wordmark-v3.png), a 2172 x 724 PNG. See [wordmark prompts](wordmark-prompts.md).
+
+Previous icon: [mangopoint-logo-v2.png](../../frontend/public/brand/mangopoint-logo-v2.png).
 
 ## Generation prompt
 

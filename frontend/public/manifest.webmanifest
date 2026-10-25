@@ -9,10 +9,10 @@
   "theme_color": "#1b4332",
   "icons": [
     {
-      "src": "/brand/mangopoint-logo-v2.png",
-      "sizes": "any",
+      "src": "/brand/mangopoint-logo-v3.png",
+      "sizes": "1254x1254",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

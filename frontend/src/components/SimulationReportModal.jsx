@@ -61,7 +61,7 @@ export function handleReportTabKey(event, dialog, activeElement) {
 
 async function loadReportLogo() {
   try {
-    const response = await fetch('/brand/mangopoint-logo-v2.png')
+    const response = await fetch('/brand/mangopoint-logo-v3.png')
     if (!response.ok) return ''
     const blob = await response.blob()
     return await new Promise((resolve) => {

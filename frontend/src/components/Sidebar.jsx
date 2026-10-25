@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import OrchardSwitcher from './cards/OrchardSwitcher'
 import { useTourPresentation } from './tutorial/TourPresentation'
 import WeatherCard from './cards/WeatherCard'
@@ -72,13 +72,23 @@ export default function Sidebar({
   const tour = useTourPresentation()
   const asideRef = useRef(null)
   const closeButtonRef = useRef(null)
+  const expandButtonRef = useRef(null)
   const tabRefs = useRef([])
+  const [overlayViewport, setOverlayViewport] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 991.98px)').matches : false
+  ))
 
   useEffect(() => {
-    if (!mobileOpen || tour) return undefined
-    const isOverlay = typeof window.matchMedia !== 'function'
-      || window.matchMedia('(max-width: 991.98px)').matches
-    if (!isOverlay) return undefined
+    if (typeof window.matchMedia !== 'function') return undefined
+    const media = window.matchMedia('(max-width: 991.98px)')
+    const update = () => setOverlayViewport(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    if (!overlayViewport || !mobileOpen || tour) return undefined
 
     const previousFocus = document.activeElement
     const previousOverflow = document.body.style.overflow
@@ -112,7 +122,7 @@ export default function Sidebar({
       document.body.style.overflow = previousOverflow
       previousFocus?.focus?.()
     }
-  }, [mobileOpen, onMobileOpenChange, Boolean(tour)])
+  }, [overlayViewport, mobileOpen, onMobileOpenChange, Boolean(tour)])
 
   const selectedOrchard = orchards?.find((orchard) => orchard.orchard_id === selectedOrchardId)
   const orchardLabel = selectedOrchard?.name
@@ -127,6 +137,20 @@ export default function Sidebar({
   const selectWorkflow = (workflow, { reveal = false } = {}) => {
     onWorkflowChange?.(workflow)
     if (reveal) onCollapsedChange?.(false)
+  }
+
+  const collapseWorkspace = () => {
+    if (overlayViewport) onMobileOpenChange?.(false)
+    else {
+      onCollapsedChange?.(true)
+      window.requestAnimationFrame(() => expandButtonRef.current?.focus())
+    }
+  }
+
+  const expandWorkspace = (workflow = activeWorkflow) => {
+    selectWorkflow(workflow, { reveal: true })
+    const index = SIDEBAR_WORKFLOWS.findIndex(({ id }) => id === workflow)
+    window.requestAnimationFrame(() => tabRefs.current[index]?.focus())
   }
 
   const handleTabKeyDown = (event) => {
@@ -157,23 +181,31 @@ export default function Sidebar({
         className={`floating-right-sidebar${collapsed ? ' is-collapsed' : ''}${mobileOpen ? ' is-mobile-open' : ''}`}
         id="right-sidebar"
         aria-label="Simulation workspace"
+        aria-hidden={overlayViewport && !mobileOpen ? true : undefined}
+        inert={overlayViewport && !mobileOpen ? '' : undefined}
       >
-        <div className="sidebar-collapsed-rail" aria-label="Workspace shortcuts">
+        <div className="sidebar-collapsed-rail" aria-label="Workspace shortcuts"
+          aria-hidden={overlayViewport || !collapsed ? true : undefined}
+          inert={overlayViewport || !collapsed ? '' : undefined}>
           <button
+            ref={expandButtonRef}
             type="button"
             className="sidebar-rail-expand"
-            onClick={() => onCollapsedChange?.(false)}
+            onClick={() => expandWorkspace()}
             aria-label="Expand simulation workspace"
             title="Expand workspace"
+            aria-expanded="false"
+            aria-controls="sidebar-workflow-panels"
           >
-            <i className="bi bi-layout-sidebar-inset-reverse" />
+            <i className="bi bi-chevron-left" aria-hidden="true" />
+            <span>Open</span>
           </button>
           {SIDEBAR_WORKFLOWS.map((workflow) => (
             <button
               key={workflow.id}
               type="button"
               className={`sidebar-rail-tab${activeWorkflow === workflow.id ? ' active' : ''}`}
-              onClick={() => selectWorkflow(workflow.id, { reveal: true })}
+              onClick={() => expandWorkspace(workflow.id)}
               aria-label={`Open ${workflow.label}`}
               title={workflow.label}
             >
@@ -183,22 +215,28 @@ export default function Sidebar({
           ))}
         </div>
 
-        <div className="sidebar-workspace">
+        <div className="sidebar-workspace"
+          aria-hidden={!overlayViewport && collapsed ? true : undefined}
+          inert={!overlayViewport && collapsed ? '' : undefined}>
           <header className="sidebar-workspace-header">
-            <div className="sidebar-workspace-heading">
-              <span className="sidebar-workspace-eyebrow">Workspace</span>
-              <strong>Simulation controls</strong>
-            </div>
+            <button
+              type="button"
+              className="sidebar-heading-toggle"
+              onClick={collapseWorkspace}
+              aria-label="Collapse simulation workspace"
+              aria-expanded={overlayViewport ? mobileOpen : !collapsed}
+              aria-controls="sidebar-workflow-panels"
+              title="Collapse simulation controls"
+            >
+              <span className="sidebar-workspace-heading">
+                <span className="sidebar-workspace-eyebrow">Workspace</span>
+                <strong>Simulation controls</strong>
+              </span>
+              <span className="sidebar-collapse-label" aria-hidden="true">
+                <i className="bi bi-chevron-right" />
+              </span>
+            </button>
             <div className="sidebar-workspace-actions">
-              <button
-                type="button"
-                className="sidebar-header-btn sidebar-desktop-collapse"
-                onClick={() => onCollapsedChange?.(true)}
-                aria-label="Collapse simulation workspace"
-                title="Collapse workspace"
-              >
-                <i className="bi bi-layout-sidebar-inset" />
-              </button>
               <button
                 ref={closeButtonRef}
                 type="button"
@@ -243,7 +281,7 @@ export default function Sidebar({
             ))}
           </div>
 
-          <div className="sidebar-workflow-panels" data-tour-scroll>
+          <div id="sidebar-workflow-panels" className="sidebar-workflow-panels" data-tour-scroll>
             <div
               id="sidebar-panel-setup"
               className="sidebar-workflow-panel"

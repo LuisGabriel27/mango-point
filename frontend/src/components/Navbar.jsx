@@ -51,7 +51,7 @@ export default function Navbar({
     <>
       <nav className="main-navbar" inert={tutorialProps?.presentation ? "" : undefined}>
       <a className="navbar-brand" href="/">
-        <img src="/brand/mangopoint-logo-v2.png" className="navbar-logo" alt="" width="40" height="40" />
+        <img src="/brand/mangopoint-logo-v3.png" className="navbar-logo" alt="" width="40" height="40" />
         <span>MangoPoint</span>
       </a>
 

@@ -7,8 +7,8 @@ import {
   sidebarWorkflowForEvent,
 } from './sidebarWorkspace.js'
 
-test('simulation workspace defaults to Simulate', () => {
-  assert.equal(DEFAULT_SIDEBAR_WORKFLOW, 'simulate')
+test('simulation workspace defaults to Setup', () => {
+  assert.equal(DEFAULT_SIDEBAR_WORKFLOW, 'setup')
 })
 
 test('workflow keyboard navigation wraps and supports Home and End', () => {

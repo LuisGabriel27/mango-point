@@ -94,9 +94,6 @@ export default function LoginPage() {
               <i className={`bi ${showPassword ? 'bi-eye-slash' : 'bi-eye'}`} aria-hidden="true" />
             </button>
           </div>
-          <div className="auth-forgot-row">
-            <Link className="auth-inline-link" to="/forgot-password">Forgot password?</Link>
-          </div>
         </div>
 
         <button type="submit" className="btn btn-success w-100 login-submit-btn" disabled={loading}>
@@ -106,6 +103,9 @@ export default function LoginPage() {
             <>Sign in<i className="bi bi-arrow-right" aria-hidden="true" /></>
           )}
         </button>
+        <div className="auth-forgot-row">
+          <Link className="auth-inline-link" to="/forgot-password">Forgot password?</Link>
+        </div>
       </form>
       <LoginTerms />
     </AuthLayout>

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import guimarasWondersFarmOrthophotoUrl from '../assets/guimaras-wonders-farm-orthophoto.png'
@@ -8,7 +8,7 @@ import {
 } from '../utils/bundledOrchards'
 import { simplifyLassoCoordinates } from '../utils/zoneSelection'
 import { interpretCecidTree } from '../utils/cecidMapInterpretation'
-import { initialSourceDetails, interpretSimulationTree, resolveTreeStatuses } from '../utils/simulationMapInterpretation'
+import { initialSourceDetails, interpretSimulationTree, resolveTreeStatuses, selectableTreeStatus } from '../utils/simulationMapInterpretation'
 import { runWhenMapReady } from '../utils/mapReady'
 import { geometryCenter } from '../utils/mapGeometry'
 import { captureMapSnapshot, REPORT_MAP_STYLE, waitForMapSnapshot } from '../utils/mapSnapshot'
@@ -17,9 +17,9 @@ import { buildRiskSurface, riskColor, applyRiskSurfaceCanvas } from '../utils/ri
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
 const SATELLITE_URL =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-// OpenStreetMap raster tiles. Used as a fallback underlayer so the basemap
-// keeps something visible past Esri's max imagery zoom (~19 in rural areas).
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?blankTile=false'
+// Missing imagery must return 404 instead of an opaque "not yet available"
+// picture, so the coarser satellite/road layers below can remain visible.
 const OSM_URLS = [
   'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
   'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -309,19 +309,26 @@ const MAP_STYLE = {
       type: 'raster',
       tiles: OSM_URLS,
       tileSize: 256,
-      // OSM serves tiles up to z19; MapLibre overzooms above that instead of
-      // requesting unavailable tiles, so the basemap never goes blank.
+      // Source maxzoom reuses existing tiles when the camera zooms closer.
       maxzoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
+    },
+    'satellite-fallback': {
+      type: 'raster',
+      tiles: [SATELLITE_URL],
+      tileSize: 256,
+      // About 4.7 m per tile pixel at the Guimaras orchards. Keep this
+      // separate from the detail source so missing detail still has imagery.
+      maxzoom: 15,
+      attribution: 'Tiles &copy; Esri',
     },
     satellite: {
       type: 'raster',
       tiles: [SATELLITE_URL],
       tileSize: 256,
-      // Esri World Imagery caps at ~z19 in rural Guimaras; tell MapLibre so
-      // it overzooms the z19 tile instead of showing "Map data not yet
-      // available" placeholders for z20+ requests.
-      maxzoom: 19,
+      // Live checks at both orchards found z18 imagery and missing z19/z20
+      // tiles. Enlarge z18 at closer camera zooms instead of requesting z19.
+      maxzoom: 18,
       attribution: 'Tiles &copy; Esri',
     },
   },
@@ -331,14 +338,18 @@ const MAP_STYLE = {
       type: 'raster',
       source: 'osm',
       minzoom: 0,
-      maxzoom: 22,
+    },
+    {
+      id: 'satellite-fallback',
+      type: 'raster',
+      source: 'satellite-fallback',
+      minzoom: 0,
     },
     {
       id: 'satellite',
       type: 'raster',
       source: 'satellite',
       minzoom: 0,
-      maxzoom: 22,
     },
   ],
 }
@@ -479,66 +490,48 @@ function fitMapToBounds(map, bounds, duration = 450, padding = DEFAULT_FIT_PADDI
   return true
 }
 
-function markerPopupHtml(point) {
-  const label = String(point.status).replace(/_/g, ' ')
-  const riskLine = point.display_risk == null ? ''
-    : `<br /><strong>${escapeHtml(point.interpretation.displayRiskLabel)}:</strong> ${(point.display_risk * 100).toFixed(0)}%`
-  const stageLine = point.stage == null ? '' : `<br />Stage: ${escapeHtml(String(point.stage))}`
-  const sourceLine = point.cecid_source
-    ? `<br /><strong>Cecid soil source:</strong> ${escapeHtml(point.cecid_source_label || 'Source anchor')}`
-      + `<br />Pressure: ${escapeHtml(point.cecid_source_pressure.toFixed(1))}×`
-      + (point.cecid_source_assumed ? '<br /><em>Assumed source in one run</em>' : '')
-    : ''
-  const initialSourceLine = point.initialSource
-    ? `<br /><strong>${point.initialSource.assumed ? 'Assumed source in one run' : 'Known current source'}:</strong> ${escapeHtml(point.initialSource.label)}`
-      + `<br /><em>${escapeHtml(point.initialSource.explanation)}</em>`
-    : ''
-
-  if (point.is_cecid && point.cecid) {
-    const cecid = point.cecid
-    const eligibility = cecid.eligible === true
-      ? 'Eligible fruitlet'
-      : cecid.eligible === false ? 'Not eligible' : 'Eligibility unknown'
-    const mapValueLine = cecid.displayRisk == null || cecid.eligible === false
-      ? ''
-      : `<br /><strong>${escapeHtml(cecid.displayRiskLabel)}:</strong> ${(cecid.displayRisk * 100).toFixed(0)}%`
-    const frequencyLine = cecid.hasEnsemble && cecid.displayMode !== 'likelihood'
-      ? `<br /><strong>Repeated-run frequency:</strong> ${(cecid.ensembleFrequency * 100).toFixed(0)}% (${cecid.ensembleCount}/${cecid.ensembleRuns})`
-      : ''
-    const cumulativeLine = cecid.cumulativeProbability == null
-      ? ''
-      : `<br /><strong>Representative cumulative chance:</strong> ${(cecid.cumulativeProbability * 100).toFixed(1)}%`
-    const peakLine = cecid.peakHourlyRisk == null
-      ? ''
-      : `<br />Highest eligible-hour chance: ${(cecid.peakHourlyRisk * 100).toFixed(1)}%`
-
-    return `
-      <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
-      <strong>${escapeHtml(cecid.outcomeLabel)}</strong><br />
-      Stage: ${escapeHtml(String(point.stage ?? 'unknown'))} · ${escapeHtml(eligibility)}
-      ${mapValueLine}
-      ${frequencyLine}
-      ${cumulativeLine}
-      ${peakLine}<br />
-      Exposure hours: ${cecid.exposureHours} (${cecid.localExposureHours} local, ${cecid.externalExposureHours} outside)<br />
-      Route: ${escapeHtml(cecid.exposureRouteLabel)}<br />
-      <strong>Why this tree?</strong> ${escapeHtml(cecid.explanation)}
-      <br /><em>${escapeHtml(cecid.displayExplanation)}</em>
-      ${sourceLine}
-      ${initialSourceLine}
-    `
+function markerPopupHtml(point, canManage) {
+  const label = (status) => selectableTreeStatus(status).replace(/_/g, ' ')
+  const row = (name, value) => `<div class="tree-hover-field"><dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd></div>`
+  const hasResult = point.risk != null || point.display_risk != null
+  const interpretation = point.cecid ?? point.interpretation
+  let fields = row(hasResult ? 'Status in one run' : 'Current status', label(point.status))
+  if (point.input_status !== point.status) fields += row('Scenario status', label(point.input_status))
+  if (point.stage != null) fields += row('Stage', point.stage === 'mature' ? 'Green mature / ripening' : point.stage)
+  if (point.display_risk != null && point.cecid?.eligible !== false) {
+    fields += row(interpretation.displayRiskLabel, `${(point.display_risk * 100).toFixed(0)}%`)
   }
-
-  return `
-    <strong>Tree ${escapeHtml(point.tree_id)}</strong><br />
-    Status: ${escapeHtml(label)}<br />
-    Crown: ${escapeHtml(point.crown.toFixed(1))} m
-    ${riskLine}
-    ${stageLine}
-    ${sourceLine}
-    ${initialSourceLine}
-    ${point.risk == null ? '' : `<br /><strong>${escapeHtml(point.interpretation.outcomeLabel)}</strong><br /><em>${escapeHtml(point.interpretation.displayExplanation)}</em>`}
-  `
+  if (hasResult && point.cecid) {
+    const cecid = point.cecid
+    fields += row('Cecid eligibility', cecid.eligible === true ? 'Eligible fruitlet' : cecid.eligible === false ? 'Not eligible' : 'Unknown')
+    if (cecid.hasEnsemble && cecid.displayMode !== 'likelihood') {
+      fields += row('Repeated-run frequency', `${(cecid.ensembleFrequency * 100).toFixed(0)}% (${cecid.ensembleCount}/${cecid.ensembleRuns})`)
+    }
+    if (cecid.cumulativeProbability != null) fields += row('Representative cumulative chance', `${(cecid.cumulativeProbability * 100).toFixed(1)}%`)
+    if (cecid.peakHourlyRisk != null) fields += row('Highest eligible-hour chance', `${(cecid.peakHourlyRisk * 100).toFixed(1)}%`)
+  }
+  const result = hasResult ? `<div class="tree-hover-result">
+    <strong>${escapeHtml(interpretation.outcomeLabel)}</strong>
+    <p>${escapeHtml(interpretation.displayExplanation)}</p>
+    ${point.cecid ? `<p><strong>Modeled exposure:</strong> ${escapeHtml(point.cecid.exposureRouteLabel)}</p>
+      <p>Local: ${escapeHtml(point.cecid.localExposureHours)} h · Outside: ${escapeHtml(point.cecid.externalExposureHours)} h</p>
+      <p>${escapeHtml(point.cecid.explanation)}</p>` : ''}
+  </div>` : ''
+  const source = point.initialSource ? `<div class="tree-hover-source">
+    <strong>${point.initialSource.assumed ? 'Assumed source in one run' : 'Known current source'}</strong>
+    <p>${escapeHtml(point.initialSource.label)}</p><p>${escapeHtml(point.initialSource.explanation)}</p>
+  </div>` : ''
+  const soilSource = point.cecid_source ? `<div class="tree-hover-source">
+    <strong>Cecid soil source${point.cecid_source_assumed ? ' (assumed in one run)' : ''}</strong>
+    <p>${escapeHtml(point.cecid_source_label || 'Source anchor')} · Pressure: ${escapeHtml(point.cecid_source_pressure.toFixed(1))}×</p>
+  </div>` : ''
+  return `<div class="tree-hover-card">
+    <div class="tree-hover-heading"><i class="bi bi-tree-fill" aria-hidden="true"></i>
+      <div><span>Tree details</span><strong>Tree #${escapeHtml(point.tree_id)}</strong></div>
+    </div>
+    <div class="tree-hover-body"><dl>${fields}</dl>${result}${source}${soilSource}</div>
+    ${canManage ? '<div class="tree-hover-footer">Click the tree or press Enter to manage</div>' : ''}
+  </div>`
 }
 
 function makeTreeMarker(point) {
@@ -547,7 +540,6 @@ function makeTreeMarker(point) {
   el.className = 'map-tree-marker'
   el.style.setProperty('--marker-color', point.color)
   el.setAttribute('aria-label', `Tree ${point.tree_id}`)
-  el.title = `Tree ${point.tree_id}`
 
   if (point.stage_color) {
     el.classList.add('map-tree-marker-stage')
@@ -565,7 +557,6 @@ function makeTreeMarker(point) {
   if (point.cecid_source || point.initialSource) {
     el.classList.add('map-tree-marker-cecid-source')
     el.dataset.sourceBadge = point.is_cecid ? 'S' : point.initialSource?.badge || 'S'
-    el.title = `${point.initialSource?.label || point.cecid_source_label || 'Cecid soil source'}${point.initialSource?.assumed || point.cecid_source_assumed ? ' (assumed in one run)' : ''}`
   }
 
   return el
@@ -965,6 +956,8 @@ export default forwardRef(function RiskMap({
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef([])
+  const treePreviewId = useId()
+  const drawingZone = stageZoneDrawing || statusZoneDrawing || managementZoneDrawing || cecidZoneDrawing
   const mapLoadedRef = useRef(false)
   const overlayPendingRef = useRef(true)
   const heatmapPendingRef = useRef(true)
@@ -1033,12 +1026,18 @@ export default forwardRef(function RiskMap({
       center: [DEFAULT_LON, DEFAULT_LAT],
       zoom: DEFAULT_ZOOM,
       attributionControl: false,
+      // MapLibre observes its container and redraws immediately after a resize.
+      // A second observer clears the drawing buffer again before the next frame.
+      trackResize: true,
       preserveDrawingBuffer: reportMode,
       interactive: !reportMode,
       ...(reportMode ? { pixelRatio: 2 } : {}),
     })
 
-    if (!reportMode) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+    if (!reportMode) {
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+      map.addControl(new maplibregl.ScaleControl({ unit: 'metric', maxWidth: 100 }), 'bottom-left')
+    }
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
     map.on('error', (event) => {
       if (event?.error) console.warn('Map render warning:', event.error.message)
@@ -1053,13 +1052,10 @@ export default forwardRef(function RiskMap({
       ensureCecidZoneLayers(map)
     })
 
-    const resizeObserver = new ResizeObserver(() => map.resize())
-    resizeObserver.observe(containerRef.current)
     mapRef.current = map
 
     return () => {
       mapLoadedRef.current = false
-      resizeObserver.disconnect()
       markersRef.current.forEach((marker) => marker.remove())
       markersRef.current = []
       map.remove()
@@ -1341,27 +1337,74 @@ export default forwardRef(function RiskMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map) return undefined
 
     markersRef.current.forEach((marker) => marker.remove())
-    markersRef.current = []
+    const markers = []
+    markersRef.current = markers
+    const preview = new maplibregl.Popup({
+      offset: 18, closeButton: false, closeOnClick: false, focusAfterOpen: false,
+      maxWidth: '340px', className: 'map-tree-hover-popup',
+    })
+    let activeElement = null
+    let hideTimer = null
+    const keepPreview = () => {
+      window.clearTimeout(hideTimer)
+      hideTimer = null
+    }
+    const hidePreview = () => {
+      keepPreview()
+      activeElement?.removeAttribute('aria-describedby')
+      activeElement = null
+      preview.remove()
+    }
+    const scheduleHide = () => {
+      if (activeElement && activeElement === document.activeElement && activeElement.matches(':focus-visible')) return
+      keepPreview()
+      hideTimer = window.setTimeout(hidePreview, 120)
+    }
+    const showPreview = (point, element) => {
+      if (reportMode || drawingZone) return
+      hidePreview()
+      const content = document.createElement('div')
+      content.id = treePreviewId
+      content.setAttribute('role', 'tooltip')
+      content.innerHTML = markerPopupHtml(point, Boolean(onTreeClick))
+      content.addEventListener('pointerenter', keepPreview)
+      content.addEventListener('pointerleave', scheduleHide)
+      preview.setLngLat([point.lon, point.lat]).setDOMContent(content).addTo(map)
+      activeElement = element
+      element.setAttribute('aria-describedby', treePreviewId)
+    }
+    map.on('movestart', hidePreview)
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') hidePreview()
+    }
+    document.addEventListener('keydown', handleEscape)
 
     for (const point of points) {
       const element = makeTreeMarker(point)
+      element.addEventListener('pointerenter', (event) => {
+        if (event.pointerType !== 'touch') showPreview(point, element)
+      })
+      element.addEventListener('pointerleave', scheduleHide)
+      element.addEventListener('focus', () => {
+        if (element.matches(':focus-visible')) showPreview(point, element)
+      })
+      element.addEventListener('blur', hidePreview)
       element.addEventListener('click', (event) => {
         event.stopPropagation()
+        hidePreview()
         onTreeClick?.(point)
       })
 
       const marker = new maplibregl.Marker({ element, anchor: 'center' })
         .setLngLat([point.lon, point.lat])
-        .setPopup(
-          new maplibregl.Popup({ offset: 14, closeButton: false })
-            .setHTML(markerPopupHtml(point)),
-        )
         .addTo(map)
+      // MapLibre assigns a generic label in addTo; keep each tree identifiable.
+      element.setAttribute('aria-label', `Tree ${point.tree_id}`)
 
-      markersRef.current.push(marker)
+      markers.push(marker)
     }
 
     for (const alert of alerts) {
@@ -1377,10 +1420,17 @@ export default forwardRef(function RiskMap({
         )
         .addTo(map)
 
-      markersRef.current.push(marker)
+      markers.push(marker)
     }
 
-  }, [points, alerts, onTreeClick])
+    return () => {
+      hidePreview()
+      map.off('movestart', hidePreview)
+      document.removeEventListener('keydown', handleEscape)
+      markers.forEach((marker) => marker.remove())
+      if (markersRef.current === markers) markersRef.current = []
+    }
+  }, [points, alerts, onTreeClick, drawingZone, reportMode, treePreviewId])
 
   useEffect(() => {
     const map = mapRef.current

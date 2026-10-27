@@ -25,7 +25,9 @@ from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRe
 from ..services.simulation_service import simulation_service
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
-from ..services.simulation_history_service import set_run_deleted, visible_simulation_runs
+from ..services.simulation_history_service import (
+    set_run_deleted, simulation_history_summary_query, visible_simulation_runs,
+)
 from ..core.config import settings
 from utils.datetime_utils import format_rfc3339, parse_rfc3339, utcnow_naive
 
@@ -1246,12 +1248,12 @@ async def list_simulation_runs(
     """List past simulation runs."""
     from sqlalchemy import select
     
-    query = select(SimulationRun).where(visible_simulation_runs())
+    query = simulation_history_summary_query()
     if orchard_id:
         query = query.where(SimulationRun.orchard_id == orchard_id)
     query = query.order_by(SimulationRun.started_at.desc()).limit(limit).offset(offset)
     result = await db.execute(query)
-    runs = result.scalars().all()
+    runs = result.all()
 
     deleted_query = select(SimulationRun.run_id).where(SimulationRun.status == "deleted")
     if orchard_id:
@@ -1264,12 +1266,7 @@ async def list_simulation_runs(
                 "run_id": r.run_id,
                 "pest_type": r.pest_type.value,
                 "orchard_id": r.orchard_id,
-                "simulation_mode": (
-                    r.simulation_mode
-                    or (r.result_metadata or {}).get("simulation_mode")
-                    or (r.request_payload or {}).get("simulation_mode")
-                    or "grid"
-                ),
+                "simulation_mode": r.simulation_mode,
                 "hours": r.hours,
                 "started_at": format_rfc3339(r.started_at) if r.started_at else None,
                 "status": r.status,
@@ -1277,7 +1274,7 @@ async def list_simulation_runs(
                 "cells_at_risk": r.cells_at_risk,
                 "n_infested_final": r.n_infested_final,
                 "weather_source": r.weather_source,
-                "has_time_series": bool(r.time_series or (r.response_payload or {}).get("time_series")),
+                "has_time_series": r.has_time_series,
             }
             for r in runs
         ],

@@ -83,7 +83,7 @@ async def test_deleted_details_and_single_run_exports_cannot_be_loaded():
 async def test_history_filters_before_pagination_and_reports_cache_tombstones():
     db = AsyncMock()
     visible, deleted = MagicMock(), MagicMock()
-    visible.scalars.return_value.all.return_value = []
+    visible.all.return_value = []
     deleted.scalars.return_value.all.return_value = ["deleted-test"]
     db.execute.side_effect = [visible, deleted]
     result = await simulation.list_simulation_runs(orchard_id="orchard-test", limit=10, offset=10, db=db)

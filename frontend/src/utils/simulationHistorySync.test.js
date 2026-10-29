@@ -66,6 +66,16 @@ test('pages beyond 1000 records and ignores the API page total as a grand total'
   assert.ok(f.updates.at(-1).runs.every((row) => row.cached_locally))
 })
 
+test('reconciles cached pending AI guidance and then reuses the completed saved explanation', async () => {
+  const saved = run('ai-run', { ai_guidance: { status: 'ready', summary: 'Saved guidance' } })
+  const f = fixture([saved], [detail({ ...saved, ai_guidance: { status: 'pending' } })])
+  await syncSimulationHistory(f.options)
+  assert.equal(f.records.get(saved.run_id).ai_guidance.summary, 'Saved guidance')
+  f.calls.length = 0
+  await syncSimulationHistory(f.options)
+  assert.equal(f.calls.filter((call) => call.kind === 'detail').length, 0)
+})
+
 test('partial preparation retries missing results after a connection failure', async () => {
   const f = fixture([run('first'), run('second'), run('third')])
   const original = f.api.getSimulationRun

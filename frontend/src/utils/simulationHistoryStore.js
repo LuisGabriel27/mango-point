@@ -264,11 +264,20 @@ export function simulationRunSummaryFromDetail(detail) {
     has_time_series: detail.has_time_series,
     local_saved_at: detail.local_saved_at,
     cached_locally: Boolean(detail.risk_geojson || detail.response_payload?.risk_geojson),
+    ...(detail.ai_guidance ? { ai_guidance_status: detail.ai_guidance.status } : {}),
   }
 }
 
 export async function saveSimulationRunToHistory(run, { requirePersistence = false } = {}) {
   let detail = normalizeSimulationRunForHistory(run)
+  // A slower History download can still contain the initial pending snapshot.
+  // Preserve a terminal explanation already received for this same run.
+  const preserveGuidance = (existing) => {
+    if (detail.ai_guidance?.status === 'pending'
+      && ['ready', 'unavailable'].includes(existing?.ai_guidance?.status)) {
+      detail = { ...detail, ai_guidance: existing.ai_guidance }
+    }
+  }
   const fallbackDeleted = readFallbackHistory().find((item) => item.run_id === detail.run_id && item.status === 'deleted')
   if (fallbackDeleted) return simulationRunSummaryFromDetail(fallbackDeleted)
 
@@ -277,7 +286,7 @@ export async function saveSimulationRunToHistory(run, { requirePersistence = fal
       const request = store.get(detail.run_id)
       request.onsuccess = () => {
         if (request.result?.status === 'deleted') detail = request.result
-        else store.put(detail)
+        else { preserveGuidance(request.result); store.put(detail) }
       }
       return request
     })
@@ -286,6 +295,7 @@ export async function saveSimulationRunToHistory(run, { requirePersistence = fal
     const deleted = records.find((item) => item.run_id === detail.run_id && item.status === 'deleted')
     if (deleted) return simulationRunSummaryFromDetail(deleted)
     const existing = records.filter((item) => item.run_id !== detail.run_id)
+    preserveGuidance(records.find((item) => item.run_id === detail.run_id))
     const retained = writeFallbackHistory([detail, ...existing], { strict: requirePersistence })
     if (requirePersistence && !retained?.some((item) => item.run_id === detail.run_id)) {
       throw new Error('Browser storage is full. Some results could not be saved for offline use.')

@@ -10,6 +10,7 @@ from typing import Annotated, Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 from utils.input_validation import normalize_email, normalize_person_name
+from .recommendations import SimulationGuidance
 from core.config import (
     FRUIT_FLY_TG_MAX_NEIGHBOR_DIST_M,
     SIMULATION_MODEL_VERSION,
@@ -1081,6 +1082,10 @@ class SimulationResponse(BaseModel):
 
     # Optional gate diagnostics (only present when request.debug_gates=True)
     gate_diagnostics: Optional[List[Dict[str, Any]]] = None
+
+    # Saved interpretation only; neither field changes the simulation engine.
+    action_plan: Optional[List[Dict[str, Any]]] = None
+    ai_guidance: Optional[SimulationGuidance] = None
 
 
 # ═══════════════════════════════════════════════

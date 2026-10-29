@@ -23,6 +23,8 @@ returning users.
 - Alerts for high-risk simulation output and orchard-aware scheduled gate monitoring.
 - Notification/action workflow for alerts.
 - Decision support action plans and treatment/spray scenario controls.
+- Optional automatic Gemini explanations of completed simulation action plans,
+  with saved guidance and rule-based advice available during failures/offline use.
 - Field observations and evaluation endpoints.
 - Saved simulation History, input templates, Excel exports, and compact printable reports with orthophoto maps, source evidence, settings and action plans. Optional supporting tables retain the detailed record; see the [report guide](docs/simulation-report.md).
 - Historical validation against BPI Guimaras monitoring records, including calibration/testing splits, confidence intervals, and historical weather coverage reporting.
@@ -102,6 +104,57 @@ search, sorting and pagination. Storage failures show an error with a retry
 action; a failed refresh labels any retained records as the last loaded data.
 Individual forecast outcomes remain in Results, Crop Impact,
 Spread & Weather, and History.
+
+## Automatic AI recommendations
+
+New simulations prepare a pest-specific action plan on the backend. When Gemini
+is configured, Decision Support automatically shows **Preparing AI recommendations**
+after the simulation finishes, then displays a short explanation of that plan.
+Results and the action plan remain usable while guidance is pending or unavailable.
+No additional button is needed, and viewing History never starts an AI request.
+
+Create an API key in [Google AI Studio](https://aistudio.google.com/api-keys) and
+set these values in the root backend `.env`, then restart FastAPI:
+
+```dotenv
+AI_RECOMMENDATIONS_ENABLED=true
+GEMINI_API_KEY=your-key-here
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_TIMEOUT_SECONDS=25
+```
+
+Keep the key server-side; never add it to a `VITE_` variable or commit it.
+Google AI Pro benefits and Gemini API quotas/billing are managed separately;
+check the credits and billing attached to your API project. The model is
+configurable; the default is a stable Flash-Lite model. See Google's
+[model catalog](https://ai.google.dev/gemini-api/docs/models) and
+[API billing guide](https://ai.google.dev/gemini-api/docs/billing).
+
+Configuring the key enables one provider request per new successful simulation,
+with no automatic paid retries and at most two concurrent requests per API process.
+Set `AI_RECOMMENDATIONS_ENABLED=false` to turn generation off. Only a compact
+summary of pest, host stage, weather source, modeled results and rule-based actions
+is sent to Google. Orchard names/coordinates, geometry, tree IDs, account details
+and raw observation records are excluded. Review Google's
+[API data terms](https://ai.google.dev/gemini-api/terms) for your project's tier.
+
+The explanation is checked for structure and matching action references; it is
+AI-generated text, not field verification. The action titles, priorities, targets,
+timing and steps come from MangoPoint's existing planner. Generation changes no
+orchard, observation, treatment, alert, recipient or account records and sends no
+notifications. It does not change the simulation model or its validation status.
+
+Guidance retains its run ID, simulation model version, Gemini model, prompt version
+and timestamps in the existing saved result JSON. History reuses saved guidance;
+the browser caches it for offline viewing. Cached pending results refresh during
+History preparation. Old results without guidance remain unchanged. Missing keys,
+disabled generation, provider errors, invalid output and expired jobs keep the
+rule-based plan available. Closing the dashboard does not cancel the server task;
+an interrupted API process can leave an expired job, which falls back without
+starting another provider request. AI guidance currently appears in dashboard
+Decision Support; printable reports retain their existing report action plan.
+See the [implementation check record](docs/ai-recommendation-checks.md) for executed
+tests and the subsequent live-provider connection check.
 
 ## Guided Tutorial
 

@@ -19,6 +19,21 @@ import {
   historyMonthLabel,
 } from './historyPeriod.js'
 
+test('a late pending snapshot cannot overwrite completed AI guidance in the browser cache', async () => {
+  const originalWindow = globalThis.window
+  const storage = new Map()
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) } }
+  try {
+    const run = { run_id: 'guidance-cache-race', status: 'completed', ai_guidance: { status: 'ready', summary: 'Saved explanation' },
+      risk_geojson: { type: 'FeatureCollection', features: [] }, request_payload: { random_seed: 42 } }
+    await saveSimulationRunToHistory(run)
+    await saveSimulationRunToHistory({ ...run, ai_guidance: { status: 'pending' } })
+    const saved = await getSimulationRunFromHistory(run.run_id)
+    assert.equal(saved.ai_guidance.summary, 'Saved explanation')
+    assert.equal(saved.request_payload.random_seed, 42)
+  } finally { globalThis.window = originalWindow }
+})
+
 test('soft-deleted cached runs stay hidden after stale saves and restore their original output', async () => {
   const originalWindow = globalThis.window
   const storage = new Map()

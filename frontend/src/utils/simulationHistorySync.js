@@ -71,7 +71,9 @@ export async function syncSimulationHistory({ api, signal, onUpdate, store = bro
   let downloadError = null
   for (const run of server.values()) {
     check()
-    if (run.status !== 'completed' || cache.get(run.run_id)?.cached_locally) continue
+    const local = cache.get(run.run_id)
+    // Refresh cached pending guidance after a tab closes or the API reconnects.
+    if (run.status !== 'completed' || (local?.cached_locally && local.ai_guidance_status !== 'pending')) continue
     let detail
     try {
       const response = await api.getSimulationRun(run.run_id, { signal, timeout: REQUEST_TIMEOUT, authTarget })

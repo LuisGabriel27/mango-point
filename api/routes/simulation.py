@@ -23,6 +23,9 @@ from ..core.security import get_current_active_user
 from ..models.schemas import CecidWeedZone, ManagementZone, SimulationRequest, SimulationResponse
 from db.models import Alert, AlertStatus, SimulationRun, PestType, InfestationRecord, Orchard, Pest, Tree
 from ..services.simulation_service import simulation_service
+from ..services.ai_recommendation_service import (
+    generate_and_save_guidance, guidance_for_display, prepare_recommendations,
+)
 from ..services.weather_service import weather_service
 from ..services.alert_service import alert_service
 from ..services.simulation_history_service import (
@@ -828,9 +831,10 @@ async def run_simulation(
         except Exception as diag_err:
             logger.warning(f"Could not compute gate diagnostics: {diag_err}")
         
-        # Local persistence is part of the successful request. Only the
-        # cloud replication worker is asynchronous, so a completed response
-        # always has a durable local simulation record behind it.
+        recommendation_context = prepare_recommendations(result, weather_data)
+
+        # A completed response always has a durable local forecast behind it.
+        # Optional AI guidance and cloud replication finish asynchronously.
         await save_simulation_run(
             result=result,
             request=request,
@@ -848,6 +852,11 @@ async def run_simulation(
             orchard_stage=request.orchard_stage.value,
         )
         
+        if result.ai_guidance.status == "pending":
+            background_tasks.add_task(
+                generate_and_save_guidance, result.run_id,
+                recommendation_context, result.ai_guidance.model_copy(deep=True),
+            )
         return result
         
     except Exception as e:
@@ -977,7 +986,7 @@ async def save_simulation_run(
     weather_data: Optional[List[Dict[str, Any]]],
     weather_source: Optional[str] = None,
 ) -> None:
-    """Background task to persist simulation run."""
+    """Persist the completed simulation before returning its response."""
     try:
         from ..core.database import async_session_maker
         
@@ -1464,6 +1473,17 @@ async def restore_simulation_run(
     return await set_run_deleted(db, run_id, current_user.user_id, deleted=False)
 
 
+@router.get("/runs/{run_id}/recommendations", summary="Read saved AI guidance status")
+async def get_simulation_recommendations(run_id: str, db: AsyncSession = Depends(get_db)):
+    # Select the small JSON field rather than downloading maps/playback on each poll.
+    row = (await db.execute(select(
+        SimulationRun.response_payload["ai_guidance"].label("ai_guidance"),
+    ).where(SimulationRun.run_id == run_id, visible_simulation_runs()))).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Simulation run not found")
+    return {"run_id": run_id, "ai_guidance": guidance_for_display(row.ai_guidance)}
+
+
 @router.get(
     "/runs/{run_id}",
     summary="Get simulation run details",
@@ -1522,6 +1542,8 @@ async def get_simulation_run(
             "risk_geojson": run.output_geojson,
         }
 
+    if payload.get("ai_guidance"):
+        payload["ai_guidance"] = guidance_for_display(payload["ai_guidance"]).model_dump(mode="json")
     payload.setdefault("run_id", run.run_id)
     payload.setdefault("pest_type", run.pest_type.value)
     payload.setdefault("orchard_id", run.orchard_id)

@@ -8,7 +8,7 @@ import json
 from functools import lru_cache
 from typing import Annotated, Any, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from spatial.orchard_location import ORCHARD_LAT, ORCHARD_LON
@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     
     # Weather API (Open-Meteo — free, no API key required)
     WEATHER_CACHE_TTL_SECONDS: int = 600  # 10 minutes
+
+    # Optional AI explanations of completed simulation action plans (backend only).
+    AI_RECOMMENDATIONS_ENABLED: bool = True
+    GEMINI_API_KEY: Optional[SecretStr] = None
+    GEMINI_MODEL: str = Field(default="gemini-3.5-flash-lite", pattern=r"^gemini-[a-z0-9.-]+$")
+    GEMINI_TIMEOUT_SECONDS: float = Field(default=25, ge=1, le=60)
     
     # Default location (derived from the orchard orthophoto centroid)
     DEFAULT_LAT: float = ORCHARD_LAT

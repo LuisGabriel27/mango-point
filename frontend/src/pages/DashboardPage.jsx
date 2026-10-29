@@ -12,6 +12,7 @@ import TreeStatusSelect from '../components/TreeStatusSelect'
 import { isUncertainSourceStatus, sourcePresenceOverrides, sourceProbability } from '../utils/sourcePresence.js'
 import api, { apiErrorMessage } from '../api'
 import { saveSimulationRunToHistory } from '../utils/simulationHistoryStore'
+import { watchSimulationGuidance } from '../utils/aiGuidance'
 import { prepareAlertSimulationSuggestion } from '../utils/alertSimulation'
 import { forecastVerificationContext, verificationNumber } from '../utils/forecastVerification'
 import { summarizeCecidResult } from '../utils/cecidResultSummary'
@@ -666,6 +667,24 @@ export default function DashboardPage() {
     [alerts, selectedOrchardId],
   )
   const currentSimulationRunId = simData?.run_id ?? simData?.metadata?.run_id ?? null
+  const guidanceStatus = simData?.ai_guidance?.status
+  useEffect(() => {
+    if (!currentSimulationRunId || guidanceStatus !== 'pending') return
+    if (simData.orchard_id && simData.orchard_id !== selectedOrchardId) return
+    const controller = new AbortController()
+    watchSimulationGuidance({
+      runId: currentSimulationRunId, guidance: simData.ai_guidance,
+      fetchGuidance: api.getSimulationRecommendations, signal: controller.signal,
+      onUpdate: (guidance, persist) => {
+        if (controller.signal.aborted) return
+        const updated = { ...simData, ai_guidance: guidance }
+        setSimData((current) => current?.run_id === currentSimulationRunId ? updated : current)
+        if (persist) saveSimulationRunToHistory(updated).catch(() => {})
+      },
+    })
+    return () => controller.abort()
+    // A result is immutable except for guidance. Do not restart polls on map playback.
+  }, [currentSimulationRunId, guidanceStatus, selectedOrchardId])
   const verificationForecast = useMemo(
     () => forecastVerificationContext(simData, selectedOrchardId),
     [simData, selectedOrchardId],
@@ -744,7 +763,8 @@ export default function DashboardPage() {
     return {
       zones: { zone_1_pct: z1, zone_2_pct: z2, zone_3_pct: z3 },
       economic: economic ? { ...economic, pesticide_reduction: pesticideReduction } : null,
-      action_plan: actions,
+      action_plan: simData.action_plan ?? actions,
+      ai_guidance: simData.ai_guidance,
       summary_message: summary,
       cecid,
     }

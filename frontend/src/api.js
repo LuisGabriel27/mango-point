@@ -98,6 +98,7 @@ const api = {
   runSimulation: (body) => client.post('/simulation/run-simulation', body, { timeout: 180000 }),
   getSimulationRuns: (params = {}, config = {}) => client.get('/simulation/runs', { ...config, params }),
   getSimulationRun: (runId, config = {}) => client.get(`/simulation/runs/${encodeURIComponent(runId)}`, config),
+  getSimulationRecommendations: (runId, config = {}) => client.get(`/simulation/runs/${encodeURIComponent(runId)}/recommendations`, config),
   deleteSimulationRun: (runId) => client.delete(`/simulation/runs/${encodeURIComponent(runId)}`),
   restoreSimulationRun: (runId) => client.post(`/simulation/runs/${encodeURIComponent(runId)}/restore`),
 

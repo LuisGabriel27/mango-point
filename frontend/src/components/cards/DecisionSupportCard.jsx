@@ -1,4 +1,5 @@
 import CollapsibleCard from '../CollapsibleCard'
+import AiGuidance from './AiGuidance'
 
 const ZONE_COLORS = {
   zone_1: '#22c55e',
@@ -60,6 +61,8 @@ export default function DecisionSupportCard({ metrics, defaultOpen = true, embed
       cardClass="decision-support-card"
       cardStyle={{ boxShadow: 'inset 3px 0 0 var(--mp-primary), var(--mp-shadow-card)' }}
     >
+      <AiGuidance guidance={metrics.ai_guidance} actions={actions} />
+
       {cecid && (
         <>
           <div className="alert alert-info py-2 mb-2" style={{ fontSize: '.79rem' }}>
